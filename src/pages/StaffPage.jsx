@@ -156,7 +156,7 @@ function AddStaffForm({ onSave, onCancel, saving }) {
       <div style={{ fontSize:10, color:'var(--dim)', fontStyle:'italic' }}>Default password: <span className="mono">mm@123456</span></div>
       <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
         <GhostBtn onClick={onCancel}>Cancel</GhostBtn>
-        <Btn disabled={!f.name||!f.mobile||!f.username||saving} onClick={()=>onSave({...f,salary:parseFloat(f.salary)||0})}>
+        <Btn disabled={!f.name||!f.mobile||!f.username||saving} onClick={()=>onSave({...f,salary:parseFloat(f.salary)||0, password:'mm@123456'})}>
           {saving?'Adding…':'Add staff member'}
         </Btn>
       </div>
