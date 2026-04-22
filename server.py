@@ -242,8 +242,11 @@ async def _sync_counter(name: str, collection: str, field: str):
 
 # ─── Utility helpers ───────────────────────────────────────────────────────────
 def oid(doc: dict) -> dict:
-    """Serialize ObjectId → str in a document."""
+    """Serialize ObjectId → str and datetime → ISO string in a document."""
     doc["id"] = str(doc.pop("_id"))
+    for k, v in doc.items():
+        if isinstance(v, datetime):
+            doc[k] = v.isoformat()
     return doc
 
 def oids(docs: list) -> list:
