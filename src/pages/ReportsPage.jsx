@@ -19,7 +19,7 @@ const tooltipStyle = {
 const axisStyle = { fontSize:10, fill:'var(--dim)', fontFamily:'IBM Plex Mono,monospace' };
 
 // ── Section wrapper ──────────────────────────────────────────────────
-function Section({ title, sub, children, loading, error }) {
+function Section({ title, sub, children, loading, error, action }) {
   return (
     <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:6, overflow:'hidden' }}>
       <div style={{ padding:'14px 20px', borderBottom:'1px solid var(--border)', display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
@@ -27,6 +27,7 @@ function Section({ title, sub, children, loading, error }) {
           <div style={{ fontSize:13, fontWeight:600, letterSpacing:'-.01em' }}>{title}</div>
           {sub && <div style={{ fontSize:10, color:'var(--muted)', marginTop:2 }}>{sub}</div>}
         </div>
+        {action && <div>{action}</div>}
       </div>
       <div style={{ padding:'20px' }}>
         {loading ? <Skeleton h={220} /> : error ? <ApiError error={error} /> : children}
@@ -65,6 +66,76 @@ function RevenueTooltip({ active, payload, label }) {
     </div>
   );
 }
+
+// ── NEW: Daily Closing Component ────────────────────────────────────
+function DailyClosingSection() {
+  const [date, setDate] = useState(new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }));
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['dailyClosing', date],
+    queryFn: () => reportsApi.dailyClosing(date).then(r => r.data)
+  });
+
+  const dateInput = (
+    <input
+      type="text"
+      placeholder="DD Mon YYYY"
+      defaultValue={date}
+      onBlur={(e) => setDate(e.target.value)}
+      style={{
+        padding: '4px 8px', fontSize: 11, background: 'var(--surface2)',
+        border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)',
+        fontFamily: 'IBM Plex Sans,sans-serif', width: 100, textAlign: 'right'
+      }}
+    />
+  );
+
+  return (
+    <Section
+      title="Daily Closing Report"
+      sub="Cash, UPI, and Bank transfer tally for the day"
+      loading={isLoading}
+      error={error}
+      action={dateInput}
+    >
+      {!data?.breakdown?.length ? (
+        <div style={{ height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--dim)', fontSize: 12 }}>
+          No transactions recorded for {data?.date || date}.
+        </div>
+      ) : (
+        <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '.05em' }}>
+              <th style={{ paddingBottom: 8, fontWeight: 500 }}>Payment Mode</th>
+              <th style={{ paddingBottom: 8, fontWeight: 500 }}>Vehicles</th>
+              <th style={{ paddingBottom: 8, fontWeight: 500 }}>Service</th>
+              <th style={{ paddingBottom: 8, fontWeight: 500 }}>Parts</th>
+              <th style={{ paddingBottom: 8, fontWeight: 500 }}>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.breakdown.map((row) => (
+              <tr key={row.payment_mode} style={{ borderBottom: '1px solid var(--border)' }}>
+                <td style={{ fontWeight: 600, padding: '12px 0' }}>{row.payment_mode}</td>
+                <td className="mono" style={{ color: 'var(--muted)' }}>₹{row.Vehicles.toLocaleString('en-IN')}</td>
+                <td className="mono" style={{ color: 'var(--muted)' }}>₹{row.Service.toLocaleString('en-IN')}</td>
+                <td className="mono" style={{ color: 'var(--muted)' }}>₹{row.Parts.toLocaleString('en-IN')}</td>
+                <td className="display" style={{ color: 'var(--accent)', fontSize: 14 }}>₹{row.total.toLocaleString('en-IN')}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colSpan={4} style={{ textAlign: 'right', padding: '16px 16px 0 0', fontWeight: 600, color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase' }}>Grand Total</td>
+              <td className="display" style={{ padding: '16px 0 0 0', fontSize: 18, color: 'var(--text)' }}>₹{data.grand_total.toLocaleString('en-IN')}</td>
+            </tr>
+          </tfoot>
+        </table>
+      )}
+    </Section>
+  );
+}
+
 
 // ── Main page ────────────────────────────────────────────────────────
 export default function ReportsPage() {
@@ -142,6 +213,9 @@ export default function ReportsPage() {
         <StatPill label="Parts SKUs"        value={ps.total_skus??'—'}         color="var(--text)"   sub={`${ps.low_stock||0} low stock`} />
         <StatPill label="Stock value"       value={fmt(ps.stock_value)}        color="var(--blue)"   sub="parts inventory" />
       </div>
+
+      {/* NEW: Daily Closing inserted right here! */}
+      <DailyClosingSection />
 
       {/* Revenue chart */}
       <Section
