@@ -250,11 +250,6 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
           <div style={{ marginTop: '8px' }}>
             <Field label="HSRP Notes"><textarea value={f.hsrp_notes} onChange={s('hsrp_notes')} rows={2} placeholder="Courier delays, missing rivets, specific customer requests..." style={{...inpStyle, width: '100%'}} /></Field>
           </div>
-
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop: '8px' }}>
-            <FileUpload label="Upload HSRP Front Photo" onUploadSuccess={(fileId) => setF(p => ({ ...p, hsrp_front_id: fileId }))} />
-            <FileUpload label="Upload HSRP Back Photo" onUploadSuccess={(fileId) => setF(p => ({ ...p, hsrp_back_id: fileId }))} />
-          </div>
         </div>
       )}
 
