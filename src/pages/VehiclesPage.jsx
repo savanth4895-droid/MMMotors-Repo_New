@@ -28,11 +28,13 @@ const STATUS_STYLE = {
 // ── Vehicle form (add / edit) ────────────────────────────────────────
 function VehicleForm({ initial={}, onSave, onCancel, saving }) {
   const [f, setF] = useState({
-    brand:'', model:'', variant:'', color:'',
-    chassis_number:'', engine_number:'', vehicle_number:'',
-    key_number:'', ex_showroom:'', type:'new', status:'in_stock',
+    type:'new', brand:'', model:'', variant:'', color:'',
+    chassis_number:'', engine_number:'', vehicle_number:'', key_number:'',
+    purchase_price:'', status:'Instock',
+    inbound_date: '', location: '', outbound_date: '', outbound_location: '',
     ...initial,
   });
+
   const s  = k => v  => setF(p => ({ ...p, [k]:v }));
   const se = k => e  => setF(p => ({ ...p, [k]:e.target.value }));
 
@@ -40,7 +42,15 @@ function VehicleForm({ initial={}, onSave, onCancel, saving }) {
 
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:14, maxWidth:640 }}>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+      
+      {/* Row 1: Type, Brand, Model */}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12 }}>
+        <Field label="Type *">
+          <select value={f.type} onChange={se('type')} style={selStyle}>
+            <option value="new">New</option>
+            <option value="used">Pre-owned</option>
+          </select>
+        </Field>
         <Field label="Brand *">
           <select value={f.brand} onChange={e=>setF(p=>({...p,brand:e.target.value,model:''}))} style={selStyle}>
             <option value="">Select brand</option>
@@ -48,28 +58,53 @@ function VehicleForm({ initial={}, onSave, onCancel, saving }) {
           </select>
         </Field>
         <Field label="Model *">
-          <select value={f.model} onChange={e=>se('model')(e)} style={selStyle}>
+          <select value={f.model} onChange={se('model')} style={selStyle}>
             <option value="">{f.brand?'Select model':'Brand first'}</option>
             {(MODELS[f.brand]||[]).map(m=><option key={m} value={m}>{m}</option>)}
           </select>
         </Field>
-        <Field label="Variant"><input value={f.variant}       onChange={se('variant')}       placeholder="STD / DLX…" /></Field>
-        <Field label="Color">  <input value={f.color}         onChange={se('color')}         placeholder="Pearl Black" /></Field>
+      </div>
+
+      {/* Row 2: Standard Vehicle Details */}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+        <Field label="Variant"><input value={f.variant}        onChange={se('variant')}        placeholder="STD / DLX…" /></Field>
+        <Field label="Color">  <input value={f.color}          onChange={se('color')}          placeholder="Pearl Black" /></Field>
         <Field label="Chassis number *"><input value={f.chassis_number} onChange={se('chassis_number')} placeholder="ME4JF502…" className="mono" /></Field>
         <Field label="Engine number">  <input value={f.engine_number}  onChange={se('engine_number')}  placeholder="JF50E7…"   className="mono" /></Field>
         <Field label="Reg number">     <input value={f.vehicle_number} onChange={se('vehicle_number')} placeholder="KA01HH1234" className="mono" /></Field>
         <Field label="Key number">     <input value={f.key_number}     onChange={se('key_number')}     placeholder="KY001" /></Field>
-        <Field label="Ex-showroom (₹)"><input type="number" value={f.ex_showroom} onChange={se('ex_showroom')} placeholder="80500" /></Field>
-        <Field label="Type">
-          <select value={f.type} onChange={e=>se('type')(e)} style={selStyle}>
-            <option value="new">New</option>
-            <option value="used">Pre-owned</option>
+      </div>
+
+      {/* Row 3: Pricing & Status */}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop: 4 }}>
+        <Field label="Purchase price (₹)"><input type="number" value={f.purchase_price} onChange={se('purchase_price')} placeholder="0" /></Field>
+        <Field label="Status *">
+          <select value={f.status} onChange={se('status')} style={selStyle}>
+            <option value="Instock">In Stock</option>
+            <option value="Sold">Sold</option>
+            <option value="Returned">Returned</option>
           </select>
         </Field>
       </div>
-      <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
+
+      {/* Row 4: Logistics */}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+        <Field label="Inbound Date"><input type="date" value={f.inbound_date} onChange={se('inbound_date')} style={{ width: '100%', ...selStyle, padding: '7px 10px' }}/></Field>
+        <Field label="Location"><input value={f.location} onChange={se('location')} placeholder="Warehouse / Showroom..." /></Field>
+      </div>
+
+      {/* Row 5: Outbound (Conditional - only shows if Returned is selected) */}
+      {f.status === 'Returned' && (
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, padding: '12px', background: 'rgba(220,38,38,.05)', border: '1px dashed rgba(220,38,38,.3)', borderRadius: 4 }}>
+          <Field label="Return Date"><input type="date" value={f.outbound_date} onChange={se('outbound_date')} style={{ width: '100%', ...selStyle, padding: '7px 10px' }}/></Field>
+          <Field label="Return Location / Vendor"><input value={f.outbound_location} onChange={se('outbound_location')} placeholder="Returned to vendor..." /></Field>
+        </div>
+      )}
+
+      <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop: 8 }}>
         <GhostBtn onClick={onCancel}>Cancel</GhostBtn>
-        <Btn disabled={!f.brand||!f.chassis_number||saving} onClick={() => onSave({ ...f, ex_showroom:parseFloat(f.ex_showroom)||0 })}>
+        {/* Make sure we pass purchase_price as a float to the backend */}
+        <Btn disabled={!f.brand||!f.chassis_number||saving} onClick={() => onSave({ ...f, purchase_price: parseFloat(f.purchase_price)||0 })}>
           {saving?'Saving…':'Save vehicle'}
         </Btn>
       </div>
