@@ -2,7 +2,7 @@ import { useState } from 'react';
 import toast from 'react-hot-toast';
 import { filesApi } from '../api/client';
 
-export default function FileUpload({ label, onUploadSuccess }) {
+  export default function FileUpload({ label, onUploadSuccess }) {
   const [uploading, setUploading] = useState(false);
   const [previewId, setPreviewId] = useState(null);
 
