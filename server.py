@@ -376,31 +376,39 @@ class CustomerUpdate(BaseModel):
 
 # ── Vehicles ──────────────────────────────────────────────────────────────────
 class VehicleCreate(BaseModel):
-    brand:          str
+brand:          str
     model:          str
     variant:        Optional[str] = ""
     color:          Optional[str] = ""
-    chassis_number: str
+    chassis_number: Optional[str] = ""
     engine_number:  Optional[str] = ""
-    vehicle_number: Optional[str] = ""
-    key_number:     Optional[str] = ""
-    ex_showroom:    float
-    type:           str = "new"      # new | used
-    status:         str = "in_stock" # in_stock | sold | in_service
-
+    purchase_price: Optional[float] = ""
+    inbound_date:      Optional[str] = ""
+    location:          Optional[str] = ""
+    outbound_date:     Optional[str] = ""
+    outbound_location: Optional[str] = ""
+    status:            Optional[str] = "Instock" # Instock | Sold | Returned
+    type:           Optional[str] = "new"      # new | used
+    notes:          Optional[str] = ""
+  
 class VehicleUpdate(BaseModel):
-    brand:          Optional[str]
-    model:          Optional[str]
-    variant:        Optional[str]
-    color:          Optional[str]
-    chassis_number: Optional[str]
-    engine_number:  Optional[str]
-    vehicle_number: Optional[str]
-    key_number:     Optional[str]
-    ex_showroom:    Optional[float]
-    type:           Optional[str]
-    status:         Optional[str]
-
+   brand:          Optional[str] = None
+    model:          Optional[str] = None
+    variant:        Optional[str] = None
+    color:          Optional[str] = None
+    chassis_number: Optional[str] = None
+    engine_number:  Optional[str] = None
+    purchase_price: Optional[float] = None
+    inbound_date:      Optional[str] = None
+    location:          Optional[str] = None
+    outbound_date:     Optional[str] = None
+    outbound_location: Optional[str] = None
+    key_number:     Optional[str] = None
+    type:           Optional[str] = None
+    status:            Optional[str] = None
+    
+    notes:          Optional[str] = None
+    
 # ── Sales ─────────────────────────────────────────────────────────────────────
 class NomineeInfo(BaseModel):
     name:     Optional[str] = ""
