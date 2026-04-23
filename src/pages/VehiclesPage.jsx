@@ -52,10 +52,7 @@ const MODELS = {
     'RC 125', 'RC 200', 'RC 390', 
     '250 Adventure', '390 Adventure'
   ],
-  PIAGGIO: [
-    'Vespa ZX 125', 'Vespa VXL 125', 'Vespa SXL 125', 
-    'Vespa VXL 150', 'Vespa SXL 150', 'Vespa Dual'
-  ],
+  PIAGGIO: ['Vespa ZX 125', 'Vespa VXL 125', 'Vespa SXL 125', 'Vespa VXL 150', 'Vespa SXL 150', 'Vespa Dual'],
   APRILIA: ['SR 125', 'SR 160', 'SXR 125', 'SXR 160', 'RS 457'],
   TRIUMPH: ['Speed 400', 'Scrambler 400 X', 'Trident 660', 'Street Triple 765', 'Tiger Sport 660', 'Tiger 900', 'Bonneville T100', 'Bonneville T120'],
   KAWASAKI: ['Ninja 300', 'Ninja ZX-10R', 'Z900', 'Vulcan S'],
@@ -65,12 +62,6 @@ const MODELS = {
   ATHER: ['450X', '450S', 'Rizta'],
   OLA: ['S1 Pro', 'S1 Air', 'S1 X', 'Roadster'],
   VIDA: ['V1 Pro', 'V1 Plus', 'VX2']
-};
-
-const STATUS_STYLE = {
-  in_stock:   { color: '#4ade80', bg: 'rgba(74,222,128,.1)',   border: 'rgba(74,222,128,.25)',   label: 'In stock' },
-  in_service: { color: '#f0c040', bg: 'rgba(240,192,64,.1)',   border: 'rgba(240,192,64,.25)',   label: 'In service' },
-  sold:       { color: '#6b6478', bg: 'rgba(107,100,120,.1)',  border: 'rgba(107,100,120,.25)',  label: 'Sold' },
 };
 
 // ── Vehicle form (add / edit) ────────────────────────────────────────
@@ -83,24 +74,14 @@ function VehicleForm({ initial = {}, onSave, onCancel, saving }) {
     ...initial
   });
 
-  const handleChange = (key, value) => setF(prev => ({ ...prev, [key]: value }));
+  // Reverted back to your original, flawless state handlers
+  const s  = k => v  => setF(p => ({ ...p, [k]: v }));
+  const se = k => e  => setF(p => ({ ...p, [k]: e.target.value }));
 
   const selStyle = { 
-    background: 'var(--surface2)', 
-    border: '1px solid var(--border)', 
-    borderRadius: 3, 
-    padding: '8px 10px', 
-    color: 'var(--text)', 
-    outline: 'none', 
-    fontSize: 13, 
-    fontFamily: 'IBM Plex Sans,sans-serif', 
-    width: '100%' 
-  };
-
-  const selStyleInline = { 
-    ...selStyle, 
-    width: '100%', 
-    padding: '7px 10px' 
+    background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 3, 
+    padding: '8px 10px', color: 'var(--text)', outline: 'none', 
+    fontSize: 13, fontFamily: 'IBM Plex Sans,sans-serif', width: '100%' 
   };
 
   return (
@@ -108,19 +89,19 @@ function VehicleForm({ initial = {}, onSave, onCancel, saving }) {
       
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
         <Field label="Type *">
-          <select value={f.type} onChange={e => handleChange('type', e.target.value)} style={selStyle}>
+          <select value={f.type} onChange={se('type')} style={selStyle}>
             <option value="new">New</option>
             <option value="used">Pre-owned</option>
           </select>
         </Field>
         <Field label="Brand *">
-          <select value={f.brand} onChange={e => { handleChange('brand', e.target.value); handleChange('model', ''); }} style={selStyle}>
+          <select value={f.brand} onChange={e => { se('brand')(e); s('model')(''); }} style={selStyle}>
             <option value="">Select brand</option>
             {BRANDS.map(b => <option key={b} value={b}>{b}</option>)}
           </select>
         </Field>
         <Field label="Model *">
-          <select value={f.model} onChange={e => handleChange('model', e.target.value)} style={selStyle}>
+          <select value={f.model} onChange={se('model')} style={selStyle}>
             <option value="">{f.brand ? 'Select model' : 'Brand first'}</option>
             {(MODELS[f.brand] || []).map(m => <option key={m} value={m}>{m}</option>)}
           </select>
@@ -128,18 +109,18 @@ function VehicleForm({ initial = {}, onSave, onCancel, saving }) {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <Field label="Variant"><input value={f.variant} onChange={e => handleChange('variant', e.target.value)} placeholder="STD / DLX…" /></Field>
-        <Field label="Color"><input value={f.color} onChange={e => handleChange('color', e.target.value)} placeholder="Pearl Black" /></Field>
-        <Field label="Chassis number *"><input value={f.chassis_number} onChange={e => handleChange('chassis_number', e.target.value)} placeholder="ME4JF502…" className="mono" /></Field>
-        <Field label="Engine number"><input value={f.engine_number} onChange={e => handleChange('engine_number', e.target.value)} placeholder="JF50E7…" className="mono" /></Field>
-        <Field label="Reg number"><input value={f.vehicle_number} onChange={e => handleChange('vehicle_number', e.target.value)} placeholder="KA01HH1234" className="mono" /></Field>
-        <Field label="Key number"><input value={f.key_number} onChange={e => handleChange('key_number', e.target.value)} placeholder="KY001" /></Field>
+        <Field label="Variant"><input value={f.variant} onChange={se('variant')} placeholder="STD / DLX…" /></Field>
+        <Field label="Color"><input value={f.color} onChange={se('color')} placeholder="Pearl Black" /></Field>
+        <Field label="Chassis number *"><input value={f.chassis_number} onChange={se('chassis_number')} placeholder="ME4JF502…" className="mono" /></Field>
+        <Field label="Engine number"><input value={f.engine_number} onChange={se('engine_number')} placeholder="JF50E7…" className="mono" /></Field>
+        <Field label="Reg number"><input value={f.vehicle_number} onChange={se('vehicle_number')} placeholder="KA01HH1234" className="mono" /></Field>
+        <Field label="Key number"><input value={f.key_number} onChange={se('key_number')} placeholder="KY001" /></Field>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 4 }}>
-        <Field label="Purchase price (₹)"><input type="number" value={f.purchase_price} onChange={e => handleChange('purchase_price', e.target.value)} placeholder="0" /></Field>
+        <Field label="Purchase price (₹)"><input type="number" value={f.purchase_price} onChange={se('purchase_price')} placeholder="0" /></Field>
         <Field label="Status *">
-          <select value={f.status} onChange={e => handleChange('status', e.target.value)} style={selStyle}>
+          <select value={f.status} onChange={se('status')} style={selStyle}>
             <option value="Instock">In Stock</option>
             <option value="Sold">Sold</option>
             <option value="Returned">Returned</option>
@@ -148,14 +129,14 @@ function VehicleForm({ initial = {}, onSave, onCancel, saving }) {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <Field label="Inbound Date"><input type="date" value={f.inbound_date} onChange={e => handleChange('inbound_date', e.target.value)} style={selStyleInline} /></Field>
-        <Field label="Location"><input value={f.location} onChange={e => handleChange('location', e.target.value)} placeholder="Warehouse / Showroom..." /></Field>
+        <Field label="Inbound Date"><input type="date" value={f.inbound_date} onChange={se('inbound_date')} style={{ ...selStyle, padding: '7px 10px' }} /></Field>
+        <Field label="Location"><input value={f.location} onChange={se('location')} placeholder="Warehouse / Showroom..." /></Field>
       </div>
 
       {f.status === 'Returned' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, padding: '12px', background: 'rgba(220,38,38,.05)', border: '1px dashed rgba(220,38,38,.3)', borderRadius: 4 }}>
-          <Field label="Return Date"><input type="date" value={f.outbound_date} onChange={e => handleChange('outbound_date', e.target.value)} style={selStyleInline} /></Field>
-          <Field label="Return Location / Vendor"><input value={f.outbound_location} onChange={e => handleChange('outbound_location', e.target.value)} placeholder="Returned to vendor..." /></Field>
+          <Field label="Return Date"><input type="date" value={f.outbound_date} onChange={se('outbound_date')} style={{ ...selStyle, padding: '7px 10px' }} /></Field>
+          <Field label="Return Location / Vendor"><input value={f.outbound_location} onChange={se('outbound_location')} placeholder="Returned to vendor..." /></Field>
         </div>
       )}
 
@@ -194,11 +175,13 @@ export default function VehiclesPage() {
     onSuccess: () => { qc.invalidateQueries(['vehicles']); qc.invalidateQueries(['vehicle-stats']); setShowAdd(false); toast.success('Vehicle added'); },
     onError:   e => toast.error(e?.response?.data?.detail || 'Failed'),
   });
+  
   const updateMut = useMutation({
     mutationFn: ({ id, d }) => vehiclesApi.update(id, d),
     onSuccess: () => { qc.invalidateQueries(['vehicles']); qc.invalidateQueries(['vehicle-stats']); setEditVeh(null); toast.success('Updated'); },
     onError:   e => toast.error(e?.response?.data?.detail || 'Failed'),
   });
+  
   const deleteMut = useMutation({
     mutationFn: id => vehiclesApi.delete(id),
     onSuccess: () => { qc.invalidateQueries(['vehicles']); qc.invalidateQueries(['vehicle-stats']); toast.success('Deleted'); },
