@@ -955,6 +955,7 @@ async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
         "payment_mode":   body.payment_mode or "Cash",
         "sold_by":        body.sold_by or current_user.get("name",""),
         "sale_date":      sale_date,
+        "status":         "pending",    # pending | delivered
         "notes":          body.notes or "",
         "hsrp_front":     body.hsrp_front or "",
         "hsrp_back":      body.hsrp_back or "",
