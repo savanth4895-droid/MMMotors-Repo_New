@@ -363,6 +363,7 @@ class CustomerCreate(BaseModel):
     address: Optional[str] = ""
     gstin:   Optional[str] = ""
     tags:    Optional[List[str]] = []
+    id_proof_file_id: Optional[str] = ""
 
 class CustomerUpdate(BaseModel):
     name:    Optional[str]
@@ -371,6 +372,7 @@ class CustomerUpdate(BaseModel):
     address: Optional[str]
     gstin:   Optional[str]
     tags:    Optional[List[str]]
+    id_proof_file_id: Optional[str] = None
 
 # ── Vehicles ──────────────────────────────────────────────────────────────────
 class VehicleCreate(BaseModel):
@@ -464,6 +466,7 @@ class ServiceJobCreate(BaseModel):
     check_in_date:  Optional[str] = ""
     estimated_delivery: Optional[str] = ""
     notes:          Optional[str] = ""
+    vehicle_photo_id: Optional[str] = ""
 
 class ServiceJobUpdate(BaseModel):
     status:         Optional[str]  # pending | in_progress | ready | delivered
@@ -472,6 +475,7 @@ class ServiceJobUpdate(BaseModel):
     delivery_date:  Optional[str]
     notes:          Optional[str]
     odometer_out:   Optional[int]
+    vehicle_photo_id: Optional[str] = None
 
 # ── Service Bills ─────────────────────────────────────────────────────────────
 class BillLineItem(BaseModel):
