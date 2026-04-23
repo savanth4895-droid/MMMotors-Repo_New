@@ -4,6 +4,7 @@ import { serviceApi, billsApi, customersApi } from '../api/client';
 import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError } from '../components/ui';
 import toast from 'react-hot-toast';
 import { useConfirm } from '../components/ConfirmModal';
+import FileUpload from '../components/FileUpload';
 
 const BRANDS = ['HERO','HONDA','BAJAJ','TVS','YAMAHA','SUZUKI','ROYAL ENFIELD','KTM','PIAGGIO','APRILIA','TRIUMPH'];
 const MODELS = {
@@ -27,8 +28,9 @@ const STATUS_STYLE = {
 };
 
 function sendWA(mobile, msg) {
-  if (!mobile) return;
-  window.open(`https://wa.me/91${mobile}?text=${encodeURIComponent(msg)}`, '_blank');
+  if (!mobile) return toast.error('No mobile number saved');
+  const cleanMobile = mobile.replace(/\D/g, '');
+  window.open(`https://wa.me/91${cleanMobile}?text=${encodeURIComponent(msg)}`, '_blank');
 }
 
 // ── GST Bill modal ───────────────────────────────────────────────────
@@ -125,6 +127,7 @@ function NewJobWizard({ onDone }) {
   const [selCust, setSelCust]   = useState(null);
   const [veh, setVeh]           = useState({ vehicle_number:'', brand:'', model:'', odometer_km:'', complaint:'', technician:'' });
   const [saving, setSaving]     = useState(false);
+  const [vehiclePhotoId, setVehiclePhotoId] = useState(null);
 
   const { data:custsData } = useQuery({
     queryKey:['cust-srch-svc', custSearch],
@@ -146,6 +149,7 @@ function NewJobWizard({ onDone }) {
         odometer_km:    parseInt(veh.odometer_km)||0,
         complaint:      veh.complaint,
         technician:     veh.technician,
+        vehicle_photo_id: vehiclePhotoId //
       });
       toast.success('Job card created');
       onDone();
@@ -214,6 +218,12 @@ function NewJobWizard({ onDone }) {
           <Field label="Complaint / work needed *">
             <textarea rows={3} value={veh.complaint} onChange={e=>setVeh(p=>({...p,complaint:e.target.value}))} placeholder="Describe the issue or work required…" />
           </Field>
+          <div style={{ marginTop: '8px' }}>
+            <FileUpload 
+              label="Upload Vehicle Condition Photo (Optional)" 
+              onUploadSuccess={(fileId) => setVehiclePhotoId(fileId)} 
+            />
+          </div>
           <div style={{ display:'flex', justifyContent:'space-between', gap:8 }}>
             <GhostBtn onClick={()=>setStep(1)}>← Back</GhostBtn>
             <Btn disabled={!veh.vehicle_number||!veh.brand||!veh.complaint||saving} onClick={handleCreate}>
@@ -332,7 +342,7 @@ export default function ServicePage({ user }) {
                     <td style={{ padding:'11px 20px' }}>
                       <div style={{ display:'flex', gap:6, alignItems:'center' }}>
                         {j.status==='ready' && (
-                          <button onClick={()=>sendWA(j.customer_mobile,`Dear ${j.customer_name}, your vehicle ${j.vehicle_number} is ready for pickup at MM Motors. Job: ${j.job_number}`)}
+                          <button onClick={()=>sendWA(j.customer_mobile,`Dear ${j.customer_name}, your vehicle ${j.vehicle_number} is ready for pickup at MM Motors. Job: ${j.job_number}.${amountText} Please contact us if you have any questions!`)}
                             style={{ padding:'5px 10px', background:'rgba(22,163,74,.1)', border:'1px solid rgba(22,163,74,.3)', borderRadius:3, color:'var(--green)', cursor:'pointer', fontSize:10, fontFamily:'IBM Plex Sans,sans-serif' }}>
                             Notify
                           </button>
