@@ -966,8 +966,7 @@ async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
         
         "created_at":     datetime.utcnow().isoformat(),
     }
-    }
-
+  
     result = await db.sales.insert_one(doc)
 
     # Mark vehicle as sold
