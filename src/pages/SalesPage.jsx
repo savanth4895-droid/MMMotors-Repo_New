@@ -291,11 +291,11 @@ export default function SalesPage() {
     queryFn: () => salesApi.list({ search: search||undefined, limit:200 }).then(r=>r.data),
   });
 
-  const createMut = useMutation({
+const createMut = useMutation({
     mutationFn: async (d) => {
       let payload = { ...d };
       
-      // Auto-create a new customer in the database if one wasn't selected from the dropdown
+      // Auto-create a new customer in the database if one wasn't selected
       if (!payload.customer_id) {
         const custRes = await customersApi.create({
           name: payload.customer_name,
@@ -310,17 +310,33 @@ export default function SalesPage() {
     onSuccess: () => { 
       qc.invalidateQueries(['sales']); 
       qc.invalidateQueries(['sales-stats']); 
-      qc.invalidateQueries(['customers']); // Refresh customers list
+      qc.invalidateQueries(['customers']); // Instantly refresh the customer dropdown
       setShowAdd(false); 
       toast.success('Sale recorded'); 
     },
-    onError: e => toast.error(e?.response?.data?.detail || 'Failed'),
+    onError: e => {
+      // Unmasks the real error from the backend instead of just saying "Failed"
+      const errorMsg = typeof e?.response?.data?.detail === 'string' 
+        ? e.response.data.detail 
+        : JSON.stringify(e?.response?.data) || e.message || 'Failed';
+      toast.error(`Error: ${errorMsg}`);
+    }
   });
 
   const updateMut = useMutation({
     mutationFn: ({id,d}) => salesApi.update(id,d),
-    onSuccess: () => { qc.invalidateQueries(['sales']); qc.invalidateQueries(['sales-stats']); setEditSale(null); toast.success('Updated'); },
-    onError:   e => toast.error(e?.response?.data?.detail||'Failed'),
+    onSuccess: () => { 
+      qc.invalidateQueries(['sales']); 
+      qc.invalidateQueries(['sales-stats']); 
+      setEditSale(null); 
+      toast.success('Updated'); 
+    },
+    onError: e => {
+      const errorMsg = typeof e?.response?.data?.detail === 'string' 
+        ? e.response.data.detail 
+        : JSON.stringify(e?.response?.data) || e.message || 'Failed';
+      toast.error(`Error: ${errorMsg}`);
+    }
   });
 
   const deleteMut = useMutation({
