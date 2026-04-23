@@ -1239,7 +1239,7 @@ async def create_service_bill(body: ServiceBillCreate, current_user=Depends(veri
     # Mark job as ready
     await db.service_jobs.update_one(
         {"_id": obj_id(body.job_id)},
-        {"$set": {"status": "ready", "bill_number": doc["bill_number"]}}
+        {"$set": {"status": "ready", "bill_number": doc["bill_number"], "grand_total": totals["grand_total"]}}
     )
     doc["id"] = str(result.inserted_id)
     doc.pop("_id", None)
