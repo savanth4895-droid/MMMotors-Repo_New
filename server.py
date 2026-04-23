@@ -407,17 +407,16 @@ class VehicleUpdate(BaseModel):
     
 # ── Sales ─────────────────────────────────────────────────────────────────────
 class NomineeInfo(BaseModel):
-    name:     Optional[str] = None
-    relation: Optional[str] = None
-    age:      Optional[str] = None
-    number:   Optional[str] = None
+    name:     Optional[str] = ""
+    relation: Optional[str] = ""
+    age:      Optional[str] = ""
+    number:   Optional[str] = ""  # <-- Added missing number field
 
 class SaleCreate(BaseModel):
     customer_id:       str
     vehicle_id:        str
     vehicle_number:    Optional[str] = ""
-    total_amount:      Optional[float] = None
-    other_label:       Optional[str]   = ""
+    sale_price:        Optional[float] = 0
     finance_type:      Optional[str]   = "cash"
     financier:         Optional[str]   = ""
     loan_amount:       Optional[float] = 0
@@ -426,6 +425,7 @@ class SaleCreate(BaseModel):
     sold_by:           Optional[str]   = ""
     sale_date:         Optional[str]   = ""
     notes:             Optional[str]   = ""
+    # ── NEW FIELDS TO PREVENT CRASHES ──
     care_of:           Optional[str]   = ""
     hsrp_front:        Optional[str]   = ""
     hsrp_back:         Optional[str]   = ""
@@ -435,38 +435,32 @@ class SaleCreate(BaseModel):
     hsrp_notes:        Optional[str]   = ""
 
 class SaleUpdate(BaseModel):
-    # Status & logistics
-    status:            Optional[str]   = None   # pending | delivered
+    status:            Optional[str]   = None
     delivery_date:     Optional[str]   = None
     vehicle_number:    Optional[str]   = None
     payment_mode:      Optional[str]   = None
     notes:             Optional[str]   = None
-    # Customer fields
     customer_name:     Optional[str]   = None
     customer_mobile:   Optional[str]   = None
     customer_address:  Optional[str]   = None
-    care_of:           Optional[str]   = None
-    # Vehicle swap
     vehicle_id:        Optional[str]   = None
-    # Financials
     total_amount:      Optional[float] = None
     sale_price:        Optional[float] = None
     finance_type:      Optional[str]   = None
     financier:         Optional[str]   = None
     loan_amount:       Optional[float] = None
-    # Nominee
     nominee:           Optional[NomineeInfo] = None
-    # Date
     sale_date:         Optional[str]   = None
     sold_by:           Optional[str]   = None
-    # HSRP
+    # ── NEW FIELDS TO PREVENT CRASHES ──
+    care_of:           Optional[str]   = None
     hsrp_front:        Optional[str]   = None
     hsrp_back:         Optional[str]   = None
     hsrp_front_id:     Optional[str]   = None
     hsrp_back_id:      Optional[str]   = None
     hsrp_date:         Optional[str]   = None
     hsrp_notes:        Optional[str]   = None
-
+  
 # ── Service Jobs ──────────────────────────────────────────────────────────────
 class ServiceJobCreate(BaseModel):
     customer_id:    str
