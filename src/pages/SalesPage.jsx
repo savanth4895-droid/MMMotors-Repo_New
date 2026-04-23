@@ -119,7 +119,8 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
   const inpStyle = { background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:3, padding:'8px 10px', color:'var(--text)', outline:'none', fontSize:13, width:'100%' };
 
   const handleSave = () => {
-    if (!f.customer_id) return toast.error('Please select a customer in Step 1');
+    // Check for name/mobile instead of strictly requiring a customer_id
+    if (!f.customer_name || !f.customer_mobile) return toast.error('Please provide Customer Name and Mobile in Step 1');
     if (!f.vehicle_id) return toast.error('Please select a vehicle in Step 2');
 
     const payload = {
@@ -131,7 +132,7 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
         number: f.nominee_number
       },
       sale_price: parseFloat(f.sale_price) || 0,
-      total_amount: parseFloat(f.sale_price) || 0 // Automatically sync total amount with sale price
+      total_amount: parseFloat(f.sale_price) || 0 
     };
     onSave(payload);
   };
@@ -156,24 +157,26 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
       {/* ── Step 1: Customer ── */}
       {step === 1 && (
         <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
-          <Field label="Select Existing Customer *">
+          <Field label="Select Existing Customer (Optional)">
             <select value={f.customer_id} onChange={e => {
               const c = customers.find(x => x.id === e.target.value);
+              // If selected, auto-fill. If cleared, wipe the ID so a new one is created.
               if (c) setF(p => ({ ...p, customer_id: c.id, customer_name: c.name, customer_mobile: c.mobile, customer_address: c.address }));
+              else setF(p => ({ ...p, customer_id: '' }));
             }} style={inpStyle}>
-              <option value="">-- Choose Customer --</option>
+              <option value="">-- Create New Customer --</option>
               {customers.map(c => <option key={c.id} value={c.id}>{c.name} ({c.mobile})</option>)}
             </select>
           </Field>
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop: 8 }}>
-            <Field label="Name (Auto-filled)"><input value={f.customer_name} disabled style={{...inpStyle, opacity: 0.6}} /></Field>
+            <Field label="Full Name *"><input value={f.customer_name} onChange={s('customer_name')} placeholder="Customer Name" style={inpStyle} /></Field>
             <Field label="C/O (Care Of)"><input value={f.care_of} onChange={s('care_of')} placeholder="Father/Husband Name" style={inpStyle} /></Field>
-            <Field label="Mobile Number (Auto-filled)"><input value={f.customer_mobile} disabled style={{...inpStyle, opacity: 0.6}} /></Field>
-            <Field label="Address (Auto-filled)"><textarea value={f.customer_address} disabled rows={2} style={{...inpStyle, gridColumn: 'span 2', opacity: 0.6 }} /></Field>
+            <Field label="Mobile Number *"><input value={f.customer_mobile} onChange={s('customer_mobile')} placeholder="10-digit mobile" style={inpStyle} /></Field>
+            <Field label="Address"><textarea value={f.customer_address} onChange={s('customer_address')} rows={2} placeholder="Full address" style={{...inpStyle, gridColumn: 'span 2' }} /></Field>
           </div>
         </div>
       )}
-
+      
       {/* ── Step 2: Vehicle ── */}
       {step === 2 && (
         <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
@@ -289,9 +292,29 @@ export default function SalesPage() {
   });
 
   const createMut = useMutation({
-    mutationFn: d => salesApi.create(d),
-    onSuccess: () => { qc.invalidateQueries(['sales']); qc.invalidateQueries(['sales-stats']); setShowAdd(false); toast.success('Sale recorded'); },
-    onError:   e => toast.error(e?.response?.data?.detail||'Failed'),
+    mutationFn: async (d) => {
+      let payload = { ...d };
+      
+      // Auto-create a new customer in the database if one wasn't selected from the dropdown
+      if (!payload.customer_id) {
+        const custRes = await customersApi.create({
+          name: payload.customer_name,
+          mobile: payload.customer_mobile,
+          address: payload.customer_address
+        });
+        payload.customer_id = custRes.data.id;
+      }
+      
+      return salesApi.create(payload);
+    },
+    onSuccess: () => { 
+      qc.invalidateQueries(['sales']); 
+      qc.invalidateQueries(['sales-stats']); 
+      qc.invalidateQueries(['customers']); // Refresh customers list
+      setShowAdd(false); 
+      toast.success('Sale recorded'); 
+    },
+    onError: e => toast.error(e?.response?.data?.detail || 'Failed'),
   });
 
   const updateMut = useMutation({
