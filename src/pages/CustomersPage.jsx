@@ -4,6 +4,7 @@ import { customersApi } from '../api/client';
 import { Btn, GhostBtn, Field, Avatar, Skeleton, Empty, ApiError } from '../components/ui';
 import toast from 'react-hot-toast';
 import { useConfirm } from '../components/ConfirmModal';
+import { FileUpload } from '../components/FileUpload';
 
 const TAG_PILL = { VIP:'pill-amber', Corporate:'pill-blue', Loyal:'pill-green' };
 
@@ -15,6 +16,7 @@ function sendWA(mobile, msg) {
 // ── Add customer form ────────────────────────────────────────────────
 function CustomerForm({ initial = {}, onSave, onCancel, saving }) {
   const [f, setF] = useState({ name:'', mobile:'', email:'', address:'', gstin:'', ...initial });
+  const [idProofFileId, setIdProofFileId] = useState(null);
   const s = k => e => setF(p => ({ ...p, [k]: e.target.value }));
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:14, maxWidth:540 }}>
@@ -27,9 +29,17 @@ function CustomerForm({ initial = {}, onSave, onCancel, saving }) {
       <Field label="Address">
         <textarea value={f.address} onChange={s('address')} rows={2} placeholder="Full address" />
       </Field>
+      <div style={{ marginTop: '8px' }}>
+        <FileUpload 
+          label="Upload Aadhar / ID Proof (Optional)" 
+          onUploadSuccess={(fileId) => setIdProofFileId(fileId)} 
+        />
+      </div>
+      
       <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
         <GhostBtn onClick={onCancel}>Cancel</GhostBtn>
-        <Btn disabled={!f.name || !f.mobile || saving} onClick={() => onSave(f)}>
+        {/* NEW: Merge the file ID into the save payload */}
+        <Btn disabled={!f.name || !f.mobile || saving} onClick={() => onSave({ ...f, id_proof_file_id: idProofFileId })}>
           {saving ? 'Saving…' : 'Save customer'}
         </Btn>
       </div>
