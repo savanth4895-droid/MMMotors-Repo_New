@@ -7,21 +7,63 @@ import { useConfirm } from '../components/ConfirmModal';
 
 const BRANDS = ['HERO','HONDA','BAJAJ','TVS','YAMAHA','SUZUKI','ROYAL ENFIELD','KTM','PIAGGIO','APRILIA','TRIUMPH'];
 const MODELS = {
-  HERO:['Splendor+','HF Deluxe','Passion Pro','Glamour','Xtreme 160R','Xpulse 200'],
-  HONDA:['Activa 6G','Shine','Unicorn','SP125','Hornet 2.0','CB350'],
-  BAJAJ:['Pulsar 150','Pulsar NS200','Platina','CT100','Avenger 220','Dominar 400'],
-  TVS:['Jupiter','Ntorq 125','Apache RTR 160','Raider 125','XL100','iQube'],
-  YAMAHA:['FZ-S','MT-15','R15 V4','Fascino 125','Ray ZR','FZ-X'],
-  SUZUKI:['Access 125','Burgman Street','Gixxer SF','Avenis 125'],
-  'ROYAL ENFIELD':['Classic 350','Meteor 350','Hunter 350','Bullet 350','Himalayan'],
-  KTM:['Duke 200','Duke 390','RC 200','RC 390'],
-  PIAGGIO:['Vespa SXL 150','Vespa VXL 125'],
-  APRILIA:['SR 160','SR 125'],
-  TRIUMPH:['Speed 400','Scrambler 400 X'],
+  const MODELS = {
+  HERO: [
+    'Splendor Plus', 'Splendor Plus Xtec', 'Super Splendor', 'HF Deluxe', 
+    'Passion Plus', 'Passion Xtec', 'Glamour', 'Glamour Xtec', 
+    'Xtreme 125R', 'Xtreme 160R', 'Xtreme 160R 4V', 'Xpulse 200 4V', 
+    'Xpulse 200T 4V', 'Karizma XMR', 'Destini 125 Xtec', 'Pleasure Plus', 'Xoom 110'
+  ],
+  HONDA: [
+    'Activa 6G', 'Activa 125', 'Shine 100', 'Shine 125', 'SP 125', 'SP 160', 
+    'Unicorn', 'Livo', 'Hornet 2.0', 'CB200X', 'CB300F', 'CB300R', 
+    'Hness CB350', 'CB350RS', 'CB350', 'Dio', 'Dio 125'
+  ],
+  BAJAJ: [
+    'Pulsar 125', 'Pulsar 150', 'Pulsar N150', 'Pulsar N160', 'Pulsar NS160', 
+    'Pulsar NS200', 'Pulsar N250', 'Pulsar NS400Z', 'Platina 100', 'Platina 110', 
+    'CT 110X', 'Avenger Street 160', 'Avenger Cruise 220', 'Dominar 250', 
+    'Dominar 400', 'Chetak'
+  ],
+  TVS: [
+    'Jupiter 110', 'Jupiter 125', 'Ntorq 125', 'Apache RTR 160', 'Apache RTR 160 4V', 
+    'Apache RTR 180', 'Apache RTR 200 4V', 'Apache RR 310', 'Apache RTR 310', 
+    'Raider 125', 'XL100', 'Sport', 'Radeon', 'Ronin', 'iQube', 'Zest 110'
+  ],
+  YAMAHA: [
+    'FZ FI V3', 'FZ-S FI V3', 'FZ-S FI V4', 'FZ-X', 'MT-15 V2', 
+    'R15 V4', 'R15S', 'Fascino 125', 'Ray ZR 125', 'Aerox 155'
+  ],
+  SUZUKI: [
+    'Access 125', 'Burgman Street', 'Avenis 125', 'Gixxer 155', 'Gixxer SF 155', 
+    'Gixxer 250', 'Gixxer SF 250', 'V-Strom SX', 'Hayabusa'
+  ],
+  ROYAL ENFIELD: [
+    'Classic 350', 'Bullet 350', 'Hunter 350', 'Meteor 350', 'Himalayan 450', 
+    'Scram 411', 'Interceptor 650', 'Continental GT 650', 'Super Meteor 650', 
+    'Shotgun 650', 'Guerrilla 450'
+  ],
+  KTM: [
+    '125 Duke', '200 Duke', '250 Duke', '390 Duke', 
+    'RC 125', 'RC 200', 'RC 390', 
+    '250 Adventure', '390 Adventure'
+  ],
+  PIAGGIO: [
+    'Vespa ZX 125', 'Vespa VXL 125', 'Vespa SXL 125', 
+    'Vespa VXL 150', 'Vespa SXL 150', 'Vespa Dual'
+  ],
+  APRILIA: [
+    'SR 125', 'SR 160', 'SXR 125', 'SXR 160', 'RS 457'
+  ],
+  TRIUMPH: [
+    'Speed 400', 'Scrambler 400 X', 'Trident 660', 'Street Triple 765', 
+    'Tiger Sport 660', 'Tiger 900', 'Bonneville T100', 'Bonneville T120'
+  ]
 };
+// Kept for backward compatibility with stats
 const STATUS_STYLE = {
   in_stock:   { color:'#4ade80', bg:'rgba(74,222,128,.1)',   border:'rgba(74,222,128,.25)',   label:'In stock' },
-  in_service: { color:'#f0c040', bg:'rgba(240,192,64,.1)',   border:'rgba(240,192,64,.25)',   label:'In service' },
+  returned: { color:'#f0c040', bg:'rgba(240,192,64,.1)',   border:'rgba(240,192,64,.25)',   label:'Returned' },
   sold:       { color:'#6b6478', bg:'rgba(107,100,120,.1)',  border:'rgba(107,100,120,.25)',  label:'Sold' },
 };
 
@@ -43,7 +85,6 @@ function VehicleForm({ initial={}, onSave, onCancel, saving }) {
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:14, maxWidth:640 }}>
       
-      {/* Row 1: Type, Brand, Model */}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12 }}>
         <Field label="Type *">
           <select value={f.type} onChange={se('type')} style={selStyle}>
@@ -65,7 +106,6 @@ function VehicleForm({ initial={}, onSave, onCancel, saving }) {
         </Field>
       </div>
 
-      {/* Row 2: Standard Vehicle Details */}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
         <Field label="Variant"><input value={f.variant}        onChange={se('variant')}        placeholder="STD / DLX…" /></Field>
         <Field label="Color">  <input value={f.color}          onChange={se('color')}          placeholder="Pearl Black" /></Field>
@@ -75,9 +115,7 @@ function VehicleForm({ initial={}, onSave, onCancel, saving }) {
         <Field label="Key number">     <input value={f.key_number}     onChange={se('key_number')}     placeholder="KY001" /></Field>
       </div>
 
-      {/* Row 3: Pricing & Status */}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop: 4 }}>
-        <Field label="Purchase price (₹)"><input type="number" value={f.purchase_price} onChange={se('purchase_price')} placeholder="0" /></Field>
         <Field label="Status *">
           <select value={f.status} onChange={se('status')} style={selStyle}>
             <option value="Instock">In Stock</option>
@@ -87,13 +125,11 @@ function VehicleForm({ initial={}, onSave, onCancel, saving }) {
         </Field>
       </div>
 
-      {/* Row 4: Logistics */}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
         <Field label="Inbound Date"><input type="date" value={f.inbound_date} onChange={se('inbound_date')} style={{ width: '100%', ...selStyle, padding: '7px 10px' }}/></Field>
         <Field label="Location"><input value={f.location} onChange={se('location')} placeholder="Warehouse / Showroom..." /></Field>
       </div>
 
-      {/* Row 5: Outbound (Conditional - only shows if Returned is selected) */}
       {f.status === 'Returned' && (
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, padding: '12px', background: 'rgba(220,38,38,.05)', border: '1px dashed rgba(220,38,38,.3)', borderRadius: 4 }}>
           <Field label="Return Date"><input type="date" value={f.outbound_date} onChange={se('outbound_date')} style={{ width: '100%', ...selStyle, padding: '7px 10px' }}/></Field>
@@ -103,7 +139,6 @@ function VehicleForm({ initial={}, onSave, onCancel, saving }) {
 
       <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop: 8 }}>
         <GhostBtn onClick={onCancel}>Cancel</GhostBtn>
-        {/* Make sure we pass purchase_price as a float to the backend */}
         <Btn disabled={!f.brand||!f.chassis_number||saving} onClick={() => onSave({ ...f, purchase_price: parseFloat(f.purchase_price)||0 })}>
           {saving?'Saving…':'Save vehicle'}
         </Btn>
@@ -209,7 +244,11 @@ export default function VehiclesPage() {
       </div>
 
       {/* table */}
-<table style={{ width:'100%', borderCollapse:'collapse' }}>
+      {error ? <div style={{ padding:20 }}><ApiError error={error}/></div>
+        : isLoading ? <div style={{ padding:20, display:'flex', flexDirection:'column', gap:8 }}>{[1,2,3,4,5].map(i=><Skeleton key={i} h={44}/>)}</div>
+        : vehicles.length===0 ? <Empty message="No vehicles found" />
+        : (
+          <table style={{ width:'100%', borderCollapse:'collapse' }}>
             <thead>
               <tr style={{ borderBottom:'1px solid var(--border)' }}>
                 {['Brand','Model / Type','Chassis / Engine','Color / Key', 'Purchase (₹)', 'Logistics','Status',''].map(h=>(
@@ -219,7 +258,6 @@ export default function VehiclesPage() {
             </thead>
             <tbody>
               {vehicles.map(v => {
-                // Determine status badge styling based on new/old text statuses
                 let sColor, sBg, sBorder, sLabel = v.status || 'Instock';
                 if (v.status === 'Sold' || v.status === 'sold') { sColor = 'var(--dim)'; sBg = 'rgba(107,100,120,.1)'; sBorder = 'rgba(107,100,120,.25)'; sLabel = 'Sold'; }
                 else if (v.status === 'Returned') { sColor = 'var(--red)'; sBg = 'rgba(220,38,38,.1)'; sBorder = 'rgba(220,38,38,.25)'; sLabel = 'Returned'; }
@@ -228,11 +266,7 @@ export default function VehiclesPage() {
 
                 return (
                   <tr key={v.id} style={{ borderBottom:'1px solid var(--border)' }}>
-                    
-                    {/* 1. Brand */}
                     <td style={{ padding:'10px 16px', fontSize:11, color:'var(--muted)', letterSpacing:'.04em' }}>{v.brand}</td>
-                    
-                    {/* 2. Model, Variant & Type Badge */}
                     <td style={{ padding:'10px 16px' }}>
                       <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:2 }}>
                         <div style={{ fontSize:12, fontWeight:500 }}>{v.model}</div>
@@ -246,38 +280,26 @@ export default function VehiclesPage() {
                       </div>
                       <div style={{ fontSize:10, color:'var(--dim)' }}>{v.variant || '—'}</div>
                     </td>
-
-                    {/* 3. Chassis & Engine */}
                     <td className="mono" style={{ padding:'10px 16px' }}>
                       <div style={{ fontSize:10, color:'var(--text)' }}>{v.chassis_number?.slice(-12) || '—'}</div>
                       <div style={{ fontSize:9, color:'var(--dim)', marginTop:2 }}>{v.engine_number || '—'}</div>
                     </td>
-
-                    {/* 4. Color & Key */}
                     <td style={{ padding:'10px 16px' }}>
                       <div style={{ fontSize:11, color:'var(--muted)' }}>{v.color || '—'}</div>
                       <div className="mono" style={{ fontSize:10, color:'var(--dim)', marginTop:2 }}>Key: {v.key_number || '—'}</div>
                     </td>
-
-                    {/* 5. Purchase Price */}
                     <td className="mono" style={{ padding:'10px 16px', fontSize:11, color: 'var(--muted)' }}>
                       ₹{v.purchase_price?.toLocaleString('en-IN') || '0'}
                     </td>
-
-                    {/* 6. Logistics (Inbound/Location) */}
                     <td style={{ padding:'10px 16px' }}>
                       <div style={{ fontSize:11, color:'var(--text)' }}>{v.inbound_date || '—'}</div>
                       <div style={{ fontSize:10, color:'var(--dim)', marginTop:2 }}>{v.location || '—'}</div>
                     </td>
-
-                    {/* 7. Status */}
                     <td style={{ padding:'10px 16px' }}>
                       <span style={{ fontSize:9, padding:'3px 8px', borderRadius:2, fontWeight:500, color:sColor, background:sBg, border:`1px solid ${sBorder}` }}>
                         {sLabel}
                       </span>
                     </td>
-
-                    {/* 8. Actions */}
                     <td style={{ padding:'10px 16px' }}>
                       <div style={{ display:'flex', gap:6 }}>
                         <GhostBtn sm onClick={()=>setEditVeh(v)}>Edit</GhostBtn>
