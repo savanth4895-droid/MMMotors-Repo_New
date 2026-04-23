@@ -469,12 +469,12 @@ class ServiceJobCreate(BaseModel):
     vehicle_photo_id: Optional[str] = ""
 
 class ServiceJobUpdate(BaseModel):
-    status:         Optional[str]  # pending | in_progress | ready | delivered
-    technician:     Optional[str]
-    estimated_delivery: Optional[str]
-    delivery_date:  Optional[str]
-    notes:          Optional[str]
-    odometer_out:   Optional[int]
+    status:         Optional[str] = None # pending | in_progress | ready | delivered
+    technician:     Optional[str] = None
+    estimated_delivery: Optional[str] = None
+    delivery_date:  Optional[str] = None
+    notes:          Optional[str] = None
+    odometer_out:   Optional[int] = None
     vehicle_photo_id: Optional[str] = None
 
 # ── Service Bills ─────────────────────────────────────────────────────────────
