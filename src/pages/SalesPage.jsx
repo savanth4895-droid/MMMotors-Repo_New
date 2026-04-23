@@ -4,12 +4,13 @@ import { salesApi, customersApi, vehiclesApi } from '../api/client';
 import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError } from '../components/ui';
 import toast from 'react-hot-toast';
 import { useConfirm } from '../components/ConfirmModal';
+import FileUpload from '../components/FileUpload';
 
-const BRANDS = ['HERO','HONDA','BAJAJ','TVS','YAMAHA','SUZUKI','ROYAL ENFIELD','KTM','PIAGGIO','APRILIA','TRIUMPH'];
-
+// ── Helpers ──────────────────────────────────────────────────────────
 function sendWA(mobile, msg) {
-  if (!mobile) return;
-  window.open(`https://wa.me/91${mobile}?text=${encodeURIComponent(msg)}`, '_blank');
+  if (!mobile) return toast.error('No mobile number saved');
+  const cleanMobile = String(mobile).replace(/\D/g, '');
+  window.open(`https://wa.me/91${cleanMobile}?text=${encodeURIComponent(msg)}`, '_blank');
 }
 
 // ── Invoice modal ────────────────────────────────────────────────────
@@ -57,7 +58,6 @@ function InvoiceModal({ sale, onClose }) {
           <button onClick={onClose} style={{ background:'transparent', border:'none', color:'#6b6460', cursor:'pointer', fontSize:20 }}>×</button>
         </div>
         
-        {/* Scrollable area for the long list of fields */}
         <div style={{ padding:20, display:'flex', flexDirection:'column', gap:8, overflowY:'auto' }}>
           {[
             ['Sales Date',    sale.sale_date || '—'],
@@ -95,199 +95,165 @@ function InvoiceModal({ sale, onClose }) {
   );
 }
 
-// ── New sale wizard ──────────────────────────────────────────────────
-function NewSaleWizard({ onDone }) {
-  const [step, setStep]           = useState(1);
-  const [custMode, setCustMode]   = useState('search');
-  const [custSearch, setCustSearch] = useState('');
-  const [selCust, setSelCust]     = useState(null);
-  const [newCust, setNewCust]     = useState({ name:'', mobile:'', address:'', careOf:'' });
-  const [vehSearch, setVehSearch] = useState('');
-  const [brandF, setBrandF]       = useState('');
-  const [selVeh, setSelVeh]       = useState(null);
-  const [pricing, setPricing]     = useState({ sale_price:'', discount:'0', insurance:'0', rto:'0', payment_mode:'Cash', financier:'', vehicle_number:'', sold_by:'' });
-  const [invoice, setInvoice]     = useState(null);
-  const [saving, setSaving]       = useState(false);
+// ── Sale Wizard Form ────────────────────────────────────────────────
+function SaleForm({ initial = {}, onSave, onCancel, saving }) {
+  const [step, setStep] = useState(1);
+  
+  // Fetch databases for easy selection
+  const { data: custData } = useQuery({ queryKey:['customers'], queryFn: () => customersApi.list({limit:500}).then(r=>r.data) });
+  const { data: vehData } = useQuery({ queryKey:['vehicles'], queryFn: () => vehiclesApi.list({limit:500}).then(r=>r.data) });
+  
+  const customers = Array.isArray(custData) ? custData : [];
+  const vehicles = Array.isArray(vehData) ? vehData.filter(v => v.status === 'Instock' || v.status === 'in_stock' || v.id === initial.vehicle_id) : [];
 
-  const { data:custsData } = useQuery({
-    queryKey:['cust-srch', custSearch],
-    queryFn: ()=>customersApi.list({ search:custSearch, limit:20 }).then(r=>r.data),
-    enabled: custSearch.length>1,
-  });
-  const { data:vehsData } = useQuery({
-    queryKey:['vehs-avail', vehSearch, brandF],
-    queryFn: ()=>vehiclesApi.list({ status:'in_stock', search:vehSearch||undefined, brand:brandF||undefined, limit:100 }).then(r=>r.data),
+  const [f, setF] = useState({
+    customer_id: '', customer_name: '', care_of: '', customer_mobile: '', customer_address: '',
+    vehicle_id: '', vehicle_brand: '', vehicle_model: '', vehicle_variant: '', vehicle_color: '', chassis_number: '', engine_number: '',
+    nominee_name: initial?.nominee?.name || '', nominee_relation: initial?.nominee?.relation || '', nominee_age: initial?.nominee?.age || '', nominee_number: initial?.nominee?.number || '',
+    sale_date: new Date().toISOString().split('T')[0], sale_price: '', payment_mode: 'Cash', financier: '', sold_by: '', notes: '',
+    vehicle_number: '', hsrp_front_id: null, hsrp_back_id: null, hsrp_date: '',
+    ...initial
   });
 
-  const custs = Array.isArray(custsData)?custsData:[];
-  const vehs  = Array.isArray(vehsData)?vehsData:[];
-  const totalAmt = (parseFloat(pricing.sale_price)||0)-(parseFloat(pricing.discount)||0)+(parseFloat(pricing.insurance)||0)+(parseFloat(pricing.rto)||0);
+  const s = k => e => setF(p => ({ ...p, [k]: e.target.value }));
+  const inpStyle = { background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:3, padding:'8px 10px', color:'var(--text)', outline:'none', fontSize:13, width:'100%' };
 
-  const handleCreate = async () => {
-    setSaving(true);
-    try {
-      let custId = selCust?.id;
-      if (!custId) {
-        const r = await customersApi.create({ name:newCust.name, mobile:newCust.mobile, address:newCust.address, care_of:newCust.careOf });
-        custId = r.data.id;
-      }
-      const res = await salesApi.create({
-        customer_id:    custId,
-        vehicle_id:     selVeh.id,
-        sale_price:     parseFloat(pricing.sale_price)||0,
-        discount:       parseFloat(pricing.discount)||0,
-        insurance:      parseFloat(pricing.insurance)||0,
-        rto:            parseFloat(pricing.rto)||0,
-        vehicle_number: pricing.vehicle_number,
-        payment_mode:   pricing.payment_mode,
-        financier:      pricing.financier,
-        sold_by:        pricing.sold_by,
-      });
-      setInvoice(res.data);
-      setStep(4);
-      toast.success(`Invoice ${res.data.invoice_number} created`);
-    } catch(e) {
-      toast.error(e?.response?.data?.detail||'Failed');
-    } finally {
-      setSaving(false);
-    }
+  const handleSave = () => {
+    if (!f.customer_id) return toast.error('Please select a customer in Step 1');
+    if (!f.vehicle_id) return toast.error('Please select a vehicle in Step 2');
+
+    const payload = {
+      ...f,
+      nominee: {
+        name: f.nominee_name,
+        relation: f.nominee_relation,
+        age: f.nominee_age,
+        number: f.nominee_number
+      },
+      sale_price: parseFloat(f.sale_price) || 0,
+      total_amount: parseFloat(f.sale_price) || 0 // Automatically sync total amount with sale price
+    };
+    onSave(payload);
   };
 
-  const STEPS = ['Customer','Vehicle','Pricing','Done'];
-  const selStyle = { background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:3, padding:'8px 10px', color:'var(--text)', outline:'none', fontSize:13, fontFamily:'IBM Plex Sans,sans-serif', width:'100%' };
-
   return (
-    <div style={{ maxWidth:680, padding:24 }}>
-      {/* Step indicator */}
-      <div style={{ display:'flex', borderBottom:'1px solid var(--border)', marginBottom:24 }}>
-        {STEPS.map((l,i)=>{
-          const n=i+1; const past=step>n; const active=step===n;
-          return (
-            <div key={l} onClick={()=>n<step&&setStep(n)} style={{ flex:1, padding:'10px 0', textAlign:'center', fontSize:10, letterSpacing:'.07em', cursor:n<step?'pointer':'default', borderBottom:active?'2px solid var(--accent)':'2px solid transparent', color:active?'var(--accent)':past?'var(--text)':'var(--dim)', fontWeight:active?600:400, textTransform:'uppercase' }}>
-              {past?'✓ ':''}{l}
-            </div>
-          );
-        })}
+    <div style={{ display:'flex', flexDirection:'column', gap:14, maxWidth:700 }}>
+      
+      {/* ── Tabs ── */}
+      <div style={{ display:'flex', borderBottom:'1px solid var(--border)', marginBottom:10, overflowX: 'auto' }}>
+        {['CUSTOMER', 'VEHICLE', 'NOMINEE', 'PRICING', 'HSRP'].map((t, i) => (
+          <div key={t} onClick={() => setStep(i+1)} 
+            style={{ 
+              padding:'10px 20px', fontSize:11, fontWeight:600, cursor:'pointer', whiteSpace: 'nowrap',
+              color: step === i+1 ? 'var(--accent)' : 'var(--muted)', 
+              borderBottom: step === i+1 ? '2px solid var(--accent)' : '2px solid transparent' 
+            }}>
+            {t}
+          </div>
+        ))}
       </div>
 
-      {/* Step 1 — Customer */}
-      {step===1 && (
-        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-          <div style={{ display:'flex', gap:8 }}>
-            {['search','new'].map(m=>(
-              <button key={m} onClick={()=>setCustMode(m)} style={{ padding:'7px 14px', background:custMode===m?'var(--surface2)':'transparent', border:`1px solid ${custMode===m?'var(--accent)':'var(--border)'}`, borderRadius:3, color:custMode===m?'var(--accent)':'var(--muted)', cursor:'pointer', fontSize:11, fontFamily:'IBM Plex Sans,sans-serif' }}>
-                {m==='search'?'Search existing':'New customer'}
-              </button>
-            ))}
-          </div>
-          {custMode==='search' && (
-            <>
-              <Field label="Name or mobile"><input value={custSearch} onChange={e=>setCustSearch(e.target.value)} placeholder="Ravi Kumar or 9876…" /></Field>
-              {custs.map(c=>(
-                <div key={c.id} onClick={()=>setSelCust(c)} style={{ padding:'12px 14px', background:'var(--surface2)', border:`1px solid ${selCust?.id===c.id?'var(--accent)':'var(--border)'}`, borderRadius:3, cursor:'pointer' }}>
-                  <div style={{ fontWeight:500 }}>{c.name}</div>
-                  <div className="mono" style={{ fontSize:11, color:'var(--muted)', marginTop:2 }}>{c.mobile} · {c.address}</div>
-                </div>
-              ))}
-              {custSearch.length>1&&custs.length===0&&<div style={{ fontSize:11, color:'var(--dim)' }}>No customers — use "New customer"</div>}
-            </>
-          )}
-          {custMode==='new' && (
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-              <Field label="Full name *"><input value={newCust.name}    onChange={e=>setNewCust(p=>({...p,name:e.target.value}))}    placeholder="Customer name" /></Field>
-              <Field label="C/O (Care Of)"><input value={newCust.careOf||''} onChange={e=>setNewCust(p=>({...p,careOf:e.target.value}))} placeholder="Father / Husband name" /></Field>
-              <Field label="Mobile *">   <input value={newCust.mobile}  onChange={e=>setNewCust(p=>({...p,mobile:e.target.value}))}  placeholder="10-digit mobile" /></Field>
-              <Field label="Address" >   <input value={newCust.address} onChange={e=>setNewCust(p=>({...p,address:e.target.value}))} placeholder="Address" /></Field>
-            </div>
-          )}
-          <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
-            <GhostBtn onClick={onDone}>Cancel</GhostBtn>
-            <Btn disabled={!(selCust||(custMode==='new'&&newCust.name&&newCust.mobile))} onClick={()=>setStep(2)}>Next →</Btn>
+      {/* ── Step 1: Customer ── */}
+      {step === 1 && (
+        <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
+          <Field label="Select Existing Customer *">
+            <select value={f.customer_id} onChange={e => {
+              const c = customers.find(x => x.id === e.target.value);
+              if (c) setF(p => ({ ...p, customer_id: c.id, customer_name: c.name, customer_mobile: c.mobile, customer_address: c.address }));
+            }} style={inpStyle}>
+              <option value="">-- Choose Customer --</option>
+              {customers.map(c => <option key={c.id} value={c.id}>{c.name} ({c.mobile})</option>)}
+            </select>
+          </Field>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop: 8 }}>
+            <Field label="Name (Auto-filled)"><input value={f.customer_name} disabled style={{...inpStyle, opacity: 0.6}} /></Field>
+            <Field label="C/O (Care Of)"><input value={f.care_of} onChange={s('care_of')} placeholder="Father/Husband Name" style={inpStyle} /></Field>
+            <Field label="Mobile Number (Auto-filled)"><input value={f.customer_mobile} disabled style={{...inpStyle, opacity: 0.6}} /></Field>
+            <Field label="Address (Auto-filled)"><textarea value={f.customer_address} disabled rows={2} style={{...inpStyle, gridColumn: 'span 2', opacity: 0.6 }} /></Field>
           </div>
         </div>
       )}
 
-      {/* Step 2 — Vehicle */}
-      {step===2 && (
-        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
-            <Field label="Brand">
-              <select value={brandF} onChange={e=>setBrandF(e.target.value)} style={selStyle}>
-                <option value="">All brands</option>
-                {BRANDS.map(b=><option key={b} value={b}>{b}</option>)}
-              </select>
-            </Field>
-            <Field label="Search"><input value={vehSearch} onChange={e=>setVehSearch(e.target.value)} placeholder="Model or chassis…" /></Field>
-          </div>
-          <div style={{ display:'flex', flexDirection:'column', gap:6, maxHeight:320, overflowY:'auto' }}>
-            {vehs.map(v=>(
-              <div key={v.id} onClick={()=>setSelVeh(v)} style={{ padding:'12px 14px', background:'var(--surface2)', border:`1px solid ${selVeh?.id===v.id?'var(--accent)':'var(--border)'}`, borderRadius:3, cursor:'pointer' }}>
-                <div style={{ fontWeight:500, fontSize:12 }}>{v.brand} {v.model} <span style={{ color:'var(--muted)', fontWeight:400 }}>— {v.variant}</span></div>
-                <div className="mono" style={{ fontSize:10, color:'var(--dim)', marginTop:3, display:'flex', gap:12 }}>
-                  <span>CH: {v.chassis_number}</span>
-                  {v.engine_number&&<span>EN: {v.engine_number}</span>}
-                  <span>₹{v.ex_showroom?.toLocaleString('en-IN')}</span>
-                </div>
-              </div>
-            ))}
-            {vehs.length===0&&<Empty message="No vehicles in stock" />}
-          </div>
-          <div style={{ display:'flex', justifyContent:'space-between', gap:8 }}>
-            <GhostBtn onClick={()=>setStep(1)}>← Back</GhostBtn>
-            <Btn disabled={!selVeh} onClick={()=>setStep(3)}>Next →</Btn>
+      {/* ── Step 2: Vehicle ── */}
+      {step === 2 && (
+        <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
+          <Field label="Select Inventory Vehicle *">
+            <select value={f.vehicle_id} onChange={e => {
+              const v = vehicles.find(x => x.id === e.target.value);
+              if (v) setF(p => ({ ...p, vehicle_id: v.id, vehicle_brand: v.brand, vehicle_model: v.model, vehicle_variant: v.variant, vehicle_color: v.color, chassis_number: v.chassis_number, engine_number: v.engine_number }));
+            }} style={inpStyle}>
+              <option value="">-- Choose Vehicle --</option>
+              {vehicles.map(v => <option key={v.id} value={v.id}>{v.brand} {v.model} - {v.chassis_number?.slice(-8)}</option>)}
+            </select>
+          </Field>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop: 8 }}>
+            <Field label="Brand"><input value={f.vehicle_brand} disabled style={{...inpStyle, opacity: 0.6}} /></Field>
+            <Field label="Model"><input value={f.vehicle_model} disabled style={{...inpStyle, opacity: 0.6}} /></Field>
+            <Field label="Variant"><input value={f.vehicle_variant} disabled style={{...inpStyle, opacity: 0.6}} /></Field>
+            <Field label="Colour"><input value={f.vehicle_color} disabled style={{...inpStyle, opacity: 0.6}} /></Field>
+            <Field label="Chassis No"><input value={f.chassis_number} disabled className="mono" style={{...inpStyle, opacity: 0.6}} /></Field>
+            <Field label="Engine No"><input value={f.engine_number} disabled className="mono" style={{...inpStyle, opacity: 0.6}} /></Field>
           </div>
         </div>
       )}
 
-      {/* Step 3 — Pricing */}
-      {step===3 && (
-        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-          <div style={{ background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:3, padding:'10px 14px', fontSize:12 }}>
-            <span style={{ fontWeight:600 }}>{selVeh?.brand} {selVeh?.model}</span>
-            <span style={{ color:'var(--muted)', marginLeft:8 }}>{selVeh?.chassis_number}</span>
-            <span style={{ color:'var(--accent)', marginLeft:8 }}>₹{selVeh?.ex_showroom?.toLocaleString('en-IN')}</span>
-          </div>
+      {/* ── Step 3: Insurance Nominee ── */}
+      {step === 3 && (
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <Field label="Nominee Name"><input value={f.nominee_name} onChange={s('nominee_name')} placeholder="Full Name" style={inpStyle} /></Field>
+          <Field label="Relation"><input value={f.nominee_relation} onChange={s('nominee_relation')} placeholder="Spouse, Son, Mother..." style={inpStyle} /></Field>
+          <Field label="Age"><input type="number" value={f.nominee_age} onChange={s('nominee_age')} placeholder="e.g. 35" style={inpStyle} /></Field>
+          <Field label="Number"><input value={f.nominee_number} onChange={s('nominee_number')} placeholder="Mobile Number" style={inpStyle} /></Field>
+        </div>
+      )}
+
+      {/* ── Step 4: Pricing ── */}
+      {step === 4 && (
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <Field label="Sale Date"><input type="date" value={f.sale_date} onChange={s('sale_date')} style={inpStyle} /></Field>
+          <Field label="Sale Price (₹)"><input type="number" value={f.sale_price} onChange={s('sale_price')} placeholder="0" style={inpStyle} /></Field>
+          <Field label="Payment Mode">
+            <select value={f.payment_mode} onChange={s('payment_mode')} style={inpStyle}>
+              <option value="Cash">Cash</option>
+              <option value="Card">Card</option>
+              <option value="UPI">UPI</option>
+              <option value="Finance">Finance</option>
+              <option value="Cheque">Cheque</option>
+            </select>
+          </Field>
+          <Field label="Financier / Bank"><input value={f.financier} onChange={s('financier')} placeholder="HDFC, Bajaj Finance..." style={inpStyle} /></Field>
+          <Field label="Sold By"><input value={f.sold_by} onChange={s('sold_by')} placeholder="Salesperson Name" style={inpStyle} /></Field>
+          <Field label="Notes"><textarea value={f.notes} onChange={s('notes')} rows={2} placeholder="Any additional details..." style={{...inpStyle, gridColumn: 'span 2' }} /></Field>
+        </div>
+      )}
+
+      {/* ── Step 5: HSRP ── */}
+      {step === 5 && (
+        <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-            <Field label="Sale price (₹) *"><input type="number" value={pricing.sale_price} onChange={e=>setPricing(p=>({...p,sale_price:e.target.value}))} placeholder="On-road total" /></Field>
-            <Field label="Discount (₹)">   <input type="number" value={pricing.discount}    onChange={e=>setPricing(p=>({...p,discount:e.target.value}))} /></Field>
-            <Field label="Insurance (₹)">  <input type="number" value={pricing.insurance}   onChange={e=>setPricing(p=>({...p,insurance:e.target.value}))} /></Field>
-            <Field label="RTO (₹)">        <input type="number" value={pricing.rto}         onChange={e=>setPricing(p=>({...p,rto:e.target.value}))} /></Field>
-            <Field label="Payment mode">
-              <select value={pricing.payment_mode} onChange={e=>setPricing(p=>({...p,payment_mode:e.target.value}))} style={selStyle}>
-                {['Cash','UPI','Card','EMI / Finance','Exchange'].map(o=><option key={o} value={o}>{o}</option>)}
-              </select>
-            </Field>
-            <Field label="Financer / Bank"><input value={pricing.financier}      onChange={e=>setPricing(p=>({...p,financier:e.target.value}))}      placeholder="HDFC, Bajaj Finance…" /></Field>
-            <Field label="Reg number">     <input value={pricing.vehicle_number} onChange={e=>setPricing(p=>({...p,vehicle_number:e.target.value}))} placeholder="KA08 XX XXXX" className="mono" /></Field>
-            <Field label="Sold by">        <input value={pricing.sold_by}        onChange={e=>setPricing(p=>({...p,sold_by:e.target.value}))}        placeholder="Staff name" /></Field>
+            <Field label="Reg Number"><input value={f.vehicle_number} onChange={s('vehicle_number')} className="mono" placeholder="KA01HH1234" style={inpStyle} /></Field>
+            <Field label="Number Plate Issued Date"><input type="date" value={f.hsrp_date} onChange={s('hsrp_date')} style={inpStyle} /></Field>
           </div>
-          {pricing.sale_price && (
-            <div style={{ background:'rgba(200,148,10,.06)', border:'1px solid rgba(200,148,10,.2)', borderRadius:3, padding:'10px 14px', fontSize:12 }}>
-              <span className="label-xs">Total: </span>
-              <span className="display" style={{ fontSize:18, color:'var(--accent)' }}>₹{Math.round(totalAmt).toLocaleString('en-IN')}</span>
-            </div>
-          )}
-          <div style={{ display:'flex', justifyContent:'space-between', gap:8 }}>
-            <GhostBtn onClick={()=>setStep(2)}>← Back</GhostBtn>
-            <Btn disabled={!pricing.sale_price||saving} onClick={handleCreate}>{saving?'Creating…':'Generate invoice →'}</Btn>
+          
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop: '8px' }}>
+            <FileUpload label="Upload HSRP Front Photo" onUploadSuccess={(fileId) => setF(p => ({ ...p, hsrp_front_id: fileId }))} />
+            <FileUpload label="Upload HSRP Back Photo" onUploadSuccess={(fileId) => setF(p => ({ ...p, hsrp_back_id: fileId }))} />
           </div>
         </div>
       )}
 
-      {/* Step 4 — Done */}
-      {step===4 && invoice && (
-        <div style={{ textAlign:'center', padding:'40px 0' }}>
-          <div className="display" style={{ fontSize:52, color:'var(--green)', marginBottom:8 }}>✓</div>
-          <div style={{ fontSize:16, fontWeight:600, marginBottom:6 }}>{invoice.invoice_number} — created</div>
-          <div style={{ fontSize:12, color:'var(--muted)', marginBottom:28 }}>{invoice.customer_name} · {invoice.vehicle_brand} {invoice.vehicle_model} · ₹{invoice.total_amount?.toLocaleString('en-IN')}</div>
-          <div style={{ display:'flex', gap:8, justifyContent:'center' }}>
-            <GhostBtn onClick={onDone}>← Back to list</GhostBtn>
-            <Btn color="var(--green)" onClick={()=>sendWA(invoice.customer_mobile,`Dear ${invoice.customer_name}, your invoice ${invoice.invoice_number} for ₹${invoice.total_amount?.toLocaleString('en-IN')} is ready. Thank you for choosing MM Motors!`)}>
-              Send WhatsApp
-            </Btn>
-          </div>
+      {/* ── Navigation Buttons ── */}
+      <div style={{ display:'flex', justifyContent:'space-between', gap:8, marginTop: 16 }}>
+        <GhostBtn onClick={onCancel}>Cancel</GhostBtn>
+        <div style={{ display:'flex', gap:8 }}>
+          {step > 1 && <GhostBtn onClick={() => setStep(s => s - 1)}>← Back</GhostBtn>}
+          {step < 5 
+            ? <Btn onClick={() => setStep(s => s + 1)}>Next →</Btn>
+            : <Btn onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save Sale'}</Btn>
+          }
         </div>
-      )}
+      </div>
+
     </div>
   );
 }
@@ -296,83 +262,142 @@ function NewSaleWizard({ onDone }) {
 export default function SalesPage() {
   const confirm = useConfirm();
   const qc = useQueryClient();
-  const [view, setView]       = useState('list');
+  const [showAdd, setShowAdd] = useState(false);
+  const [editSale, setEditSale] = useState(null);
+  const [selSale, setSelSale] = useState(null);
   const [search, setSearch]   = useState('');
-  const [invoice, setInvoice] = useState(null);
 
   const { data:stats } = useQuery({
     queryKey:['sales-stats'],
-    queryFn: ()=>salesApi.stats().then(r=>r.data),
+    queryFn: () => salesApi.stats().then(r=>r.data),
   });
+
   const { data, isLoading, error } = useQuery({
     queryKey:['sales', search],
-    queryFn: ()=>salesApi.list({ search:search||undefined, limit:100 }).then(r=>r.data),
+    queryFn: () => salesApi.list({ search: search||undefined, limit:200 }).then(r=>r.data),
   });
+
+  const createMut = useMutation({
+    mutationFn: d => salesApi.create(d),
+    onSuccess: () => { qc.invalidateQueries(['sales']); qc.invalidateQueries(['sales-stats']); setShowAdd(false); toast.success('Sale recorded'); },
+    onError:   e => toast.error(e?.response?.data?.detail||'Failed'),
+  });
+
+  const updateMut = useMutation({
+    mutationFn: ({id,d}) => salesApi.update(id,d),
+    onSuccess: () => { qc.invalidateQueries(['sales']); qc.invalidateQueries(['sales-stats']); setEditSale(null); toast.success('Updated'); },
+    onError:   e => toast.error(e?.response?.data?.detail||'Failed'),
+  });
+
   const deleteMut = useMutation({
-    mutationFn: id=>salesApi.delete(id),
-    onSuccess: ()=>{ qc.invalidateQueries(['sales']); qc.invalidateQueries(['sales-stats']); toast.success('Deleted'); },
-    onError:   e=>toast.error(e?.response?.data?.detail||'Cannot delete'),
+    mutationFn: id => salesApi.delete(id),
+    onSuccess: () => { qc.invalidateQueries(['sales']); qc.invalidateQueries(['sales-stats']); toast.success('Deleted'); },
+    onError:   e => toast.error(e?.response?.data?.detail||'Cannot delete'),
   });
 
-  const sales = Array.isArray(data)?data:[];
-  const st    = stats||{};
-
-  if (view==='new') {
-    return <NewSaleWizard onDone={()=>{ setView('list'); qc.invalidateQueries(['sales']); qc.invalidateQueries(['sales-stats']); qc.invalidateQueries(['vehicles']); qc.invalidateQueries(['vehicle-stats']); }} />;
-  }
+  const sales = Array.isArray(data) ? data : [];
+  const st = stats || {};
 
   return (
     <div>
-      {invoice && <InvoiceModal sale={invoice} onClose={()=>setInvoice(null)} />}
+      {selSale && <InvoiceModal sale={selSale} onClose={()=>setSelSale(null)} />}
 
-      {/* stats */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', borderBottom:'1px solid var(--border)' }}>
-        {[
-          { l:'Total revenue',    v:st.total_revenue  ? '₹'+Math.round(st.total_revenue/1000)+'K':'—', c:'var(--accent)' },
-          { l:'Total invoices',   v:st.total_count??'—',  c:'var(--text)' },
-          { l:'Today',            v:st.today_count??'—',  c:'var(--green)' },
-          { l:'Pending delivery', v:st.pending_delivery??'—', c:st.pending_delivery>0?'#fbbf24':'var(--dim)' },
-        ].map((s,i)=>(
-          <div key={i} style={{ padding:'16px 20px', borderRight:i<3?'1px solid var(--border)':0 }}>
-            <div className="label-xs">{s.l}</div>
-            <div className="display" style={{ fontSize:24, color:s.c, marginTop:6 }}>{s.v}</div>
+      {/* Edit Sale Modal */}
+      {editSale && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.5)', zIndex:100, display:'flex', alignItems:'center', justifyContent:'center' }}
+          onClick={() => setEditSale(null)}>
+          <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:6, padding:24, width:'100%', maxWidth:800, maxHeight:'90vh', overflowY:'auto' }}
+            onClick={e=>e.stopPropagation()}>
+            <div style={{ fontSize:13, fontWeight:600, marginBottom:18 }}>Edit Sale Record</div>
+            <SaleForm initial={editSale} onSave={d => updateMut.mutate({ id: editSale.id, d })} onCancel={() => setEditSale(null)} saving={updateMut.isPending} />
           </div>
-        ))}
+        </div>
+      )}
+
+      {/* Stats Row */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', borderBottom:'1px solid var(--border)' }}>
+        <div style={{ padding:'14px 20px', borderRight:'1px solid var(--border)' }}>
+          <div className="label-xs">Total Revenue</div>
+          <div className="display" style={{ fontSize:24, color:'var(--accent)', marginTop:6 }}>₹{st.total_revenue > 1000 ? (st.total_revenue/1000).toFixed(0)+'K' : (st.total_revenue||0)}</div>
+        </div>
+        <div style={{ padding:'14px 20px', borderRight:'1px solid var(--border)' }}>
+          <div className="label-xs">Total Invoices</div>
+          <div className="display" style={{ fontSize:24, color:'var(--text)', marginTop:6 }}>{st.total_count||0}</div>
+        </div>
+        <div style={{ padding:'14px 20px' }}>
+          <div className="label-xs">Pending Delivery</div>
+          <div className="display" style={{ fontSize:24, color:'var(--accent)', marginTop:6 }}>{st.pending_delivery||0}</div>
+        </div>
       </div>
 
-      {/* toolbar */}
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'12px 20px', borderBottom:'1px solid var(--border)', gap:10 }}>
-        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search invoices, customer, vehicle…" style={{ width:280 }} />
-        <Btn onClick={()=>setView('new')}>+ New sale</Btn>
+      {/* Add New Sale Form */}
+      {showAdd && (
+        <div style={{ margin:20, padding:20, background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:4 }}>
+          <div style={{ fontSize:12, fontWeight:600, marginBottom:16 }}>New Sale</div>
+          <SaleForm onSave={d=>createMut.mutate(d)} onCancel={()=>setShowAdd(false)} saving={createMut.isPending} />
+        </div>
+      )}
+
+      {/* Toolbar */}
+      <div style={{ display:'flex', alignItems:'center', gap:10, padding:'12px 20px', borderBottom:'1px solid var(--border)' }}>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search invoices, customer, vehicle..." style={{ width:260 }} />
+        <Btn style={{ marginLeft:'auto' }} onClick={()=>setShowAdd(v=>!v)}>+ New Sale</Btn>
       </div>
 
-      {/* table */}
+      {/* Data Table */}
       {error ? <div style={{ padding:20 }}><ApiError error={error}/></div>
-        : isLoading ? <div style={{ padding:20, display:'flex', flexDirection:'column', gap:8 }}>{[1,2,3,4].map(i=><Skeleton key={i} h={44}/>)}</div>
-        : sales.length===0 ? <Empty message="No sales found" sub="Create your first sale with + New sale" />
+        : isLoading ? <div style={{ padding:20, display:'flex', flexDirection:'column', gap:8 }}>{[1,2,3].map(i=><Skeleton key={i} h={44}/>)}</div>
+        : sales.length===0 ? <Empty message="No sales found" />
         : (
           <table style={{ width:'100%', borderCollapse:'collapse' }}>
             <thead>
               <tr style={{ borderBottom:'1px solid var(--border)' }}>
-                {['Invoice #','Date','Customer','Vehicle','Amount','Payment',''].map(h=>(
-                  <th key={h} style={{ padding:'9px 20px', textAlign:'left', fontSize:10, letterSpacing:'.07em', color:'var(--dim)', fontWeight:500, textTransform:'uppercase' }}>{h}</th>
+                {['Invoice #','Date','Customer','Vehicle','Amount','Payment','Status',''].map(h=>(
+                  <th key={h} style={{ padding:'9px 16px', textAlign:'left', fontSize:9, letterSpacing:'.07em', color:'var(--dim)', fontWeight:500, textTransform:'uppercase' }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {sales.map(s=>(
+              {sales.map(s => (
                 <tr key={s.id} style={{ borderBottom:'1px solid var(--border)' }}>
-                  <td className="mono" style={{ padding:'11px 20px', fontSize:11, color:'var(--blue)' }}>{s.invoice_number}</td>
-                  <td className="mono" style={{ padding:'11px 20px', fontSize:11, color:'var(--dim)' }}>{s.sale_date}</td>
-                  <td style={{ padding:'11px 20px', fontSize:12, fontWeight:500 }}>{s.customer_name}</td>
-                  <td style={{ padding:'11px 20px', fontSize:12, color:'var(--muted)' }}>{s.vehicle_brand} {s.vehicle_model}</td>
-                  <td className="display" style={{ padding:'11px 20px', fontSize:14, color:'var(--accent)' }}>₹{s.total_amount?.toLocaleString('en-IN')}</td>
-                  <td style={{ padding:'11px 20px', fontSize:11, color:'var(--muted)' }}>{s.payment_mode}</td>
-                  <td style={{ padding:'11px 20px' }}>
-                    <div style={{ display:'flex', gap:6 }}>
-                      <GhostBtn sm onClick={()=>setInvoice(s)}>Invoice</GhostBtn>
-                      <button onClick={async () => { if (await confirm(`Delete ${s.invoice_number}?`)) { deleteMut.mutate(s.id); } }}
-                        style={{ padding:'5px 8px', background:'transparent', border:'1px solid rgba(220,38,38,.3)', borderRadius:3, color:'var(--red)', cursor:'pointer', fontSize:10, fontFamily:'IBM Plex Sans,sans-serif' }}>✕</button>
+                  <td className="mono" style={{ padding:'12px 16px', fontSize:11, color:'var(--blue)' }}>{s.invoice_number}</td>
+                  <td style={{ padding:'12px 16px', fontSize:11, color:'var(--muted)' }}>{s.sale_date?.slice(0,11)}</td>
+                  <td style={{ padding:'12px 16px', fontSize:12, fontWeight:500 }}>{s.customer_name}</td>
+                  <td style={{ padding:'12px 16px', fontSize:11, color:'var(--muted)' }}>{s.vehicle_brand} {s.vehicle_model}</td>
+                  <td className="mono" style={{ padding:'12px 16px', fontSize:12, fontWeight:600, color:'var(--accent)' }}>₹{s.total_amount?.toLocaleString('en-IN')||0}</td>
+                  <td style={{ padding:'12px 16px', fontSize:11 }}>{s.payment_mode}</td>
+                  
+                  {/* Status Badge */}
+                  <td style={{ padding:'12px 16px' }}>
+                    <span style={{ 
+                      fontSize:9, padding:'3px 8px', borderRadius:2, fontWeight:500, 
+                      color: s.status==='completed' || s.status==='delivered' ? '#4ade80' : '#f0c040', 
+                      background: s.status==='completed' || s.status==='delivered' ? 'rgba(74,222,128,.1)' : 'rgba(240,192,64,.1)', 
+                      border: s.status==='completed' || s.status==='delivered' ? '1px solid rgba(74,222,128,.25)' : '1px solid rgba(240,192,64,.25)' 
+                    }}>
+                      {s.status==='completed' || s.status==='delivered' ? 'Delivered' : 'Pending'}
+                    </span>
+                  </td>
+
+                  <td style={{ padding:'10px 16px' }}>
+                    <div style={{ display:'flex', gap:6, alignItems: 'center' }}>
+                      <GhostBtn sm onClick={()=>setSelSale(s)}>View</GhostBtn>
+                      <GhostBtn sm onClick={()=>setEditSale(s)}>Edit</GhostBtn>
+                      
+                      {s.status !== 'completed' && s.status !== 'delivered' && (
+                        <button 
+                          onClick={async () => {
+                            if (await confirm("Mark this invoice as delivered?")) {
+                              updateMut.mutate({ id: s.id, d: { status: 'delivered' } });
+                            }
+                          }}
+                          style={{ padding:'5px 10px', background:'rgba(59,130,246,.1)', border:'1px solid rgba(59,130,246,.3)', borderRadius:3, color:'#3b82f6', cursor:'pointer', fontSize:10, fontFamily:'IBM Plex Sans,sans-serif' }}
+                        >
+                          ✓ Deliver
+                        </button>
+                      )}
+                      
+                      <button onClick={()=>sendWA(s.customer_mobile, `Dear ${s.customer_name}, congratulations on your new ${s.vehicle_brand} ${s.vehicle_model}! Your total invoice amount is ₹${s.total_amount?.toLocaleString('en-IN')}. Thank you for choosing MM Motors!`)} style={{ padding:'5px 10px', background:'rgba(37,211,102,.1)', border:'1px solid rgba(37,211,102,.3)', borderRadius:3, color:'#16a34a', cursor:'pointer', fontSize:10, fontFamily:'IBM Plex Sans,sans-serif' }}>WhatsApp</button>
                     </div>
                   </td>
                 </tr>
