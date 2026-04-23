@@ -209,32 +209,75 @@ export default function VehiclesPage() {
       </div>
 
       {/* table */}
-      {error ? <div style={{ padding:20 }}><ApiError error={error}/></div>
-        : isLoading ? <div style={{ padding:20, display:'flex', flexDirection:'column', gap:8 }}>{[1,2,3,4,5].map(i=><Skeleton key={i} h={44}/>)}</div>
-        : vehicles.length===0 ? <Empty message="No vehicles found" />
-        : (
-          <table style={{ width:'100%', borderCollapse:'collapse' }}>
+<table style={{ width:'100%', borderCollapse:'collapse' }}>
             <thead>
               <tr style={{ borderBottom:'1px solid var(--border)' }}>
-                {['Brand','Model / Variant','Chassis','Engine','Color','Key','Status',''].map(h=>(
+                {['Brand','Model / Type','Chassis / Engine','Color / Key', 'Purchase (₹)', 'Logistics','Status',''].map(h=>(
                   <th key={h} style={{ padding:'9px 16px', textAlign:'left', fontSize:9, letterSpacing:'.07em', color:'var(--dim)', fontWeight:500, textTransform:'uppercase', whiteSpace:'nowrap' }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {vehicles.map(v => {
-                const sc = STATUS_STYLE[v.status]||STATUS_STYLE.in_stock;
+                // Determine status badge styling based on new/old text statuses
+                let sColor, sBg, sBorder, sLabel = v.status || 'Instock';
+                if (v.status === 'Sold' || v.status === 'sold') { sColor = 'var(--dim)'; sBg = 'rgba(107,100,120,.1)'; sBorder = 'rgba(107,100,120,.25)'; sLabel = 'Sold'; }
+                else if (v.status === 'Returned') { sColor = 'var(--red)'; sBg = 'rgba(220,38,38,.1)'; sBorder = 'rgba(220,38,38,.25)'; sLabel = 'Returned'; }
+                else if (v.status === 'in_service') { sColor = '#f0c040'; sBg = 'rgba(240,192,64,.1)'; sBorder = 'rgba(240,192,64,.25)'; sLabel = 'In service'; }
+                else { sColor = '#4ade80'; sBg = 'rgba(74,222,128,.1)'; sBorder = 'rgba(74,222,128,.25)'; sLabel = 'In stock'; }
+
                 return (
                   <tr key={v.id} style={{ borderBottom:'1px solid var(--border)' }}>
+                    
+                    {/* 1. Brand */}
                     <td style={{ padding:'10px 16px', fontSize:11, color:'var(--muted)', letterSpacing:'.04em' }}>{v.brand}</td>
-                    <td style={{ padding:'10px 16px', fontSize:12, fontWeight:500 }}>{v.model} <span style={{ color:'var(--muted)', fontWeight:400 }}>{v.variant}</span></td>
-                    <td className="mono" style={{ padding:'10px 16px', fontSize:10, color:'var(--dim)' }}>{v.chassis_number?.slice(-12)}</td>
-                    <td className="mono" style={{ padding:'10px 16px', fontSize:10, color:'var(--dim)' }}>{v.engine_number||'—'}</td>
-                    <td style={{ padding:'10px 16px', fontSize:11, color:'var(--muted)' }}>{v.color||'—'}</td>
-                    <td className="mono" style={{ padding:'10px 16px', fontSize:11 }}>{v.key_number||'—'}</td>
+                    
+                    {/* 2. Model, Variant & Type Badge */}
                     <td style={{ padding:'10px 16px' }}>
-                      <span style={{ fontSize:9, padding:'3px 8px', borderRadius:2, fontWeight:500, color:sc.color, background:sc.bg, border:`1px solid ${sc.border}` }}>{sc.label}</span>
+                      <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:2 }}>
+                        <div style={{ fontSize:12, fontWeight:500 }}>{v.model}</div>
+                        <span style={{ 
+                          fontSize: 9, padding: '2px 5px', borderRadius: 2, textTransform: 'uppercase', fontWeight: 600,
+                          background: v.type === 'used' ? 'var(--surface2)' : 'rgba(74,222,128,.1)',
+                          color: v.type === 'used' ? 'var(--text)' : 'var(--green)'
+                        }}>
+                          {v.type === 'used' ? 'Used' : 'New'}
+                        </span>
+                      </div>
+                      <div style={{ fontSize:10, color:'var(--dim)' }}>{v.variant || '—'}</div>
                     </td>
+
+                    {/* 3. Chassis & Engine */}
+                    <td className="mono" style={{ padding:'10px 16px' }}>
+                      <div style={{ fontSize:10, color:'var(--text)' }}>{v.chassis_number?.slice(-12) || '—'}</div>
+                      <div style={{ fontSize:9, color:'var(--dim)', marginTop:2 }}>{v.engine_number || '—'}</div>
+                    </td>
+
+                    {/* 4. Color & Key */}
+                    <td style={{ padding:'10px 16px' }}>
+                      <div style={{ fontSize:11, color:'var(--muted)' }}>{v.color || '—'}</div>
+                      <div className="mono" style={{ fontSize:10, color:'var(--dim)', marginTop:2 }}>Key: {v.key_number || '—'}</div>
+                    </td>
+
+                    {/* 5. Purchase Price */}
+                    <td className="mono" style={{ padding:'10px 16px', fontSize:11, color: 'var(--muted)' }}>
+                      ₹{v.purchase_price?.toLocaleString('en-IN') || '0'}
+                    </td>
+
+                    {/* 6. Logistics (Inbound/Location) */}
+                    <td style={{ padding:'10px 16px' }}>
+                      <div style={{ fontSize:11, color:'var(--text)' }}>{v.inbound_date || '—'}</div>
+                      <div style={{ fontSize:10, color:'var(--dim)', marginTop:2 }}>{v.location || '—'}</div>
+                    </td>
+
+                    {/* 7. Status */}
+                    <td style={{ padding:'10px 16px' }}>
+                      <span style={{ fontSize:9, padding:'3px 8px', borderRadius:2, fontWeight:500, color:sColor, background:sBg, border:`1px solid ${sBorder}` }}>
+                        {sLabel}
+                      </span>
+                    </td>
+
+                    {/* 8. Actions */}
                     <td style={{ padding:'10px 16px' }}>
                       <div style={{ display:'flex', gap:6 }}>
                         <GhostBtn sm onClick={()=>setEditVeh(v)}>Edit</GhostBtn>
