@@ -416,12 +416,7 @@ class SaleCreate(BaseModel):
     customer_id:       str
     vehicle_id:        str
     vehicle_number:    Optional[str] = ""
-    sale_price:        Optional[float] = 0
     total_amount:      Optional[float] = None
-    discount:          Optional[float] = 0
-    insurance:         Optional[float] = 0
-    rto:               Optional[float] = 0
-    other_charges:     Optional[float] = 0
     other_label:       Optional[str]   = ""
     finance_type:      Optional[str]   = "cash"
     financier:         Optional[str]   = ""
@@ -432,9 +427,12 @@ class SaleCreate(BaseModel):
     sale_date:         Optional[str]   = ""
     notes:             Optional[str]   = ""
     care_of:           Optional[str]   = ""
+    hsrp_front:        Optional[str]   = ""
+    hsrp_back:         Optional[str]   = ""
     hsrp_front_id:     Optional[str]   = ""
     hsrp_back_id:      Optional[str]   = ""
     hsrp_date:         Optional[str]   = ""
+    hsrp_notes:        Optional[str]   = ""
 
 class SaleUpdate(BaseModel):
     # Status & logistics
@@ -462,9 +460,12 @@ class SaleUpdate(BaseModel):
     sale_date:         Optional[str]   = None
     sold_by:           Optional[str]   = None
     # HSRP
+    hsrp_front:        Optional[str]   = None
+    hsrp_back:         Optional[str]   = None
     hsrp_front_id:     Optional[str]   = None
     hsrp_back_id:      Optional[str]   = None
     hsrp_date:         Optional[str]   = None
+    hsrp_notes:        Optional[str]   = None
 
 # ── Service Jobs ──────────────────────────────────────────────────────────────
 class ServiceJobCreate(BaseModel):
@@ -956,9 +957,12 @@ async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
         "sale_date":      sale_date,
         "status":         "pending",    # pending | delivered
         "notes":          body.notes or "",
+        "hsrp_front":     body.hsrp_front or "", # <-- NEW
+        "hsrp_back":      body.hsrp_back or ""
         "hsrp_front_id":  body.hsrp_front_id or "",
         "hsrp_back_id":   body.hsrp_back_id or "",
         "hsrp_date":      body.hsrp_date or "",
+        "hsrp_notes":     body.hsrp_notes or "",
         "created_at":     datetime.utcnow().isoformat(),
     }
 
@@ -1012,7 +1016,7 @@ async def update_sale(sale_id: str, body: SaleUpdate, current_user=Depends(verif
                   "notes", "customer_name", "customer_mobile", "customer_address",
                   "care_of", "total_amount", "sale_price", "finance_type",
                   "financier", "loan_amount", "sale_date", "sold_by",
-                  "hsrp_front_id", "hsrp_back_id", "hsrp_date"):
+                  "hsrp_front", "hsrp_back", "hsrp_front_id", "hsrp_back_id", "hsrp_date", "hsrp_notes"):
         val = getattr(body, field)
         if val is not None:
             update[field] = val
