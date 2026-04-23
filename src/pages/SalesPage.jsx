@@ -17,60 +17,78 @@ function InvoiceModal({ sale, onClose }) {
   const print = () => {
     const w = window.open('','_blank');
     w.document.write(`<html><head><title>${sale.invoice_number}</title>
-    <style>body{font-family:monospace;padding:24px;max-width:600px}h2{margin-bottom:16px}p{margin:6px 0}hr{margin:16px 0}@media print{button{display:none}}</style></head><body>
-    <h2>MM Motors — ${sale.invoice_number}</h2>
-    <p><b>Customer:</b> ${sale.customer_name} | <b>Mobile:</b> ${sale.customer_mobile||''}</p>
-    <p><b>Vehicle:</b> ${sale.vehicle_brand} ${sale.vehicle_model} ${sale.vehicle_variant||''}</p>
-    <p><b>Chassis:</b> ${sale.chassis_number||''} | <b>Reg:</b> ${sale.vehicle_number||''}</p>
-    <hr/>
-    <p><b>Sale price:</b> ₹${(sale.sale_price||0).toLocaleString('en-IN')}</p>
-    <p><b>Discount:</b> ₹${(sale.discount||0).toLocaleString('en-IN')}</p>
-    <p><b>Insurance:</b> ₹${(sale.insurance||0).toLocaleString('en-IN')}</p>
-    <p><b>RTO:</b> ₹${(sale.rto||0).toLocaleString('en-IN')}</p>
-    <p><b>Total:</b> ₹${(sale.total_amount||0).toLocaleString('en-IN')}</p>
-    <p><b>Payment:</b> ${sale.payment_mode||''} | <b>Date:</b> ${sale.sale_date||''}</p>
-    ${sale.amount_in_words?`<p><i>${sale.amount_in_words}</i></p>`:''}
-    <hr/><button onclick="window.print()">Print</button></body></html>`);
+    <style>body{font-family:sans-serif;padding:24px;max-width:700px;margin:0 auto;}h2{margin-bottom:16px;text-align:center;}table{width:100%;border-collapse:collapse;margin-bottom:16px}td{padding:8px;border-bottom:1px solid #eee;font-size:14px}td:first-child{font-weight:bold;width:35%;color:#555;}@media print{button{display:none}}</style></head><body>
+    <h2>MM Motors — Sale Record (${sale.invoice_number})</h2>
+    <table>
+      <tr><td>Sales Date</td><td>${sale.sale_date || '—'}</td></tr>
+      <tr><td>Name</td><td>${sale.customer_name || '—'}</td></tr>
+      <tr><td>C/O</td><td>${sale.care_of || sale.customer_care_of || '—'}</td></tr>
+      <tr><td>Mobile Number</td><td>${sale.customer_mobile || '—'}</td></tr>
+      <tr><td>Address</td><td>${sale.customer_address || '—'}</td></tr>
+      <tr><td>Brand</td><td>${sale.vehicle_brand || '—'}</td></tr>
+      <tr><td>Model</td><td>${sale.vehicle_model || '—'}</td></tr>
+      <tr><td>Variant</td><td>${sale.vehicle_variant || '—'}</td></tr>
+      <tr><td>Colour</td><td>${sale.vehicle_color || '—'}</td></tr>
+      <tr><td>Vehicle No</td><td>${sale.vehicle_number || '—'}</td></tr>
+      <tr><td>Chassis No</td><td>${sale.chassis_number || '—'}</td></tr>
+      <tr><td>Engine No</td><td>${sale.engine_number || '—'}</td></tr>
+      <tr><td>RTO</td><td>${sale.rto ? '₹' + sale.rto.toLocaleString('en-IN') : '—'}</td></tr>
+      <tr><td>HP (Financier)</td><td>${sale.financier || '—'}</td></tr>
+      <tr><td>Insurance Nominee Name</td><td>${sale.nominee?.name || '—'}</td></tr>
+      <tr><td>Relation</td><td>${sale.nominee?.relation || '—'}</td></tr>
+      <tr><td>Age</td><td>${sale.nominee?.age || '—'}</td></tr>
+      <tr><td>Number</td><td>${sale.nominee?.number || '—'}</td></tr>
+    </table>
+    <div style="text-align:center;margin-top:20px;"><button onclick="window.print()" style="padding:10px 20px;font-size:16px;cursor:pointer;">Print Document</button></div>
+    </body></html>`);
     w.document.close();
   };
 
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.6)', zIndex:200, display:'flex', alignItems:'center', justifyContent:'center' }}
       onClick={onClose}>
-      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:4, width:'100%', maxWidth:520, overflow:'hidden' }}
+      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:4, width:'100%', maxWidth:520, display:'flex', flexDirection:'column', maxHeight:'90vh' }}
         onClick={e=>e.stopPropagation()}>
-        <div style={{ background:'#1c1c20', padding:'16px 20px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+        <div style={{ background:'#1c1c20', padding:'16px 20px', display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0 }}>
           <div>
-            <div className="display" style={{ fontSize:13, color:'var(--accent)', fontWeight:700 }}>Invoice</div>
+            <div className="display" style={{ fontSize:13, color:'var(--accent)', fontWeight:700 }}>Sale Record</div>
             <div className="mono" style={{ fontSize:11, color:'#6b6460', marginTop:2 }}>{sale.invoice_number}</div>
           </div>
           <button onClick={onClose} style={{ background:'transparent', border:'none', color:'#6b6460', cursor:'pointer', fontSize:20 }}>×</button>
         </div>
-        <div style={{ padding:20, display:'flex', flexDirection:'column', gap:10 }}>
+        
+        {/* Scrollable area for the long list of fields */}
+        <div style={{ padding:20, display:'flex', flexDirection:'column', gap:8, overflowY:'auto' }}>
           {[
-            ['Customer',   sale.customer_name],
-            ['Mobile',     sale.customer_mobile||'—'],
-            ['Vehicle',    `${sale.vehicle_brand} ${sale.vehicle_model} ${sale.vehicle_variant||''}`],
-            ['Chassis',    sale.chassis_number||'—'],
-            ['Reg No.',    sale.vehicle_number||'—'],
-            ['Sale price', `₹${(sale.sale_price||0).toLocaleString('en-IN')}`],
-            ['Discount',   `₹${(sale.discount||0).toLocaleString('en-IN')}`],
-            ['Insurance',  `₹${(sale.insurance||0).toLocaleString('en-IN')}`],
-            ['RTO',        `₹${(sale.rto||0).toLocaleString('en-IN')}`],
-            ['Total',      `₹${(sale.total_amount||0).toLocaleString('en-IN')}`],
-            ['Payment',    sale.payment_mode||'—'],
-            ['Date',       sale.sale_date||'—'],
+            ['Sales Date',    sale.sale_date || '—'],
+            ['Name',          sale.customer_name || '—'],
+            ['C/O',           sale.care_of || sale.customer_care_of || '—'],
+            ['Mobile Number', sale.customer_mobile || '—'],
+            ['Address',       sale.customer_address || '—'],
+            ['Brand',         sale.vehicle_brand || '—'],
+            ['Model',         sale.vehicle_model || '—'],
+            ['Variant',       sale.vehicle_variant || '—'],
+            ['Colour',        sale.vehicle_color || '—'],
+            ['Vehicle No',    sale.vehicle_number || '—'],
+            ['Chassis No',    sale.chassis_number || '—'],
+            ['Engine No',     sale.engine_number || '—'],
+            ['RTO',           sale.rto ? `₹${sale.rto.toLocaleString('en-IN')}` : '—'],
+            ['HP (Financier)',sale.financier || '—'],
+            ['Nominee Name',  sale.nominee?.name || '—'],
+            ['Relation',      sale.nominee?.relation || '—'],
+            ['Age',           sale.nominee?.age || '—'],
+            ['Number',        sale.nominee?.number || '—'],
           ].map(([l,v]) => (
-            <div key={l} style={{ display:'flex', fontSize:12 }}>
-              <div style={{ width:110, color:'var(--muted)', flexShrink:0 }}>{l}</div>
-              <div style={{ fontWeight:l==='Total'?700:400, color:l==='Total'?'var(--accent)':'var(--text)' }}>{v}</div>
+            <div key={l} style={{ display:'flex', fontSize:12, paddingBottom: 4, borderBottom: '1px solid var(--border)' }}>
+              <div style={{ width:140, color:'var(--muted)', flexShrink:0, fontWeight:500 }}>{l}</div>
+              <div style={{ color:'var(--text)', wordBreak:'break-word' }}>{v}</div>
             </div>
           ))}
-          {sale.amount_in_words && <div style={{ fontSize:11, color:'var(--muted)', borderTop:'1px solid var(--border)', paddingTop:10, fontStyle:'italic' }}>{sale.amount_in_words}</div>}
-          <div style={{ display:'flex', gap:8, marginTop:8 }}>
-            <Btn onClick={print}>Print →</Btn>
-            <GhostBtn onClick={()=>sendWA(sale.customer_mobile,`Dear ${sale.customer_name}, your invoice ${sale.invoice_number} for ₹${sale.total_amount?.toLocaleString('en-IN')} is ready. Thank you for choosing MM Motors!`)}>WhatsApp</GhostBtn>
-          </div>
+        </div>
+        
+        <div style={{ padding:'16px 20px', background:'var(--surface2)', borderTop:'1px solid var(--border)', display:'flex', gap:8, flexShrink:0 }}>
+          <Btn onClick={print}>Print →</Btn>
+          <GhostBtn onClick={()=>sendWA(sale.customer_mobile,`Dear ${sale.customer_name}, your vehicle documentation is ready. Thank you for choosing MM Motors!`)}>WhatsApp</GhostBtn>
         </div>
       </div>
     </div>
