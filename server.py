@@ -17,17 +17,14 @@ from typing import Optional, List, Any
 
 from bson import ObjectId
 from bson.errors import InvalidId
-from fastapi import FastAPI, Depends, HTTPException, status, Query, Request
+from fastapi import FastAPI, Depends, HTTPException, status, Query, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
-from motor.motor_asyncio import AsyncIOMotorClient
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
-from fastapi import FastAPI, Depends, HTTPException, status, Query, Request, UploadFile, File
-from fastapi.responses import JSONResponse, StreamingResponse
-from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 import os
 import certifi
 
@@ -344,13 +341,13 @@ class UserCreate(BaseModel):
     status:     Optional[str]   = "active"
 
 class UserUpdate(BaseModel):
-    name:      Optional[str]
-    mobile:    Optional[str]
-    email:     Optional[str]
-    role:      Optional[str]
-    salary:    Optional[float]
-    status:    Optional[str]
-    join_date: Optional[str]
+    name:      Optional[str] = None
+    mobile:    Optional[str] = None
+    email:     Optional[str] = None
+    role:      Optional[str] = None
+    salary:    Optional[float] = None
+    status:    Optional[str] = None
+    join_date: Optional[str] = None
 
 class PasswordChange(BaseModel):
     new_password: str
@@ -366,23 +363,23 @@ class CustomerCreate(BaseModel):
     id_proof_file_id: Optional[str] = ""
 
 class CustomerUpdate(BaseModel):
-    name:    Optional[str]
-    mobile:  Optional[str]
-    email:   Optional[str]
-    address: Optional[str]
-    gstin:   Optional[str]
-    tags:    Optional[List[str]]
+    name:    Optional[str] = None
+    mobile:  Optional[str] = None
+    email:   Optional[str] = None
+    address: Optional[str] = None
+    gstin:   Optional[str] = None
+    tags:    Optional[List[str]] = None
     id_proof_file_id: Optional[str] = None
 
 # ── Vehicles ──────────────────────────────────────────────────────────────────
 class VehicleCreate(BaseModel):
-brand:          str
+    brand:          str
     model:          str
     variant:        Optional[str] = ""
     color:          Optional[str] = ""
     chassis_number: Optional[str] = ""
     engine_number:  Optional[str] = ""
-    purchase_price: Optional[float] = ""
+    purchase_price: Optional[float] = 0
     inbound_date:      Optional[str] = ""
     location:          Optional[str] = ""
     outbound_date:     Optional[str] = ""
@@ -392,7 +389,7 @@ brand:          str
     notes:          Optional[str] = ""
   
 class VehicleUpdate(BaseModel):
-   brand:          Optional[str] = None
+    brand:          Optional[str] = None
     model:          Optional[str] = None
     variant:        Optional[str] = None
     color:          Optional[str] = None
@@ -406,21 +403,21 @@ class VehicleUpdate(BaseModel):
     key_number:     Optional[str] = None
     type:           Optional[str] = None
     status:            Optional[str] = None
-    
     notes:          Optional[str] = None
     
 # ── Sales ─────────────────────────────────────────────────────────────────────
 class NomineeInfo(BaseModel):
-    name:     Optional[str] = ""
-    relation: Optional[str] = ""
-    age:      Optional[str] = ""
+    name:     Optional[str] = None
+    relation: Optional[str] = None
+    age:      Optional[str] = None
+    number:   Optional[str] = None
 
 class SaleCreate(BaseModel):
     customer_id:       str
     vehicle_id:        str
     vehicle_number:    Optional[str] = ""
     sale_price:        Optional[float] = 0
-    total_amount:      Optional[float] = None   # if set, used directly instead of computing
+    total_amount:      Optional[float] = None
     discount:          Optional[float] = 0
     insurance:         Optional[float] = 0
     rto:               Optional[float] = 0
@@ -434,6 +431,10 @@ class SaleCreate(BaseModel):
     sold_by:           Optional[str]   = ""
     sale_date:         Optional[str]   = ""
     notes:             Optional[str]   = ""
+    care_of:           Optional[str]   = ""
+    hsrp_front_id:     Optional[str]   = ""
+    hsrp_back_id:      Optional[str]   = ""
+    hsrp_date:         Optional[str]   = ""
 
 class SaleUpdate(BaseModel):
     # Status & logistics
@@ -448,7 +449,7 @@ class SaleUpdate(BaseModel):
     customer_address:  Optional[str]   = None
     care_of:           Optional[str]   = None
     # Vehicle swap
-    vehicle_id:        Optional[str]   = None   # triggers vehicle status swap
+    vehicle_id:        Optional[str]   = None
     # Financials
     total_amount:      Optional[float] = None
     sale_price:        Optional[float] = None
@@ -459,6 +460,11 @@ class SaleUpdate(BaseModel):
     nominee:           Optional[NomineeInfo] = None
     # Date
     sale_date:         Optional[str]   = None
+    sold_by:           Optional[str]   = None
+    # HSRP
+    hsrp_front_id:     Optional[str]   = None
+    hsrp_back_id:      Optional[str]   = None
+    hsrp_date:         Optional[str]   = None
 
 # ── Service Jobs ──────────────────────────────────────────────────────────────
 class ServiceJobCreate(BaseModel):
@@ -523,17 +529,17 @@ class SparePartCreate(BaseModel):
     location:        Optional[str] = ""
 
 class SparePartUpdate(BaseModel):
-    name:            Optional[str]
-    category:        Optional[str]
-    brand:           Optional[str]
-    compatible_with: Optional[List[str]]
-    stock:           Optional[int]
-    reorder_level:   Optional[int]
-    purchase_price:  Optional[float]
-    selling_price:   Optional[float]
-    gst_rate:        Optional[float]
-    hsn_code:        Optional[str]
-    location:        Optional[str]
+    name:            Optional[str] = None
+    category:        Optional[str] = None
+    brand:           Optional[str] = None
+    compatible_with: Optional[List[str]] = None
+    stock:           Optional[int] = None
+    reorder_level:   Optional[int] = None
+    purchase_price:  Optional[float] = None
+    selling_price:   Optional[float] = None
+    gst_rate:        Optional[float] = None
+    hsn_code:        Optional[str] = None
+    location:        Optional[str] = None
 
 class StockAdjust(BaseModel):
     qty:    int    # positive = stock in, negative = adjustment
@@ -829,7 +835,7 @@ async def vehicle_stats(current_user=Depends(verify_token)):
         db.vehicles.count_documents({"type": "new"}),
         db.vehicles.count_documents({"type": "used"}),
     )
-    pipeline = [{"$match": {"status": "in_stock"}}, {"$group": {"_id": None, "total": {"$sum": "$ex_showroom"}}}]
+    pipeline = [{"$match": {"status": "in_stock"}}, {"$group": {"_id": None, "total": {"$sum": "$purchase_price"}}}]
     result   = await db.vehicles.aggregate(pipeline).to_list(1)
     stock_val = result[0]["total"] if result else 0
     return {
@@ -924,6 +930,7 @@ async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
         "customer_name":  customer["name"],
         "customer_mobile":customer.get("mobile", ""),
         "customer_address":customer.get("address",""),
+        "care_of":        body.care_of or "",
         "vehicle_id":     body.vehicle_id,
         "vehicle_brand":  vehicle["brand"],
         "vehicle_model":  vehicle["model"],
@@ -949,6 +956,9 @@ async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
         "sale_date":      sale_date,
         "status":         "pending",    # pending | delivered
         "notes":          body.notes or "",
+        "hsrp_front_id":  body.hsrp_front_id or "",
+        "hsrp_back_id":   body.hsrp_back_id or "",
+        "hsrp_date":      body.hsrp_date or "",
         "created_at":     datetime.utcnow().isoformat(),
     }
 
@@ -1001,7 +1011,8 @@ async def update_sale(sale_id: str, body: SaleUpdate, current_user=Depends(verif
     for field in ("status", "delivery_date", "vehicle_number", "payment_mode",
                   "notes", "customer_name", "customer_mobile", "customer_address",
                   "care_of", "total_amount", "sale_price", "finance_type",
-                  "financier", "loan_amount", "sale_date"):
+                  "financier", "loan_amount", "sale_date", "sold_by",
+                  "hsrp_front_id", "hsrp_back_id", "hsrp_date"):
         val = getattr(body, field)
         if val is not None:
             update[field] = val
