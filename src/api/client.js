@@ -124,9 +124,10 @@ export const dashboardApi = {
 };
 
 export const reportsApi = {
-  revenue:    (params) => api.get('/reports/revenue', { params }),
-  brandSales: (params) => api.get('/reports/brand-sales', { params }),
-  topParts:   (params) => api.get('/reports/top-parts', { params }),
+  revenue:      (params) => api.get('/reports/revenue', { params }),
+  brandSales:   (params) => api.get('/reports/brand-sales', { params }),
+  topParts:     (params) => api.get('/reports/top-parts', { params }),
+  dailyClosing: (date)   => api.get('/reports/daily-closing', { params: { date } }), // <-- ADD THIS LINE
 };
 
 // ── Import ──────────────────────────────────────────────────────────
@@ -142,6 +143,19 @@ export const importApi = {
   },
   clear:  (entity) => api.delete(`/import/clear/${entity}`),
   counts: ()       => api.get('/import/counts'),
+};
+
+// ── Files / Uploads ─────────────────────────────────────────────────
+export const filesApi = {
+  upload: async (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await api.post('/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return res.data;
+  },
+  getFileUrl: (fileId) => `${api.defaults.baseURL}/files/${fileId}`,
 };
 
 // ── Health ──────────────────────────────────────────────────────────
