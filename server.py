@@ -25,6 +25,9 @@ from jose import JWTError, jwt
 from motor.motor_asyncio import AsyncIOMotorClient
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
+from fastapi import FastAPI, Depends, HTTPException, status, Query, Request, UploadFile, File
+from fastapi.responses import JSONResponse, StreamingResponse
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 import os
 import certifi
 
@@ -59,6 +62,7 @@ GST_RATES = [5, 12, 18]
 # ─── DB ───────────────────────────────────────────────────────────────────────
 client: AsyncIOMotorClient = None
 db     = None
+fs     = None
 
 # ─── Auth helpers (defined early — used in lifespan seed) ─────────────────────
 pwd_ctx  = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -67,7 +71,7 @@ security = HTTPBearer()
 @asynccontextmanager
 async def lifespan(app):
     # ── startup ──────────────────────────────────────────────────────────────
-    global client, db
+    global client, db, fs
     try:
         client = AsyncIOMotorClient(
             MONGO_URL,
@@ -76,6 +80,7 @@ async def lifespan(app):
             tlsCAFile=certifi.where(),
         )
         db = client[DB_NAME]
+        fs = AsyncIOMotorGridFSBucket(db)
         await _ensure_indexes()
         await _seed_owner()
         print(f"[MM Motors] Connected to MongoDB · DB: {DB_NAME}")
@@ -555,6 +560,33 @@ async def ready():
         return {"status": "ready", "db": DB_NAME}
     except Exception as e:
         return JSONResponse(status_code=503, content={"status": "not_ready", "error": str(e)})
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  FILES (GridFS Uploads)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@api_router.post("/upload")
+async def upload_file(file: UploadFile = File(...), current_user=Depends(verify_token)):
+    file_id = await fs.upload_from_stream(
+        file.filename,
+        file.file,
+        metadata={"content_type": file.content_type, "uploaded_by": current_user["username"]}
+    )
+    return {"file_id": str(file_id), "filename": file.filename}
+
+@api_router.get("/files/{file_id}")
+async def get_file(file_id: str):
+    try:
+        grid_out = await fs.open_download_stream(obj_id(file_id))
+        async def file_stream():
+            while chunk := await grid_out.readchunk():
+                yield chunk
+        return StreamingResponse(
+            file_stream(), 
+            media_type=grid_out.metadata.get("content_type", "application/octet-stream")
+        )
+    except Exception:
+        raise HTTPException(status_code=404, detail="File not found")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  AUTH
@@ -1607,6 +1639,48 @@ async def revenue_report(
         "parts":   oids(parts_by_month),
     }
 
+@api_router.get("/reports/daily-closing")
+async def daily_closing_report(
+    date: Optional[str] = Query(None), 
+    current_user=Depends(require_admin)
+):
+    target_date = date or datetime.utcnow().strftime("%d %b %Y")
+    
+    async def get_totals(collection, date_field, amount_field):
+        pipeline = [
+            {"$match": {date_field: target_date}},
+            {"$group": {
+                "_id": {"$toLower": "$payment_mode"},
+                "total": {"$sum": amount_field}
+            }}
+        ]
+        return await db[collection].aggregate(pipeline).to_list(None)
+
+    sales_r, service_r, parts_r = await asyncio.gather(
+        get_totals("sales", "sale_date", "$total_amount"),
+        get_totals("service_bills", "bill_date", "$grand_total"),
+        get_totals("parts_sales", "sale_date", "$grand_total"),
+    )
+
+    summary = {}
+    for source, data in [("Vehicles", sales_r), ("Service", service_r), ("Parts", parts_r)]:
+        for item in data:
+            mode = (item["_id"] or "unknown").title()
+            if mode not in summary:
+                summary[mode] = {"total": 0, "Vehicles": 0, "Service": 0, "Parts": 0}
+            summary[mode][source] += item["total"]
+            summary[mode]["total"] += item["total"]
+
+    result = [{"payment_mode": k, **v} for k, v in summary.items()]
+    result.sort(key=lambda x: 0 if x["payment_mode"] == "Cash" else 1)
+    grand_total = sum(r["total"] for r in result)
+    
+    return {
+        "date": target_date,
+        "breakdown": result,
+        "grand_total": grand_total
+    }
+  
 @api_router.get("/reports/brand-sales")
 async def brand_sales_report(current_user=Depends(require_admin)):
     pipeline = [
