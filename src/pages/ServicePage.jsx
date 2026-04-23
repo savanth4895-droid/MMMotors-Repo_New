@@ -48,24 +48,33 @@ function BillModal({ job, onClose, onDone }) {
   const grand    = subtotal + gstTotal;
 
   const handleSubmit = async () => {
-    const valid = rows.filter(r=>r.desc&&r.unit_price);
+    // Only accept rows where the user actually typed a unit price
+    const valid = rows.filter(r => r.desc && r.unit_price !== '');
     if (!valid.length) return toast.error('Add at least one item');
+    
     setSaving(true);
     try {
       await billsApi.create({
         job_id: job.id,
-        items: valid.map(r=>({ description:r.desc, part_number:'', hsn_code:r.hsn||'', qty:parseInt(r.qty)||1, unit_price:parseFloat(r.unit_price)||0, gst_rate:r.gst_rate })),
+        items: valid.map(r => ({ 
+          description: String(r.desc), 
+          part_number: '', 
+          hsn_code: String(r.hsn || ''), 
+          // Force numbers to satisfy the strict FastAPI backend
+          qty: Number(r.qty) || 1, 
+          unit_price: Number(r.unit_price) || 0, 
+          gst_rate: Number(r.gst_rate) || 18 
+        })),
         payment_mode: payMode,
       });
       toast.success('Bill generated');
       onDone();
     } catch(e) {
-      toast.error(e?.response?.data?.detail||'Failed');
+      toast.error(e?.response?.data?.detail || 'Failed');
     } finally {
       setSaving(false);
     }
   };
-
   const inp = { background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:3, padding:'6px 8px', color:'var(--text)', outline:'none', fontSize:12, fontFamily:'IBM Plex Sans,sans-serif', width:'100%' };
   const sel = { ...inp };
 
