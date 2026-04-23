@@ -4,7 +4,7 @@ import { customersApi } from '../api/client';
 import { Btn, GhostBtn, Field, Avatar, Skeleton, Empty, ApiError } from '../components/ui';
 import toast from 'react-hot-toast';
 import { useConfirm } from '../components/ConfirmModal';
-import { FileUpload } from '../components/FileUpload';
+import FileUpload from '../components/FileUpload';
 
 const TAG_PILL = { VIP:'pill-amber', Corporate:'pill-blue', Loyal:'pill-green' };
 
