@@ -29,7 +29,7 @@ const STATUS_STYLE = {
 
 function sendWA(mobile, msg) {
   if (!mobile) return toast.error('No mobile number saved');
-  const cleanMobile = mobile.replace(/\D/g, '');
+  const cleanMobile = String(mobile).replace(/\D/g, '');
   window.open(`https://wa.me/91${cleanMobile}?text=${encodeURIComponent(msg)}`, '_blank');
 }
 
