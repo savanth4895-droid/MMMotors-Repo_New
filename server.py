@@ -32,11 +32,6 @@ import certifi
 MONGO_URL      = os.getenv("MONGO_URL", "mongodb://localhost:27017").strip()
 
 # Parse and fix MONGO_URL — extract password and truncate to 72 bytes if needed
-def _fix_mongo_url(url: str) -> str:
-    return url
-
-MONGO_URL = _fix_mongo_url(MONGO_URL)
-
 # Debug — print URL length and password length on startup
 try:
     from urllib.parse import urlparse as _urlparse
