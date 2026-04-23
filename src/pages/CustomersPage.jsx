@@ -80,7 +80,7 @@ function CustomerDetail({ cust, onBack }) {
         {[
           { l:'Total spent',    v: tl?.total_spent  ? '₹'+tl.total_spent.toLocaleString('en-IN') : '—', c:'var(--accent)' },
           { l:'Vehicles',       v: tl?.sales?.length      ?? '—', c:'var(--text)' },
-          { l:'Service visits', v: tl?.service_jobs?.length ?? '—', c:'var(--text)' },
+          { l:'Service visits', v: tl?.service?.length ?? '—', c:'var(--text)' },
           { l:'Service spend',  v: tl?.service_spend ? '₹'+tl.service_spend.toLocaleString('en-IN') : '—', c:'var(--blue)' },
         ].map((s,i) => (
           <div key={i} style={{ padding:'14px 20px', borderRight:i<3?'1px solid var(--border)':0 }}>
@@ -119,13 +119,13 @@ function CustomerDetail({ cust, onBack }) {
                 </div>
                 <div>
                   <div className="label-xs" style={{ marginBottom:14 }}>Recent activity</div>
-                  {[...(tl?.service_jobs||[]),...(tl?.sales||[])].slice(0,5).map((item,i) => (
+                  {[...(tl?.service||[]),...(tl?.sales||[])].slice(0,5).map((item,i) => (
                     <div key={i} style={{ display:'flex', justifyContent:'space-between', marginBottom:10, paddingBottom:10, borderBottom:'1px solid var(--border)', fontSize:11 }}>
                       <span>{item.job_number||item.invoice_number}</span>
                       <span className="pill pill-dim">{item.status}</span>
                     </div>
                   ))}
-                  {!tl?.service_jobs?.length && !tl?.sales?.length && <div style={{ fontSize:11, color:'var(--dim)' }}>No activity yet</div>}
+                  {!tl?.service?.length && !tl?.sales?.length && <div style={{ fontSize:11, color:'var(--dim)' }}>No activity yet</div>}
                 </div>
               </div>
             )}
@@ -139,7 +139,7 @@ function CustomerDetail({ cust, onBack }) {
               )) : <Empty message="No vehicles purchased" />
             )}
             {tab === 'service' && (
-              tl?.service_jobs?.length ? tl.service_jobs.map((j,i) => (
+              tl?.service?.length ? tl.service.map((j,i) => (
                 <div key={i} style={{ display:'flex', gap:12, padding:'12px 0', borderBottom:'1px solid var(--border)', alignItems:'center' }}>
                   <div style={{ flex:1 }}>
                     <div className="mono" style={{ fontSize:10, color:'var(--blue)' }}>{j.job_number}</div>
