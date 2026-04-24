@@ -38,6 +38,25 @@ function BillModal({ job, onClose, onDone }) {
   const [rows, setRows] = useState([{ desc:'Labour charges', hsn:'9987', qty:1, unit_price:'', gst_rate:18 }]);
   const [payMode, setPayMode] = useState('Cash');
   const [saving, setSaving]   = useState(false);
+  const [existingBill, setExistingBill] = useState(null);
+  const [loadingBill, setLoadingBill]   = useState(true);
+
+  // On open, check if bill already exists for this job
+  useState(() => {
+    billsApi.list({ job_id: job.id }).then(r => {
+      const bills = Array.isArray(r.data) ? r.data : [];
+      const bill = bills.find(b => b.job_id === job.id);
+      if (bill) {
+        setExistingBill(bill);
+        // Pre-fill rows from existing bill
+        setRows(bill.items.map(i => ({
+          desc: i.description, hsn: i.hsn_code || '', qty: i.qty,
+          unit_price: i.unit_price, gst_rate: i.gst_rate
+        })));
+        setPayMode(bill.payment_mode || 'Cash');
+      }
+    }).catch(() => {}).finally(() => setLoadingBill(false));
+  }, []);
 
   const upd = (i,k,v) => setRows(p=>p.map((r,idx)=>idx===i?{...r,[k]:v}:r));
   const addRow    = () => setRows(p=>[...p,{ desc:'', hsn:'', qty:1, unit_price:'', gst_rate:18 }]);
