@@ -1,393 +1,671 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { serviceApi, billsApi, customersApi } from '../api/client';
-import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError } from '../components/ui';
+import { serviceApi, partsApi } from '../api/client';
 import toast from 'react-hot-toast';
-import { useConfirm } from '../components/ConfirmModal';
-import FileUpload from '../components/FileUpload';
 
-const BRANDS = ['HERO','HONDA','BAJAJ','TVS','YAMAHA','SUZUKI','ROYAL ENFIELD','KTM','PIAGGIO','APRILIA','TRIUMPH'];
-const MODELS = {
-  HERO:['Splendor+','HF Deluxe','Passion Pro','Glamour','Xtreme 160R'],
-  HONDA:['Activa 6G','Shine','Unicorn','SP125','CB350'],
-  BAJAJ:['Pulsar 150','Pulsar NS200','Platina','Dominar 400'],
-  TVS:['Jupiter','Ntorq 125','Apache RTR 160','Raider 125'],
-  YAMAHA:['FZ-S','MT-15','R15 V4','Fascino 125'],
-  SUZUKI:['Access 125','Gixxer SF'],
-  'ROYAL ENFIELD':['Classic 350','Meteor 350','Hunter 350'],
-  KTM:['Duke 200','Duke 390'],
-  PIAGGIO:['Vespa SXL 150'],
-  APRILIA:['SR 160','SR 125'],
-  TRIUMPH:['Speed 400'],
+// ─── Helpers ────────────────────────────────────────────────────────────────
+const RS = '₹';
+const fmt = n => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtInt = n => Number(n || 0).toLocaleString('en-IN');
+
+function numWords(n) {
+  const a = ['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen'];
+  const b = ['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];
+  if (!n || n === 0) return 'Zero';
+  n = Math.round(n);
+  if (n < 20)      return a[n];
+  if (n < 100)     return b[Math.floor(n/10)] + (n%10 ? ' '+a[n%10] : '');
+  if (n < 1000)    return a[Math.floor(n/100)] + ' Hundred' + (n%100 ? ' '+numWords(n%100) : '');
+  if (n < 100000)  return numWords(Math.floor(n/1000)) + ' Thousand' + (n%1000 ? ' '+numWords(n%1000) : '');
+  if (n < 10000000)return numWords(Math.floor(n/100000)) + ' Lakh' + (n%100000 ? ' '+numWords(n%100000) : '');
+  return numWords(Math.floor(n/10000000)) + ' Crore' + (n%10000000 ? ' '+numWords(n%10000000) : '');
+}
+
+const emptyRow = () => ({ description: '', hsn: '9987', qty: 1, unit_price: 0, gst_rate: 18, _key: Math.random() });
+
+// ─── Shared Styles ───────────────────────────────────────────────────────────
+const inputStyle = {
+  background: 'var(--surface2)',
+  border: '1px solid var(--border)',
+  borderRadius: 3,
+  padding: '7px 9px',
+  color: 'var(--text)',
+  outline: 'none',
+  fontSize: 12,
+  fontFamily: 'IBM Plex Sans, sans-serif',
+  width: '100%',
+  boxSizing: 'border-box',
 };
-const STATUS_STYLE = {
-  pending:     { color:'#6b6b78', bg:'rgba(107,107,120,.12)', border:'rgba(107,107,120,.3)', label:'Pending' },
-  in_progress: { color:'#f0c040', bg:'rgba(240,192,64,.12)',  border:'rgba(240,192,64,.3)',  label:'In Progress' },
-  ready:       { color:'#4ade80', bg:'rgba(74,222,128,.12)',   border:'rgba(74,222,128,.3)',  label:'Ready' },
-  delivered:   { color:'#3a3a44', bg:'rgba(58,58,68,.2)',      border:'rgba(58,58,68,.3)',    label:'Delivered' },
+
+const btnPrimary = {
+  background: '#B8860B',
+  color: '#fff',
+  border: 'none',
+  borderRadius: 3,
+  padding: '9px 22px',
+  fontWeight: 700,
+  fontSize: 12,
+  cursor: 'pointer',
+  fontFamily: 'IBM Plex Sans, sans-serif',
+  letterSpacing: '.04em',
 };
 
-function sendWA(mobile, msg) {
-  if (!mobile) return toast.error('No mobile number saved');
-  const cleanMobile = String(mobile).replace(/\D/g, '');
-  window.open(`https://wa.me/91${cleanMobile}?text=${encodeURIComponent(msg)}`, '_blank');
-}
+const btnGhost = {
+  background: 'transparent',
+  color: 'var(--muted)',
+  border: '1px solid var(--border2)',
+  borderRadius: 3,
+  padding: '8px 16px',
+  fontSize: 12,
+  cursor: 'pointer',
+  fontFamily: 'IBM Plex Sans, sans-serif',
+};
 
-// ── GST Bill modal ───────────────────────────────────────────────────
-function BillModal({ job, onClose, onDone }) {
-  const [rows, setRows] = useState([{ desc:'Labour charges', hsn:'9987', qty:1, unit_price:'', gst_rate:18 }]);
-  const [payMode, setPayMode] = useState('Cash');
-  const [saving, setSaving]   = useState(false);
-  const [existingBill, setExistingBill] = useState(null);
-  const [loadingBill, setLoadingBill]   = useState(true);
-
-  // On open, check if bill already exists for this job
-  useState(() => {
-    billsApi.list({ job_id: job.id }).then(r => {
-      const bills = Array.isArray(r.data) ? r.data : [];
-      const bill = bills.find(b => b.job_id === job.id);
-      if (bill) {
-        setExistingBill(bill);
-        // Pre-fill rows from existing bill
-        setRows(bill.items.map(i => ({
-          desc: i.description, hsn: i.hsn_code || '', qty: i.qty,
-          unit_price: i.unit_price, gst_rate: i.gst_rate
-        })));
-        setPayMode(bill.payment_mode || 'Cash');
-      }
-    }).catch(() => {}).finally(() => setLoadingBill(false));
-  }, []);
-
-  const upd = (i,k,v) => setRows(p=>p.map((r,idx)=>idx===i?{...r,[k]:v}:r));
-  const addRow    = () => setRows(p=>[...p,{ desc:'', hsn:'', qty:1, unit_price:'', gst_rate:18 }]);
-  const removeRow = i  => setRows(p=>p.filter((_,idx)=>idx!==i));
-
-  const subtotal = rows.reduce((s,r)=>(s+(parseFloat(r.unit_price)||0)*(parseInt(r.qty)||1)),0);
-  const gstTotal = rows.reduce((s,r)=>(s+(parseFloat(r.unit_price)||0)*(parseInt(r.qty)||1)*(r.gst_rate/100)),0);
-  const grand    = subtotal + gstTotal;
-
-  const handleSubmit = async () => {
-    // Only accept rows where the user actually typed a unit price
-    const valid = rows.filter(r => r.desc && r.unit_price !== '');
-    if (!valid.length) return toast.error('Add at least one item');
-    
-    setSaving(true);
-    try {
-      await billsApi.create({
-        job_id: job.id,
-        items: valid.map(r => ({ 
-          description: String(r.desc), 
-          part_number: '', 
-          hsn_code: String(r.hsn || ''), 
-          // Force numbers to satisfy the strict FastAPI backend
-          qty: Number(r.qty) || 1, 
-          unit_price: Number(r.unit_price) || 0, 
-          gst_rate: Number(r.gst_rate) || 18 
-        })),
-        payment_mode: payMode,
-      });
-      toast.success('Bill generated');
-      onDone();
-    } catch(e) {
-      toast.error(e?.response?.data?.detail || 'Failed');
-    } finally {
-      setSaving(false);
-    }
-  };
-  const inp = { background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:3, padding:'6px 8px', color:'var(--text)', outline:'none', fontSize:12, fontFamily:'IBM Plex Sans,sans-serif', width:'100%' };
-  const sel = { ...inp };
-
-  return (
-    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.6)', zIndex:200, display:'flex', alignItems:'center', justifyContent:'center' }}
-      onClick={onClose}>
-      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:4, width:'100%', maxWidth:700, maxHeight:'90vh', overflowY:'auto' }}
-        onClick={e=>e.stopPropagation()}>
-        <div style={{ background:'#1c1c20', padding:'16px 20px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-          <div>
-            <div className="display" style={{ fontSize:13, color:'var(--accent)', fontWeight:700 }}>Service Bill</div>
-            <div className="mono" style={{ fontSize:11, color:'#6b6460', marginTop:2 }}>{job.job_number} · {job.vehicle_number} · {job.customer_name}</div>
-          </div>
-          <button onClick={onClose} style={{ background:'transparent', border:'none', color:'#6b6460', cursor:'pointer', fontSize:20 }}>×</button>
-        </div>
-        <div style={{ padding:20, display:'flex', flexDirection:'column', gap:14 }}>
-          <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 60px 1fr 80px 28px', gap:6 }}>
-            {['Description','HSN','Qty','Unit Price (₹)','GST %',''].map(h=><span key={h} className="label-xs">{h}</span>)}
-          </div>
-          {rows.map((r,i)=>(
-            <div key={i} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 60px 1fr 80px 28px', gap:6 }}>
-              <input style={inp} value={r.desc}       onChange={e=>upd(i,'desc',e.target.value)}              placeholder="Labour / part name" />
-              <input style={inp} value={r.hsn}        onChange={e=>upd(i,'hsn',e.target.value)}               placeholder="9987" />
-              <input style={inp} type="number" value={r.qty}        onChange={e=>upd(i,'qty',e.target.value)} min="1" />
-              <input style={inp} type="number" value={r.unit_price} onChange={e=>upd(i,'unit_price',e.target.value)} placeholder="0" />
-              <select style={sel} value={r.gst_rate}  onChange={e=>upd(i,'gst_rate',parseFloat(e.target.value))}>
-                {[5,12,18,28].map(g=><option key={g} value={g}>{g}%</option>)}
-              </select>
-              {rows.length>1
-                ? <button onClick={()=>removeRow(i)} style={{ background:'transparent', border:'none', color:'var(--red)', cursor:'pointer', fontSize:14 }}>×</button>
-                : <div/>}
-            </div>
-          ))}
-          <button onClick={addRow} style={{ background:'transparent', border:'1px dashed var(--border2)', borderRadius:3, padding:'7px', fontSize:11, color:'var(--muted)', cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif' }}>+ Add line item</button>
-          <div style={{ borderTop:'1px solid var(--border)', paddingTop:12, display:'flex', flexDirection:'column', gap:4, alignItems:'flex-end' }}>
-            <div style={{ fontSize:11, color:'var(--muted)' }}>Subtotal: ₹{Math.round(subtotal).toLocaleString('en-IN')}</div>
-            <div style={{ fontSize:11, color:'var(--muted)' }}>GST: ₹{Math.round(gstTotal).toLocaleString('en-IN')}</div>
-            <div className="display" style={{ fontSize:18, color:'var(--accent)', marginTop:4 }}>Total: ₹{Math.round(grand).toLocaleString('en-IN')}</div>
-          </div>
-          <Field label="Payment mode">
-            <select value={payMode} onChange={e=>setPayMode(e.target.value)} style={{ ...sel, width:'auto' }}>
-              {['Cash','UPI','Card','Credit'].map(o=><option key={o} value={o}>{o}</option>)}
-            </select>
-          </Field>
-          <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
-            <GhostBtn onClick={onClose}>Cancel</GhostBtn>
-            <Btn disabled={saving} onClick={handleSubmit}>{saving?'Generating…':'Generate Bill'}</Btn>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── New job wizard ───────────────────────────────────────────────────
-function NewJobWizard({ onDone }) {
-  const [step, setStep]         = useState(1);
-  const [custSearch, setCustSearch] = useState('');
-  const [selCust, setSelCust]   = useState(null);
-  const [veh, setVeh]           = useState({ vehicle_number:'', brand:'', model:'', odometer_km:'', complaint:'', technician:'' });
-  const [saving, setSaving]     = useState(false);
-  const [vehiclePhotoId, setVehiclePhotoId] = useState(null);
-
-  const { data:custsData } = useQuery({
-    queryKey:['cust-srch-svc', custSearch],
-    queryFn: ()=>customersApi.list({ search:custSearch, limit:20 }).then(r=>r.data),
-    enabled: custSearch.length>1,
-  });
-  const custs = Array.isArray(custsData)?custsData:[];
-
-  const selStyle = { background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:3, padding:'8px 10px', color:'var(--text)', outline:'none', fontSize:13, fontFamily:'IBM Plex Sans,sans-serif', width:'100%' };
-
-  const handleCreate = async () => {
-    setSaving(true);
-    try {
-      await serviceApi.create({
-        customer_id:    selCust.id,
-        vehicle_number: veh.vehicle_number.toUpperCase(),
-        brand:          veh.brand,
-        model:          veh.model,
-        odometer_km:    parseInt(veh.odometer_km)||0,
-        complaint:      veh.complaint,
-        technician:     veh.technician,
-        vehicle_photo_id: vehiclePhotoId //
-      });
-      toast.success('Job card created');
-      onDone();
-    } catch(e) {
-      toast.error(e?.response?.data?.detail||'Failed');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div style={{ maxWidth:560, padding:24 }}>
-      <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:20 }}>
-        <GhostBtn onClick={onDone} sm>← Service</GhostBtn>
-        <span style={{ fontSize:13, fontWeight:500 }}>New job card</span>
-      </div>
-      <div style={{ display:'flex', borderBottom:'1px solid var(--border)', marginBottom:24 }}>
-        {['Customer','Vehicle details'].map((l,i)=>{
-          const n=i+1; const active=step===n; const past=step>n;
-          return (
-            <div key={l} onClick={()=>n<step&&setStep(n)} style={{ flex:1, padding:'10px 0', textAlign:'center', fontSize:10, letterSpacing:'.07em', cursor:n<step?'pointer':'default', borderBottom:active?'2px solid var(--accent)':'2px solid transparent', color:active?'var(--accent)':past?'var(--text)':'var(--dim)', fontWeight:active?600:400, textTransform:'uppercase' }}>
-              {past?'✓ ':''}{l}
-            </div>
-          );
-        })}
-      </div>
-
-      {step===1 && (
-        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-          <Field label="Search customer by name or mobile">
-            <input value={custSearch} onChange={e=>setCustSearch(e.target.value)} placeholder="Name or mobile" />
-          </Field>
-          {custs.map(c=>(
-            <div key={c.id} onClick={()=>setSelCust(c)} style={{ padding:'12px 14px', background:'var(--surface2)', border:`1px solid ${selCust?.id===c.id?'var(--green)':'var(--border)'}`, borderRadius:3, cursor:'pointer' }}>
-              <div style={{ fontWeight:500 }}>{c.name}</div>
-              <div className="mono" style={{ fontSize:11, color:'var(--muted)', marginTop:2 }}>{c.mobile} · {c.address}</div>
-            </div>
-          ))}
-          {custSearch.length>1&&custs.length===0&&<div style={{ fontSize:11, color:'var(--dim)' }}>No customers found</div>}
-          <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
-            <GhostBtn onClick={onDone}>Cancel</GhostBtn>
-            <Btn disabled={!selCust} onClick={()=>setStep(2)}>Next →</Btn>
-          </div>
-        </div>
-      )}
-
-      {step===2 && (
-        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-            <Field label="Vehicle reg no. *"><input value={veh.vehicle_number} onChange={e=>setVeh(p=>({...p,vehicle_number:e.target.value}))} placeholder="KA01HH1234" className="mono" /></Field>
-            <Field label="Brand *">
-              <select value={veh.brand} onChange={e=>setVeh(p=>({...p,brand:e.target.value,model:''}))} style={selStyle}>
-                <option value="">Select brand</option>
-                {BRANDS.map(b=><option key={b} value={b}>{b}</option>)}
-              </select>
-            </Field>
-            <Field label="Model *">
-              <select value={veh.model} onChange={e=>setVeh(p=>({...p,model:e.target.value}))} style={selStyle}>
-                <option value="">{veh.brand?'Select model':'Brand first'}</option>
-                {(MODELS[veh.brand]||[]).map(m=><option key={m} value={m}>{m}</option>)}
-              </select>
-            </Field>
-            <Field label="Odometer (km)"><input type="number" value={veh.odometer_km} onChange={e=>setVeh(p=>({...p,odometer_km:e.target.value}))} placeholder="12500" /></Field>
-            <Field label="Technician">   <input value={veh.technician}  onChange={e=>setVeh(p=>({...p,technician:e.target.value}))}  placeholder="Suresh / Arun…" /></Field>
-          </div>
-          <Field label="Complaint / work needed *">
-            <textarea rows={3} value={veh.complaint} onChange={e=>setVeh(p=>({...p,complaint:e.target.value}))} placeholder="Describe the issue or work required…" />
-          </Field>
-          <div style={{ marginTop: '8px' }}>
-            <FileUpload 
-              label="Upload Vehicle Condition Photo (Optional)" 
-              onUploadSuccess={(fileId) => setVehiclePhotoId(fileId)} 
-            />
-          </div>
-          <div style={{ display:'flex', justifyContent:'space-between', gap:8 }}>
-            <GhostBtn onClick={()=>setStep(1)}>← Back</GhostBtn>
-            <Btn disabled={!veh.vehicle_number||!veh.brand||!veh.complaint||saving} onClick={handleCreate}>
-              {saving?'Creating…':'Create job card →'}
-            </Btn>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Main page ────────────────────────────────────────────────────────
-export default function ServicePage({ user }) {
-  const confirm = useConfirm();
+// ─── SERVICE BILL MODAL ──────────────────────────────────────────────────────
+// FIX: On open, loads existing bill via GET /service-bills?job_id=...
+// FIX: Saves via POST (new) or PUT (update existing)
+// FIX: Deducts parts from inventory on save, restores on item deletion
+export function ServiceBillModal({ job, onClose }) {
   const qc = useQueryClient();
-  const [view, setView]         = useState('list');
-  const [statusF, setStatusF]   = useState('all');
-  const [search, setSearch]     = useState('');
-  const [billJob, setBillJob]   = useState(null);
 
-  const { data:stats } = useQuery({
-    queryKey:['service-stats'],
-    queryFn: ()=>serviceApi.stats().then(r=>r.data),
-  });
-  const { data, isLoading, error } = useQuery({
-    queryKey:['service', statusF, search],
-    queryFn: ()=>serviceApi.list({ status:statusF!=='all'?statusF:undefined, search:search||undefined, limit:200 }).then(r=>r.data),
-  });
-  const updateMut = useMutation({
-    mutationFn: ({id,d})=>serviceApi.update(id,d),
-    onSuccess: ()=>{ qc.invalidateQueries(['service']); qc.invalidateQueries(['service-stats']); },
-    onError: ()=>toast.error('Update failed'),
-  });
-  const deleteMut = useMutation({
-    mutationFn: id=>serviceApi.delete(id),
-    onSuccess: ()=>{ qc.invalidateQueries(['service']); qc.invalidateQueries(['service-stats']); toast.success('Deleted'); },
-    onError: e=>toast.error(e?.response?.data?.detail||'Cannot delete'),
+  // ── Fetch existing bill for this job ──────────────────────────────────────
+  const { data: existingBillData, isLoading: loadingBill } = useQuery({
+    queryKey: ['service-bill', job._id],
+    queryFn: () => serviceApi.getBillByJobId(job._id),
+    retry: false,
   });
 
-  const jobs = Array.isArray(data)?data:[];
-  const st   = stats||{};
-  const selStyle = { fontSize:9, padding:'3px 6px', borderRadius:2, fontWeight:500, appearance:'none', cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif', border:'1px solid', width:'auto' };
+  const existingBill = existingBillData?.data?.[0] || existingBillData?.data || null;
 
-  if (view==='new') {
-    return <NewJobWizard onDone={()=>{ setView('list'); qc.invalidateQueries(['service']); qc.invalidateQueries(['service-stats']); }} />;
-  }
+  // ── Row state ─────────────────────────────────────────────────────────────
+  const [rows, setRows] = useState([emptyRow()]);
+  const [payMode, setPayMode] = useState('Cash');
+  const [initialized, setInitialized] = useState(false);
+
+  // ── Populate rows from existing bill when loaded ──────────────────────────
+  useEffect(() => {
+    if (!loadingBill && existingBill && !initialized) {
+      const billItems = existingBill.items || [];
+      if (billItems.length > 0) {
+        setRows(billItems.map(it => ({
+          _key: Math.random(),
+          description: it.description || '',
+          hsn: it.hsn_code || '9987',
+          qty: it.qty || 1,
+          unit_price: it.unit_price || 0,
+          gst_rate: it.gst_rate || 18,
+          // track original qty so we can restore on delete
+          _savedQty: it.qty || 0,
+          _partNumber: it.part_number || null,
+        })));
+      }
+      setPayMode(existingBill.payment_mode || 'Cash');
+      setInitialized(true);
+    } else if (!loadingBill && !existingBill && !initialized) {
+      setRows([emptyRow()]);
+      setInitialized(true);
+    }
+  }, [loadingBill, existingBill, initialized]);
+
+  // ── Parts search for autocomplete ─────────────────────────────────────────
+  const { data: partsData } = useQuery({
+    queryKey: ['parts-list'],
+    queryFn: () => partsApi.list({ limit: 500 }),
+  });
+  const allParts = partsData?.data?.items || partsData?.data || [];
+
+  // ── Row helpers ───────────────────────────────────────────────────────────
+  const updateRow = (key, field, value) => {
+    setRows(prev => prev.map(r => r._key === key ? { ...r, [field]: value } : r));
+  };
+
+  const addRow = () => setRows(prev => [...prev, emptyRow()]);
+
+  const removeRow = (key) => {
+    setRows(prev => {
+      const row = prev.find(r => r._key === key);
+      // Restore parts stock if this row came from a saved bill
+      if (row?._partNumber && row?._savedQty) {
+        partsApi.adjustStock(row._partNumber, row._savedQty, 'add').catch(() => {});
+      }
+      return prev.filter(r => r._key !== key);
+    });
+  };
+
+  const fillFromPart = (key, part) => {
+    setRows(prev => prev.map(r => r._key === key ? {
+      ...r,
+      description: part.name,
+      hsn: part.hsn_code || '9987',
+      unit_price: part.selling_price || part.sellingPrice || 0,
+      gst_rate: part.gst_rate || part.gstRate || 18,
+      _partNumber: part.part_number || part.partNo,
+    } : r));
+  };
+
+  // ── Totals ────────────────────────────────────────────────────────────────
+  const validRows = rows.filter(r => r.description && r.unit_price > 0);
+  const subtotal  = validRows.reduce((s, r) => s + r.unit_price * r.qty, 0);
+  const gstTotal  = validRows.reduce((s, r) => s + r.unit_price * r.qty * r.gst_rate / 100, 0);
+  const total     = Math.round(subtotal + gstTotal);
+
+  // ── Save mutation ─────────────────────────────────────────────────────────
+  const saveMut = useMutation({
+    mutationFn: async () => {
+      const payload = {
+        job_id: job._id,
+        payment_mode: payMode,
+        items: validRows.map(r => ({
+          description: r.description,
+          hsn_code: r.hsn || '9987',
+          qty: Number(r.qty),
+          unit_price: Number(r.unit_price),
+          gst_rate: Number(r.gst_rate),
+          part_number: r._partNumber || '',
+        })),
+      };
+
+      // Deduct parts stock for items that have a part_number
+      // Only deduct the DIFFERENCE from previously saved qty
+      for (const row of validRows) {
+        if (row._partNumber) {
+          const prevQty = row._savedQty || 0;
+          const newQty  = Number(row.qty);
+          const diff    = newQty - prevQty;
+          if (diff > 0) {
+            await partsApi.adjustStock(row._partNumber, diff, 'subtract').catch(() => {});
+          } else if (diff < 0) {
+            await partsApi.adjustStock(row._partNumber, Math.abs(diff), 'add').catch(() => {});
+          }
+        }
+      }
+
+      if (existingBill?._id) {
+        return serviceApi.updateBill(existingBill._id, payload);
+      } else {
+        return serviceApi.createBill(payload);
+      }
+    },
+    onSuccess: () => {
+      toast.success('Service bill saved!');
+      qc.invalidateQueries(['service-bill', job._id]);
+      qc.invalidateQueries(['service-jobs']);
+      qc.invalidateQueries(['parts-list']);
+      onClose();
+    },
+    onError: (e) => toast.error(e?.response?.data?.detail || 'Failed to save bill'),
+  });
+
+  // ─── Render ───────────────────────────────────────────────────────────────
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,.82)',
+        display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+        zIndex: 2000, padding: '24px 16px', overflowY: 'auto',
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: 'var(--surface)', width: '100%', maxWidth: 780,
+          borderRadius: 6, overflow: 'hidden', boxShadow: '0 24px 80px rgba(0,0,0,.6)',
+          fontFamily: 'IBM Plex Sans, sans-serif',
+        }}
+      >
+        {/* Header */}
+        <div style={{ background: '#1A1A1A', borderTop: '3px solid #B8860B', padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div>
+            <div style={{ fontSize: 9, letterSpacing: '.12em', color: '#B8860B', fontWeight: 700, marginBottom: 4 }}>SERVICE BILL</div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: '#fff', letterSpacing: '-.01em' }}>
+              {job.job_number || job._id?.slice(-6)} — {job.customer_name || job.customer}
+            </div>
+            <div style={{ fontSize: 11, color: '#888', marginTop: 3 }}>
+              {job.vehicle_number || job.vehicle} &nbsp;·&nbsp; {job.model || ''}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: '#888', fontSize: 20, cursor: 'pointer', padding: 4 }}>×</button>
+        </div>
+
+        {loadingBill ? (
+          <div style={{ padding: 32, textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>Loading bill…</div>
+        ) : (
+          <div style={{ padding: '20px 20px 0' }}>
+            {/* Existing bill badge */}
+            {existingBill && (
+              <div style={{ marginBottom: 12, padding: '8px 14px', background: 'rgba(184,134,11,.10)', border: '1px solid rgba(184,134,11,.3)', borderRadius: 4, fontSize: 11, color: '#B8860B', fontWeight: 600 }}>
+                ✏️  Editing saved bill — {existingBill.bill_number || 'SRV-B'}
+              </div>
+            )}
+
+            {/* Line items table */}
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: '#1A1A1A' }}>
+                    {['Description / Part', 'HSN', 'Qty', 'Unit Price (₹)', 'GST %', 'Amount', ''].map((h, i) => (
+                      <th key={i} style={{ padding: '9px 10px', color: '#B8860B', fontWeight: 700, fontSize: 10, letterSpacing: '.06em', textAlign: i >= 2 ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row, idx) => (
+                    <BillRow
+                      key={row._key}
+                      row={row}
+                      idx={idx}
+                      allParts={allParts}
+                      onChange={updateRow}
+                      onRemove={removeRow}
+                      onSelectPart={fillFromPart}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Add row */}
+            <button onClick={addRow} style={{ ...btnGhost, marginTop: 8, fontSize: 11, padding: '6px 14px' }}>
+              + Add line item
+            </button>
+
+            {/* Totals */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+              <div style={{ minWidth: 240 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', fontSize: 12, color: 'var(--muted)', borderBottom: '1px solid var(--border)' }}>
+                  <span>Subtotal</span><span>{RS}{fmt(subtotal)}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', fontSize: 12, color: 'var(--muted)', borderBottom: '1px solid var(--border)' }}>
+                  <span>GST</span><span>{RS}{fmt(gstTotal)}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', fontSize: 15, fontWeight: 800, color: '#B8860B' }}>
+                  <span>Total</span><span>{RS}{fmtInt(total)}</span>
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--muted)', fontStyle: 'italic', textAlign: 'right', marginBottom: 8 }}>
+                  {numWords(total)} Rupees Only
+                </div>
+              </div>
+            </div>
+
+            {/* Payment mode */}
+            <div style={{ marginTop: 4, marginBottom: 20 }}>
+              <label style={{ fontSize: 11, color: 'var(--muted)', display: 'block', marginBottom: 5, letterSpacing: '.06em', fontWeight: 600 }}>PAYMENT MODE</label>
+              <select
+                value={payMode}
+                onChange={e => setPayMode(e.target.value)}
+                style={{ ...inputStyle, maxWidth: 220 }}
+              >
+                {['Cash', 'UPI', 'Card', 'Bank Transfer', 'Credit'].map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
+
+        {/* Footer actions */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '14px 20px', background: 'var(--surface2)', borderTop: '1px solid var(--border)' }}>
+          <button onClick={onClose} style={btnGhost}>Cancel</button>
+          <button
+            onClick={() => saveMut.mutate()}
+            disabled={saveMut.isPending || validRows.length === 0}
+            style={{ ...btnPrimary, opacity: saveMut.isPending || validRows.length === 0 ? .5 : 1 }}
+          >
+            {saveMut.isPending ? 'Saving…' : existingBill ? 'Update Bill' : 'Generate Bill'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Bill Row with parts autocomplete ────────────────────────────────────────
+function BillRow({ row, idx, allParts, onChange, onRemove, onSelectPart }) {
+  const [search, setSearch] = useState('');
+  const [showDrop, setShowDrop] = useState(false);
+
+  const filtered = search.length > 1
+    ? allParts.filter(p =>
+        p.name?.toLowerCase().includes(search.toLowerCase()) ||
+        (p.part_number || p.partNo)?.toLowerCase().includes(search.toLowerCase())
+      ).slice(0, 8)
+    : [];
+
+  const amount = row.unit_price * row.qty * (1 + row.gst_rate / 100);
+  const stripe = idx % 2 === 0 ? 'var(--surface)' : 'var(--surface2)';
 
   return (
-    <div>
-      {billJob && (
-        <BillModal job={billJob} onClose={()=>setBillJob(null)} onDone={()=>{ setBillJob(null); qc.invalidateQueries(['service']); }} />
-      )}
-
-      {/* stats */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', borderBottom:'1px solid var(--border)' }}>
-        {[
-          { l:'Pending',     v:st.pending??'—',     c:'var(--muted)' },
-          { l:'In progress', v:st.in_progress??'—', c:'var(--accent)' },
-          { l:'Ready',       v:st.ready??'—',       c:'var(--green)' },
-          { l:'Delivered',   v:st.delivered??'—',   c:'var(--dim)' },
-        ].map((s,i)=>(
-          <div key={i} style={{ padding:'16px 20px', borderRight:i<3?'1px solid var(--border)':0 }}>
-            <div className="label-xs">{s.l}</div>
-            <div className="display" style={{ fontSize:28, color:s.c, marginTop:6 }}>{s.v}</div>
+    <tr style={{ background: stripe }}>
+      {/* Description with parts search */}
+      <td style={{ padding: '7px 8px', minWidth: 200, position: 'relative' }}>
+        <input
+          value={row.description}
+          onChange={e => {
+            onChange(row._key, 'description', e.target.value);
+            setSearch(e.target.value);
+            setShowDrop(true);
+          }}
+          onBlur={() => setTimeout(() => setShowDrop(false), 180)}
+          placeholder="Labour / part name"
+          style={{ ...inputStyle }}
+        />
+        {showDrop && filtered.length > 0 && (
+          <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: 'var(--surface)', border: '1px solid var(--border2)', borderRadius: 4, zIndex: 100, boxShadow: '0 8px 24px rgba(0,0,0,.3)', maxHeight: 200, overflowY: 'auto' }}>
+            {filtered.map(p => (
+              <div
+                key={p._id || p.part_number}
+                onMouseDown={() => {
+                  onSelectPart(row._key, p);
+                  setSearch('');
+                  setShowDrop(false);
+                }}
+                style={{ padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid var(--border)', fontSize: 12 }}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--surface2)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+              >
+                <div style={{ fontWeight: 600, color: 'var(--text)' }}>{p.name}</div>
+                <div style={{ fontSize: 10, color: 'var(--muted)' }}>{p.part_number || p.partNo} &nbsp;·&nbsp; {RS}{p.selling_price || p.sellingPrice} &nbsp;·&nbsp; Stock: {p.stock}</div>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
-
-      {/* toolbar */}
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'12px 20px', borderBottom:'1px solid var(--border)', gap:10, flexWrap:'wrap' }}>
-        <div style={{ display:'flex', gap:6 }}>
-          {['all','pending','in_progress','ready','delivered'].map(s=>(
-            <button key={s} onClick={()=>setStatusF(s)} style={{ padding:'6px 12px', background:statusF===s?'var(--surface2)':'transparent', border:`1px solid ${statusF===s?'var(--accent)':'var(--border)'}`, borderRadius:3, color:statusF===s?'var(--accent)':'var(--muted)', cursor:'pointer', fontSize:10, letterSpacing:'.06em', fontFamily:'IBM Plex Sans,sans-serif' }}>
-              {s==='all'?'ALL':s==='in_progress'?'IN PROGRESS':s.toUpperCase()}
-            </button>
-          ))}
-        </div>
-        <div style={{ display:'flex', gap:8 }}>
-          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search…" style={{ width:180 }} />
-          <Btn onClick={()=>setView('new')}>+ New job card</Btn>
-        </div>
-      </div>
-
-      {/* table */}
-      {error ? <div style={{ padding:20 }}><ApiError error={error}/></div>
-        : isLoading ? <div style={{ padding:20, display:'flex', flexDirection:'column', gap:8 }}>{[1,2,3,4,5].map(i=><Skeleton key={i} h={44}/>)}</div>
-        : jobs.length===0 ? <Empty message="No service jobs found" />
-        : (
-          <table style={{ width:'100%', borderCollapse:'collapse' }}>
-            <thead>
-              <tr style={{ borderBottom:'1px solid var(--border)' }}>
-                {['Job #','Vehicle','Reg no.','Customer','Complaint','Status','Tech',''].map(h=>(
-                  <th key={h} style={{ padding:'9px 20px', textAlign:'left', fontSize:10, letterSpacing:'.07em', color:'var(--dim)', fontWeight:500, textTransform:'uppercase' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {jobs.map(j=>{
-                const sc = STATUS_STYLE[j.status]||STATUS_STYLE.pending;
-                return (
-                  <tr key={j.id} style={{ borderBottom:'1px solid var(--border)' }}>
-                    <td className="mono" style={{ padding:'11px 20px', fontSize:11, color:'var(--blue)' }}>{j.job_number}</td>
-                    <td style={{ padding:'11px 20px', fontSize:12, fontWeight:500 }}>{j.brand} {j.model}</td>
-                    <td className="mono" style={{ padding:'11px 20px', fontSize:11, color:'var(--muted)' }}>{j.vehicle_number}</td>
-                    <td style={{ padding:'11px 20px', fontSize:12, color:'var(--muted)' }}>{j.customer_name}</td>
-                    <td style={{ padding:'11px 20px', fontSize:11, color:'var(--dim)', maxWidth:140 }}>{j.complaint}</td>
-                    <td style={{ padding:'11px 20px' }}>
-                      <select value={j.status}
-                        onChange={e=>updateMut.mutate({id:j.id,d:{status:e.target.value}})}
-                        style={{ ...selStyle, color:sc.color, background:sc.bg, borderColor:sc.border }}>
-                        {['pending','in_progress','ready','delivered'].map(s=><option key={s} value={s}>{STATUS_STYLE[s]?.label||s}</option>)}
-                      </select>
-                    </td>
-                    <td style={{ padding:'11px 20px', fontSize:11, color:'var(--muted)' }}>{j.technician||'—'}</td>
-                    <td style={{ padding:'11px 20px' }}>
-                      <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-                        {j.status==='ready' && (
-                          <button onClick={()=>sendWA(j.customer_mobile,`Dear ${j.customer_name}, your vehicle ${j.vehicle_number} is ready for pickup at MM Motors. Job: ${j.job_number}.${amountText} Please contact us if you have any questions!`)}
-                            style={{ padding:'5px 10px', background:'rgba(22,163,74,.1)', border:'1px solid rgba(22,163,74,.3)', borderRadius:3, color:'var(--green)', cursor:'pointer', fontSize:10, fontFamily:'IBM Plex Sans,sans-serif' }}>
-                            Notify
-                          </button>
-                        )}
-                        <GhostBtn sm onClick={()=>setBillJob(j)}>Bill</GhostBtn>
-                        {user?.role==='owner' && (
-                          <button onClick={async () => { if (await confirm(`Delete ${j.job_number}?`)) { deleteMut.mutate(j.id); } }}
-                            style={{ padding:'5px 8px', background:'transparent', border:'1px solid rgba(220,38,38,.3)', borderRadius:3, color:'var(--red)', cursor:'pointer', fontSize:10, fontFamily:'IBM Plex Sans,sans-serif' }}>✕</button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
         )}
+      </td>
+      {/* HSN */}
+      <td style={{ padding: '7px 6px', width: 80 }}>
+        <input value={row.hsn} onChange={e => onChange(row._key, 'hsn', e.target.value)} placeholder="9987" style={{ ...inputStyle }} />
+      </td>
+      {/* Qty */}
+      <td style={{ padding: '7px 6px', width: 64 }}>
+        <input type="number" min="1" value={row.qty} onChange={e => onChange(row._key, 'qty', Math.max(1, Number(e.target.value)))} style={{ ...inputStyle, textAlign: 'right' }} />
+      </td>
+      {/* Unit price */}
+      <td style={{ padding: '7px 6px', width: 110 }}>
+        <input type="number" min="0" value={row.unit_price} onChange={e => onChange(row._key, 'unit_price', Number(e.target.value))} style={{ ...inputStyle, textAlign: 'right' }} />
+      </td>
+      {/* GST */}
+      <td style={{ padding: '7px 6px', width: 80 }}>
+        <select value={row.gst_rate} onChange={e => onChange(row._key, 'gst_rate', Number(e.target.value))} style={{ ...inputStyle }}>
+          {[0, 5, 12, 18, 28].map(r => <option key={r} value={r}>{r}%</option>)}
+        </select>
+      </td>
+      {/* Amount */}
+      <td style={{ padding: '7px 10px', textAlign: 'right', fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap', fontSize: 12 }}>
+        {RS}{fmtInt(Math.round(amount))}
+      </td>
+      {/* Remove */}
+      <td style={{ padding: '7px 6px', width: 28 }}>
+        <button onClick={() => onRemove(row._key)} style={{ background: 'transparent', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 16, padding: 0 }}>×</button>
+      </td>
+    </tr>
+  );
+}
+
+// ─── PARTS BILL MODAL ────────────────────────────────────────────────────────
+// Standalone billing for walk-in parts customers — no job card needed
+export function PartsBillModal({ onClose }) {
+  const qc = useQueryClient();
+
+  // Customer info
+  const [customer, setCustomer] = useState({ name: '', mobile: '', vehicle: '' });
+  const upd = k => e => setCustomer(p => ({ ...p, [k]: e.target.value }));
+
+  // Cart
+  const [cart, setCart] = useState([]);
+  const [partSearch, setPartSearch] = useState('');
+  const [payMode, setPayMode] = useState('Cash');
+  const [done, setDone] = useState(false);
+  const [billNumber, setBillNumber] = useState('');
+
+  // Load parts
+  const { data: partsData } = useQuery({
+    queryKey: ['parts-list'],
+    queryFn: () => partsApi.list({ limit: 500 }),
+  });
+  const allParts = partsData?.data?.items || partsData?.data || [];
+
+  const searchResults = partSearch.length > 1
+    ? allParts.filter(p =>
+        (p.name?.toLowerCase().includes(partSearch.toLowerCase()) ||
+         (p.part_number || p.partNo)?.toLowerCase().includes(partSearch.toLowerCase())) &&
+        p.stock > 0
+      ).slice(0, 10)
+    : [];
+
+  // Cart helpers
+  const addToCart = (part) => {
+    setCart(prev => {
+      const ex = prev.find(c => c._id === part._id);
+      if (ex) {
+        if (ex.qty >= part.stock) { toast.error('Not enough stock'); return prev; }
+        return prev.map(c => c._id === part._id ? { ...c, qty: c.qty + 1 } : c);
+      }
+      return [...prev, { ...part, qty: 1 }];
+    });
+    setPartSearch('');
+  };
+
+  const updateCartQty = (id, qty) => {
+    const part = allParts.find(p => p._id === id);
+    if (qty > (part?.stock || 0)) { toast.error('Not enough stock'); return; }
+    setCart(prev => qty <= 0 ? prev.filter(c => c._id !== id) : prev.map(c => c._id === id ? { ...c, qty } : c));
+  };
+
+  const removeFromCart = (id) => setCart(prev => prev.filter(c => c._id !== id));
+
+  // Totals
+  const subtotal = cart.reduce((s, c) => s + (c.selling_price || c.sellingPrice || 0) * c.qty, 0);
+  const gstTotal = cart.reduce((s, c) => s + (c.selling_price || c.sellingPrice || 0) * c.qty * (c.gst_rate || c.gstRate || 18) / 100, 0);
+  const total    = Math.round(subtotal + gstTotal);
+
+  // Generate bill
+  const genMut = useMutation({
+    mutationFn: async () => {
+      // Check stock for all items
+      for (const item of cart) {
+        if (item.qty > item.stock) throw new Error(`${item.name}: only ${item.stock} in stock`);
+      }
+      const payload = {
+        customer_name: customer.name,
+        customer_mobile: customer.mobile,
+        customer_vehicle: customer.vehicle,
+        payment_mode: payMode,
+        items: cart.map(c => ({
+          part_id: c._id,
+          part_number: c.part_number || c.partNo,
+          name: c.name,
+          hsn_code: c.hsn_code || c.hsnCode || '8714',
+          qty: c.qty,
+          unit_price: c.selling_price || c.sellingPrice,
+          gst_rate: c.gst_rate || c.gstRate || 18,
+        })),
+      };
+      return partsApi.createBill(payload);
+    },
+    onSuccess: (res) => {
+      const num = res?.data?.bill_number || `PRT-${Date.now().toString().slice(-6)}`;
+      setBillNumber(num);
+      setDone(true);
+      qc.invalidateQueries(['parts-list']);
+      toast.success('Parts bill generated!');
+    },
+    onError: (e) => toast.error(e?.message || e?.response?.data?.detail || 'Failed to generate bill'),
+  });
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.82)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', zIndex: 2000, padding: '24px 16px', overflowY: 'auto' }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{ background: 'var(--surface)', width: '100%', maxWidth: 820, borderRadius: 6, overflow: 'hidden', boxShadow: '0 24px 80px rgba(0,0,0,.6)', fontFamily: 'IBM Plex Sans, sans-serif' }}
+      >
+        {/* Header */}
+        <div style={{ background: '#1A1A1A', borderTop: '3px solid #B8860B', padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ fontSize: 9, letterSpacing: '.12em', color: '#B8860B', fontWeight: 700, marginBottom: 4 }}>PARTS BILL</div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: '#fff' }}>New Parts Sale</div>
+          </div>
+          <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: '#888', fontSize: 20, cursor: 'pointer' }}>×</button>
+        </div>
+
+        {done ? (
+          /* ── Success state ── */
+          <div style={{ padding: 32, textAlign: 'center' }}>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--text)', marginBottom: 6 }}>Bill Generated!</div>
+            <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 4 }}>{billNumber}</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: '#B8860B', marginBottom: 24 }}>{RS}{fmtInt(total)} — {payMode}</div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+              <button onClick={() => window.print()} style={{ ...btnPrimary }}>Print Bill</button>
+              <button onClick={onClose} style={{ ...btnGhost }}>Close</button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ padding: 20 }}>
+            {/* Customer info */}
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ fontSize: 10, letterSpacing: '.08em', fontWeight: 700, color: 'var(--muted)', marginBottom: 10 }}>CUSTOMER DETAILS</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+                <div>
+                  <label style={{ fontSize: 10, color: 'var(--muted)', display: 'block', marginBottom: 4 }}>Name</label>
+                  <input value={customer.name} onChange={upd('name')} placeholder="Customer name" style={inputStyle} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 10, color: 'var(--muted)', display: 'block', marginBottom: 4 }}>Mobile</label>
+                  <input value={customer.mobile} onChange={upd('mobile')} placeholder="10-digit mobile" style={inputStyle} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 10, color: 'var(--muted)', display: 'block', marginBottom: 4 }}>Vehicle (optional)</label>
+                  <input value={customer.vehicle} onChange={upd('vehicle')} placeholder="KA 07 U 3915" style={inputStyle} />
+                </div>
+              </div>
+            </div>
+
+            {/* Parts search */}
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 10, letterSpacing: '.08em', fontWeight: 700, color: 'var(--muted)', marginBottom: 10 }}>ADD PARTS TO CART</div>
+              <div style={{ position: 'relative', maxWidth: 400 }}>
+                <input
+                  value={partSearch}
+                  onChange={e => setPartSearch(e.target.value)}
+                  placeholder="Search by part name or number…"
+                  style={{ ...inputStyle }}
+                />
+                {searchResults.length > 0 && (
+                  <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: 'var(--surface)', border: '1px solid var(--border2)', borderRadius: 4, zIndex: 100, boxShadow: '0 8px 24px rgba(0,0,0,.3)', maxHeight: 240, overflowY: 'auto' }}>
+                    {searchResults.map(p => (
+                      <div
+                        key={p._id}
+                        onClick={() => addToCart(p)}
+                        style={{ padding: '9px 12px', cursor: 'pointer', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                        onMouseEnter={e => e.currentTarget.style.background = 'var(--surface2)'}
+                        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                      >
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{p.name}</div>
+                          <div style={{ fontSize: 10, color: 'var(--muted)' }}>{p.part_number || p.partNo} &nbsp;·&nbsp; {p.category}</div>
+                        </div>
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: '#B8860B' }}>{RS}{p.selling_price || p.sellingPrice}</div>
+                          <div style={{ fontSize: 10, color: p.stock <= (p.reorder_level || 5) ? '#fbbf24' : '#4ade80' }}>Stock: {p.stock}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Cart */}
+            {cart.length === 0 ? (
+              <div style={{ padding: '28px 0', textAlign: 'center', color: 'var(--muted)', fontSize: 13, borderTop: '1px solid var(--border)' }}>
+                No parts added yet. Search above to add items.
+              </div>
+            ) : (
+              <div style={{ marginBottom: 16 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ background: '#1A1A1A' }}>
+                      {['Part Name', 'Part No', 'HSN', 'Qty', 'Price', 'GST %', 'Amount', ''].map((h, i) => (
+                        <th key={i} style={{ padding: '8px 10px', color: '#B8860B', fontWeight: 700, fontSize: 10, letterSpacing: '.06em', textAlign: i >= 3 ? 'right' : 'left' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cart.map((item, idx) => {
+                      const price  = item.selling_price || item.sellingPrice || 0;
+                      const gstR   = item.gst_rate || item.gstRate || 18;
+                      const amount = price * item.qty * (1 + gstR / 100);
+                      return (
+                        <tr key={item._id} style={{ background: idx % 2 === 0 ? 'var(--surface)' : 'var(--surface2)' }}>
+                          <td style={{ padding: '8px 10px', fontWeight: 600 }}>{item.name}</td>
+                          <td style={{ padding: '8px 10px', fontFamily: 'monospace', fontSize: 11, color: 'var(--muted)' }}>{item.part_number || item.partNo}</td>
+                          <td style={{ padding: '8px 10px', color: 'var(--muted)', fontSize: 11 }}>{item.hsn_code || item.hsnCode || '8714'}</td>
+                          <td style={{ padding: '8px 6px', textAlign: 'right' }}>
+                            <input
+                              type="number" min="1" max={item.stock} value={item.qty}
+                              onChange={e => updateCartQty(item._id, Number(e.target.value))}
+                              style={{ ...inputStyle, width: 54, textAlign: 'right' }}
+                            />
+                          </td>
+                          <td style={{ padding: '8px 10px', textAlign: 'right' }}>{RS}{price}</td>
+                          <td style={{ padding: '8px 10px', textAlign: 'right', color: 'var(--muted)' }}>{gstR}%</td>
+                          <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 700, color: '#B8860B' }}>{RS}{fmtInt(Math.round(amount))}</td>
+                          <td style={{ padding: '8px 6px' }}>
+                            <button onClick={() => removeFromCart(item._id)} style={{ background: 'transparent', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 16, padding: 0 }}>×</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+
+                {/* Totals */}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
+                  <div style={{ minWidth: 240 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', fontSize: 12, color: 'var(--muted)', borderBottom: '1px solid var(--border)' }}>
+                      <span>Subtotal</span><span>{RS}{fmt(subtotal)}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', fontSize: 12, color: 'var(--muted)', borderBottom: '1px solid var(--border)' }}>
+                      <span>GST</span><span>{RS}{fmt(gstTotal)}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', fontSize: 15, fontWeight: 800, color: '#B8860B' }}>
+                      <span>Total</span><span>{RS}{fmtInt(total)}</span>
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--muted)', fontStyle: 'italic', textAlign: 'right' }}>
+                      {numWords(total)} Rupees Only
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Payment mode */}
+            <div style={{ marginBottom: 20, marginTop: 8 }}>
+              <label style={{ fontSize: 11, color: 'var(--muted)', display: 'block', marginBottom: 5, letterSpacing: '.06em', fontWeight: 600 }}>PAYMENT MODE</label>
+              <select value={payMode} onChange={e => setPayMode(e.target.value)} style={{ ...inputStyle, maxWidth: 220 }}>
+                {['Cash', 'UPI', 'Card', 'Bank Transfer', 'Credit'].map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </div>
+          </div>
+        )}
+
+        {/* Footer */}
+        {!done && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '14px 20px', background: 'var(--surface2)', borderTop: '1px solid var(--border)' }}>
+            <button onClick={onClose} style={btnGhost}>Cancel</button>
+            <button
+              onClick={() => genMut.mutate()}
+              disabled={genMut.isPending || cart.length === 0}
+              style={{ ...btnPrimary, opacity: genMut.isPending || cart.length === 0 ? .5 : 1 }}
+            >
+              {genMut.isPending ? 'Generating…' : `Generate Bill — ${RS}${fmtInt(total)}`}
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
