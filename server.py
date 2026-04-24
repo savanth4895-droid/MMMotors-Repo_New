@@ -789,11 +789,11 @@ def _generate_sale_pdf(sale: dict) -> bytes:
     # Logo path — place mm_logo.png next to server.py on Render
     logo_path = os.path.join(os.path.dirname(__file__), 'mm_logo.png')
     if os.path.exists(logo_path):
-        LOGO_SIZE = 30*mm
-        c.drawImage(logo_path, ML, HEADER_Y - 3*mm,
+        LOGO_SIZE = 28*mm
+        c.drawImage(logo_path, ML, HEADER_Y - 8*mm,
                     width=LOGO_SIZE, height=LOGO_SIZE,
                     preserveAspectRatio=True, mask='auto')
-        name_x = ML + 15*mm
+        name_x = ML + 32*mm
     else:
         name_x = ML
 
