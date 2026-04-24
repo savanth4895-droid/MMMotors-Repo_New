@@ -409,11 +409,6 @@ class SaleCreate(BaseModel):
     vehicle_id:        str
     vehicle_number:    Optional[str]   = ""
     sale_price:        Optional[float] = 0
-    discount:          Optional[float] = 0
-    insurance:         Optional[float] = 0
-    rto:               Optional[float] = 0
-    other_charges:     Optional[float] = 0
-    other_label:       Optional[str]   = ""
     total_amount:      Optional[float] = None
     finance_type:      Optional[str]   = "cash"
     financier:         Optional[str]   = ""
@@ -443,11 +438,6 @@ class SaleUpdate(BaseModel):
     vehicle_id:        Optional[str]   = None
     total_amount:      Optional[float] = None
     sale_price:        Optional[float] = None
-    discount:          Optional[float] = None
-    insurance:         Optional[float] = None
-    rto:               Optional[float] = None
-    other_charges:     Optional[float] = None
-    other_label:       Optional[str]   = None
     finance_type:      Optional[str]   = None
     financier:         Optional[str]   = None
     loan_amount:       Optional[float] = None
@@ -782,11 +772,21 @@ async def customer_timeline(cust_id: str, current_user=Depends(verify_token)):
         db.sales.find({"customer_id": cust_id}).sort("sale_date", -1).to_list(None),
         db.service_jobs.find({"customer_id": cust_id}).sort("check_in_date", -1).to_list(None),
     )
+    # Get service bills for all jobs to calculate real service spend
+    job_ids = [str(j["_id"]) for j in jobs]
+    bills = []
+    if job_ids:
+        bills = await db.service_bills.find({"job_id": {"$in": job_ids}}).to_list(None)
+
+    service_spend = sum(b.get("grand_total", 0) for b in bills)
+    total_sales_spend = sum(s.get("total_amount", 0) for s in sales)
+
     return {
-        "sales":    oids(sales),
-        "service":  oids(jobs),
-        "total_sales_spend":   sum(s.get("total_amount", 0) for s in sales),
-        "total_service_spend": 0,  # populated from service_bills join if needed
+        "sales":         oids(sales),
+        "service":       oids(jobs),
+        "total_spent":   total_sales_spend + service_spend,
+        "service_spend": service_spend,
+        "total_sales_spend": total_sales_spend,
     }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -914,17 +914,11 @@ async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
     if vehicle.get("status") == "sold":
         raise HTTPException(status_code=409, detail="Vehicle already sold")
 
-    # Calculate totals — honour direct total_amount if supplied (frontend sends this)
+    # Calculate totals — use sale_price as total if total_amount not supplied
     if body.total_amount is not None:
         total_amount = body.total_amount
     else:
-        total_amount = (
-            (body.sale_price or 0)
-            - (body.discount or 0)
-            + (body.insurance or 0)
-            + (body.rto or 0)
-            + (body.other_charges or 0)
-        )
+        total_amount = body.sale_price or 0
 
     inv_no = await next_sequence("invoice")
     sale_date = body.sale_date or datetime.utcnow().strftime("%d %b %Y")
@@ -945,11 +939,7 @@ async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
         "engine_number":  vehicle.get("engine_number",""),
         "vehicle_number": body.vehicle_number or vehicle.get("vehicle_number",""),
         "sale_price":     body.sale_price,
-        "discount":       body.discount or 0,
-        "insurance":      body.insurance or 0,
-        "rto":            body.rto or 0,
-        "other_charges":  body.other_charges or 0,
-        "other_label":    body.other_label or "",
+
         "total_amount":   round(total_amount, 2),
         "amount_in_words":amount_in_words(total_amount),
         "finance_type":   body.finance_type or "cash",
@@ -1019,8 +1009,7 @@ async def update_sale(sale_id: str, body: SaleUpdate, current_user=Depends(verif
     # Simple scalar fields
     for field in ("status", "delivery_date", "vehicle_number", "payment_mode",
                   "notes", "customer_name", "customer_mobile", "customer_address",
-                  "care_of", "total_amount", "sale_price", "discount", "insurance",
-                  "rto", "other_charges", "other_label", "finance_type",
+                  "care_of", "total_amount", "sale_price", "finance_type",
                   "financier", "loan_amount", "sale_date", "sold_by",
                   "hsrp_front", "hsrp_back", "hsrp_front_id", "hsrp_back_id", "hsrp_date", "hsrp_notes"):
         val = getattr(body, field)
@@ -1214,8 +1203,9 @@ async def create_service_bill(body: ServiceBillCreate, current_user=Depends(veri
     job = await db.service_jobs.find_one({"_id": obj_id(body.job_id)})
     if not job:
         raise HTTPException(status_code=404, detail="Service job not found")
-    if await db.service_bills.find_one({"job_id": body.job_id}):
-        raise HTTPException(status_code=409, detail="Bill already exists for this job")
+    existing_bill = await db.service_bills.find_one({"job_id": body.job_id})
+    if existing_bill:
+        return oid(existing_bill)
 
     # Build line items with GST
     items_out = []
