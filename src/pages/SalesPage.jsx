@@ -295,15 +295,21 @@ const createMut = useMutation({
     mutationFn: async (d) => {
       let payload = { ...d };
       
-      // Auto-create a new customer in the database if one wasn't selected
-      if (!payload.customer_id) {
-        const custRes = await customersApi.create({
-          name: payload.customer_name,
-          mobile: payload.customer_mobile,
-          address: payload.customer_address
-        });
-        payload.customer_id = custRes.data.id;
-      }
+// Find existing customer by mobile, or create new one — prevents duplicates
+if (!payload.customer_id) {
+  const existing = await customersApi.list({ search: payload.customer_mobile, limit: 1 }).then(r => r.data);
+  const match = Array.isArray(existing) ? existing.find(c => c.mobile === payload.customer_mobile) : null;
+  if (match) {
+    payload.customer_id = match.id;
+  } else {
+    const custRes = await customersApi.create({
+      name: payload.customer_name,
+      mobile: payload.customer_mobile,
+      address: payload.customer_address,
+    });
+    payload.customer_id = custRes.data.id;
+  }
+}
       
       return salesApi.create(payload);
     },
