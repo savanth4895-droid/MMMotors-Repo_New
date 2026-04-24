@@ -98,13 +98,32 @@ function InvoiceModal({ sale, onClose }) {
 // ── Sale Wizard Form ────────────────────────────────────────────────
 function SaleForm({ initial = {}, onSave, onCancel, saving }) {
   const [step, setStep] = useState(1);
-  
-  // Fetch databases for easy selection
-  const { data: custData } = useQuery({ queryKey:['customers'], queryFn: () => customersApi.list({limit:500}).then(r=>r.data) });
-  const { data: vehData } = useQuery({ queryKey:['vehicles'], queryFn: () => vehiclesApi.list({limit:500}).then(r=>r.data) });
-  
-  const customers = Array.isArray(custData) ? custData : [];
-  const vehicles = Array.isArray(vehData) ? vehData.filter(v => v.status === 'Instock' || v.status === 'in_stock' || v.id === initial.vehicle_id) : [];
+
+  // ── Search state for customer ──────────────────────────────────────────────
+  const [custSearch, setCustSearch] = useState('');
+  const [custFocus, setCustFocus]   = useState(false);
+  const { data: custData } = useQuery({
+    queryKey: ['customers-search', custSearch],
+    queryFn: () => customersApi.list({ search: custSearch || undefined, limit: 20 }).then(r => r.data),
+    enabled: custSearch.length >= 1,
+  });
+  const custResults = Array.isArray(custData) ? custData : [];
+
+  // ── Search state for vehicle ───────────────────────────────────────────────
+  const [vehSearch, setVehSearch] = useState('');
+  const [vehFocus, setVehFocus]   = useState(false);
+  const { data: vehData } = useQuery({
+    queryKey: ['vehicles-search', vehSearch],
+    queryFn: () => vehiclesApi.list({
+      search: vehSearch || undefined,
+      status: 'in_stock',
+      limit: 20,
+    }).then(r => r.data),
+    enabled: vehSearch.length >= 1,
+  });
+  const vehResults = Array.isArray(vehData)
+    ? vehData.filter(v => v.status === 'Instock' || v.status === 'in_stock' || v.id === initial.vehicle_id)
+    : [];
 
   const [f, setF] = useState({
     customer_id: '', customer_name: '', care_of: '', customer_mobile: '', customer_address: '',
@@ -117,6 +136,8 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
 
   const s = k => e => setF(p => ({ ...p, [k]: e.target.value }));
   const inpStyle = { background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:3, padding:'8px 10px', color:'var(--text)', outline:'none', fontSize:13, width:'100%' };
+  const dropStyle = { position:'absolute', top:'100%', left:0, right:0, zIndex:100, background:'var(--surface)', border:'1px solid var(--border)', borderRadius:3, boxShadow:'0 4px 16px rgba(0,0,0,.12)', maxHeight:200, overflowY:'auto' };
+  const dropItemStyle = (hover) => ({ padding:'8px 12px', fontSize:12, cursor:'pointer', background: hover ? 'var(--surface2)' : 'transparent', borderBottom:'1px solid var(--border)' });
 
   const handleSave = () => {
     // Check for name/mobile instead of strictly requiring a customer_id
@@ -157,18 +178,54 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
       {/* ── Step 1: Customer ── */}
       {step === 1 && (
         <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
-          <Field label="Select Existing Customer (Optional)">
-            <select value={f.customer_id} onChange={e => {
-              const c = customers.find(x => x.id === e.target.value);
-              // If selected, auto-fill. If cleared, wipe the ID so a new one is created.
-              if (c) setF(p => ({ ...p, customer_id: c.id, customer_name: c.name, customer_mobile: c.mobile, customer_address: c.address }));
-              else setF(p => ({ ...p, customer_id: '' }));
-            }} style={inpStyle}>
-              <option value="">-- Create New Customer --</option>
-              {customers.map(c => <option key={c.id} value={c.id}>{c.name} ({c.mobile})</option>)}
-            </select>
+          <Field label="Search Existing Customer (Optional)">
+            <div style={{ position:'relative' }}>
+              <input
+                value={custSearch}
+                onChange={e => {
+                  setCustSearch(e.target.value);
+                  // Clear linked customer if user changes search
+                  if (f.customer_id) setF(p => ({ ...p, customer_id: '' }));
+                }}
+                onFocus={() => setCustFocus(true)}
+                onBlur={() => setTimeout(() => setCustFocus(false), 180)}
+                placeholder="Type name or mobile to search..."
+                style={inpStyle}
+              />
+              {custFocus && custResults.length > 0 && (
+                <div style={dropStyle}>
+                  {custResults.map(cust => (
+                    <div key={cust.id}
+                      onMouseDown={() => {
+                        setF(p => ({ ...p,
+                          customer_id:      cust.id,
+                          customer_name:    cust.name,
+                          customer_mobile:  cust.mobile,
+                          customer_address: cust.address || '',
+                        }));
+                        setCustSearch(`${cust.name} (${cust.mobile})`);
+                        setCustFocus(false);
+                      }}
+                      style={dropItemStyle(false)}
+                      onMouseEnter={e => e.currentTarget.style.background = 'var(--surface2)'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                    >
+                      <div style={{ fontWeight:600, fontSize:12 }}>{cust.name}</div>
+                      <div style={{ fontSize:11, color:'var(--muted)' }}>{cust.mobile}{cust.address ? ` · ${cust.address}` : ''}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {f.customer_id && (
+                <div style={{ marginTop:6, fontSize:11, color:'var(--accent)' }}>
+                  ✓ Linked to existing customer
+                  <button onClick={() => { setF(p => ({ ...p, customer_id:'', customer_name:'', customer_mobile:'', customer_address:'' })); setCustSearch(''); }}
+                    style={{ marginLeft:8, background:'transparent', border:'none', color:'var(--red)', cursor:'pointer', fontSize:10 }}>clear</button>
+                </div>
+              )}
+            </div>
           </Field>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop: 8 }}>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop: 4 }}>
             <Field label="Full Name *"><input value={f.customer_name} onChange={s('customer_name')} placeholder="Customer Name" style={inpStyle} /></Field>
             <Field label="C/O (Care Of)"><input value={f.care_of} onChange={s('care_of')} placeholder="Father/Husband Name" style={inpStyle} /></Field>
             <Field label="Mobile Number *"><input value={f.customer_mobile} onChange={s('customer_mobile')} placeholder="10-digit mobile" style={inpStyle} /></Field>
@@ -180,22 +237,65 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
       {/* ── Step 2: Vehicle ── */}
       {step === 2 && (
         <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
-          <Field label="Select Inventory Vehicle *">
-            <select value={f.vehicle_id} onChange={e => {
-              const v = vehicles.find(x => x.id === e.target.value);
-              if (v) setF(p => ({ ...p, vehicle_id: v.id, vehicle_brand: v.brand, vehicle_model: v.model, vehicle_variant: v.variant, vehicle_color: v.color, chassis_number: v.chassis_number, engine_number: v.engine_number }));
-            }} style={inpStyle}>
-              <option value="">-- Choose Vehicle --</option>
-              {vehicles.map(v => <option key={v.id} value={v.id}>{v.brand} {v.model} - {v.chassis_number?.slice(-8)}</option>)}
-            </select>
+          <Field label="Search Vehicle by Chassis No, Brand or Model *">
+            <div style={{ position:'relative' }}>
+              <input
+                value={vehSearch}
+                onChange={e => {
+                  setVehSearch(e.target.value);
+                  if (f.vehicle_id) setF(p => ({ ...p, vehicle_id:'', vehicle_brand:'', vehicle_model:'', vehicle_variant:'', vehicle_color:'', chassis_number:'', engine_number:'' }));
+                }}
+                onFocus={() => setVehFocus(true)}
+                onBlur={() => setTimeout(() => setVehFocus(false), 180)}
+                placeholder="Type chassis number, brand or model..."
+                style={inpStyle}
+              />
+              {vehFocus && vehResults.length > 0 && (
+                <div style={dropStyle}>
+                  {vehResults.map(v => (
+                    <div key={v.id}
+                      onMouseDown={() => {
+                        setF(p => ({ ...p,
+                          vehicle_id:      v.id,
+                          vehicle_brand:   v.brand,
+                          vehicle_model:   v.model,
+                          vehicle_variant: v.variant || '',
+                          vehicle_color:   v.color || '',
+                          chassis_number:  v.chassis_number || '',
+                          engine_number:   v.engine_number || '',
+                        }));
+                        setVehSearch(v.chassis_number || `${v.brand} ${v.model}`);
+                        setVehFocus(false);
+                      }}
+                      style={dropItemStyle(false)}
+                      onMouseEnter={e => e.currentTarget.style.background = 'var(--surface2)'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                    >
+                      <div style={{ fontWeight:600, fontSize:12 }}>{v.brand} {v.model} {v.variant ? `· ${v.variant}` : ''}</div>
+                      <div style={{ fontSize:11, color:'var(--muted)', fontFamily:'IBM Plex Mono, monospace' }}>{v.chassis_number} {v.color ? `· ${v.color}` : ''}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {vehSearch.length > 0 && vehResults.length === 0 && (
+                <div style={{ marginTop:6, fontSize:11, color:'var(--muted)' }}>No in-stock vehicles found</div>
+              )}
+              {f.vehicle_id && (
+                <div style={{ marginTop:6, fontSize:11, color:'var(--accent)' }}>
+                  ✓ Vehicle selected
+                  <button onClick={() => { setF(p => ({ ...p, vehicle_id:'', vehicle_brand:'', vehicle_model:'', vehicle_variant:'', vehicle_color:'', chassis_number:'', engine_number:'' })); setVehSearch(''); }}
+                    style={{ marginLeft:8, background:'transparent', border:'none', color:'var(--red)', cursor:'pointer', fontSize:10 }}>clear</button>
+                </div>
+              )}
+            </div>
           </Field>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop: 8 }}>
-            <Field label="Brand"><input value={f.vehicle_brand} disabled style={{...inpStyle, opacity: 0.6}} /></Field>
-            <Field label="Model"><input value={f.vehicle_model} disabled style={{...inpStyle, opacity: 0.6}} /></Field>
-            <Field label="Variant"><input value={f.vehicle_variant} disabled style={{...inpStyle, opacity: 0.6}} /></Field>
-            <Field label="Colour"><input value={f.vehicle_color} disabled style={{...inpStyle, opacity: 0.6}} /></Field>
-            <Field label="Chassis No"><input value={f.chassis_number} disabled className="mono" style={{...inpStyle, opacity: 0.6}} /></Field>
-            <Field label="Engine No"><input value={f.engine_number} disabled className="mono" style={{...inpStyle, opacity: 0.6}} /></Field>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop: 4 }}>
+            <Field label="Brand"><input value={f.vehicle_brand} disabled style={{...inpStyle, opacity:0.6}} /></Field>
+            <Field label="Model"><input value={f.vehicle_model} disabled style={{...inpStyle, opacity:0.6}} /></Field>
+            <Field label="Variant"><input value={f.vehicle_variant} disabled style={{...inpStyle, opacity:0.6}} /></Field>
+            <Field label="Colour"><input value={f.vehicle_color} disabled style={{...inpStyle, opacity:0.6}} /></Field>
+            <Field label="Chassis No"><input value={f.chassis_number} disabled className="mono" style={{...inpStyle, opacity:0.6}} /></Field>
+            <Field label="Engine No"><input value={f.engine_number} disabled className="mono" style={{...inpStyle, opacity:0.6}} /></Field>
           </div>
         </div>
       )}
