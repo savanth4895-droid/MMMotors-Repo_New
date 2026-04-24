@@ -15,7 +15,7 @@ function sendWA(mobile, msg) {
 
 // ── Add customer form ────────────────────────────────────────────────
 function CustomerForm({ initial = {}, onSave, onCancel, saving }) {
-  const [f, setF] = useState({ name:'', mobile:'', email:'', address:'', gstin:'', ...initial });
+  const [f, setF] = useState({ name:'', mobile:'', email:'', address:'', ...initial });
   const [idProofFileId, setIdProofFileId] = useState(null);
   const s = k => e => setF(p => ({ ...p, [k]: e.target.value }));
   return (
@@ -24,7 +24,7 @@ function CustomerForm({ initial = {}, onSave, onCancel, saving }) {
         <Field label="Full name *"><input value={f.name}    onChange={s('name')}    placeholder="Customer name" /></Field>
         <Field label="Mobile *">   <input value={f.mobile}  onChange={s('mobile')}  placeholder="10-digit mobile" /></Field>
         <Field label="Email">      <input value={f.email}   onChange={s('email')}   placeholder="email@example.com" /></Field>
-        <Field label="GSTIN">      <input value={f.gstin}   onChange={s('gstin')}   placeholder="29XXXXX0000X1ZX" className="mono" /></Field>
+
       </div>
       <Field label="Address">
         <textarea value={f.address} onChange={s('address')} rows={2} placeholder="Full address" />
@@ -110,7 +110,7 @@ function CustomerDetail({ cust, onBack }) {
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:24 }}>
                 <div>
                   <div className="label-xs" style={{ marginBottom:14 }}>Contact</div>
-                  {[['Mobile', cust.mobile, true],['Email', cust.email||'—', false],['Address', cust.address||'—', false],['GSTIN', cust.gstin||'—', true]].map(([l,v,mono]) => (
+                  {[['Mobile', cust.mobile, true],['Email', cust.email||'—', false],['Address', cust.address||'—', false]].map(([l,v,mono]) => (
                     <div key={l} style={{ display:'flex', marginBottom:12, paddingBottom:12, borderBottom:'1px solid var(--border)' }}>
                       <div style={{ width:100, fontSize:11, color:'var(--muted)', flexShrink:0 }}>{l}</div>
                       <div className={mono?'mono':''} style={{ fontSize:12 }}>{v}</div>
