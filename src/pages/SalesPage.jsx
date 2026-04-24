@@ -438,6 +438,10 @@ const createMut = useMutation({
                   <td style={{ padding:'10px 16px' }}>
                     <div style={{ display:'flex', gap:6, alignItems: 'center' }}>
                       <GhostBtn sm onClick={()=>setSelSale(s)}>View</GhostBtn>
+                      <button onClick={() => {
+                        const base = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+                        window.open(`${base}/api/sales/${s.id}/pdf`, '_blank');
+                      }} style={{ padding:'5px 10px', background:'rgba(184,134,11,.1)', border:'1px solid rgba(184,134,11,.3)', borderRadius:3, color:'#7A5800', cursor:'pointer', fontSize:10, fontFamily:'IBM Plex Sans,sans-serif' }}>PDF</button>
                       <GhostBtn sm onClick={()=>setEditSale(s)}>Edit</GhostBtn>
                       
                       {s.status !== 'completed' && s.status !== 'delivered' && (
