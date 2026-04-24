@@ -24,6 +24,33 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 import os
 import certifi
+import io
+
+# PDF generation
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.units import mm
+from reportlab.pdfgen import canvas as pdf_canvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+# ── Register fonts once at module level ──────────────────────────────────────
+_FONTS_REGISTERED = False
+def _register_fonts():
+    global _FONTS_REGISTERED
+    if _FONTS_REGISTERED:
+        return
+    try:
+        FONT_DIR = "/usr/share/fonts/truetype/liberation/"
+        DJVU_DIR = "/usr/share/fonts/truetype/dejavu/"
+        pdfmetrics.registerFont(TTFont('Sans',       FONT_DIR + 'LiberationSans-Regular.ttf'))
+        pdfmetrics.registerFont(TTFont('Sans-Bold',  FONT_DIR + 'LiberationSans-Bold.ttf'))
+        pdfmetrics.registerFont(TTFont('Sans-Italic',FONT_DIR + 'LiberationSans-Italic.ttf'))
+        pdfmetrics.registerFont(TTFont('Mono',       DJVU_DIR + 'DejaVuSansMono.ttf'))
+        pdfmetrics.registerFont(TTFont('Mono-Bold',  DJVU_DIR + 'DejaVuSansMono-Bold.ttf'))
+        _FONTS_REGISTERED = True
+    except Exception as e:
+        print(f"[MM Motors] Font registration warning: {e}")
 
 # ── Shared database module ────────────────────────────────────────────────────
 import database as _db
@@ -717,6 +744,355 @@ async def delete_vehicle(veh_id: str, current_user=Depends(require_admin)):
         raise HTTPException(status_code=404, detail="Vehicle not found")
     return {"message": "Deleted"}
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PDF INVOICE GENERATOR
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _generate_sale_pdf(sale: dict) -> bytes:
+    """Generate a professional A4 invoice PDF for a sale record. Returns bytes."""
+    _register_fonts()
+
+    # ── Colors ────────────────────────────────────────────────────────────────
+    GOLD        = colors.HexColor('#B8860B')
+    GOLD_LIGHT  = colors.HexColor('#F5E6C0')
+    DARK        = colors.HexColor('#1A1A1A')
+    MID         = colors.HexColor('#4A4A4A')
+    DIM         = colors.HexColor('#8A8A8A')
+    RULE        = colors.HexColor('#D0C090')
+    STRIPE      = colors.HexColor('#F7F7F4')
+    WHITE       = colors.white
+    PAGE_BG     = colors.HexColor('#FDFCF8')
+    RS          = '₹'
+
+    W, H = A4
+    ML = 16*mm
+    MR = W - 16*mm
+    TW = MR - ML
+
+    buf = io.BytesIO()
+    c = pdf_canvas.Canvas(buf, pagesize=A4)
+
+    # ── Page background ───────────────────────────────────────────────────────
+    c.setFillColor(PAGE_BG)
+    c.rect(0, 0, W, H, fill=1, stroke=0)
+
+    # ── Top bar ───────────────────────────────────────────────────────────────
+    c.setFillColor(DARK)
+    c.rect(0, H - 5*mm, W, 5*mm, fill=1, stroke=0)
+    c.setFillColor(GOLD)
+    c.rect(0, H - 6.5*mm, W, 1.5*mm, fill=1, stroke=0)
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    HEADER_Y = H - 30*mm
+
+    # Logo path — place mm_logo.png next to server.py on Render
+    logo_path = os.path.join(os.path.dirname(__file__), 'mm_logo.png')
+    if os.path.exists(logo_path):
+        LOGO_SIZE = 13*mm
+        c.drawImage(logo_path, ML, HEADER_Y - 3*mm,
+                    width=LOGO_SIZE, height=LOGO_SIZE,
+                    preserveAspectRatio=True, mask='auto')
+        name_x = ML + 15*mm
+    else:
+        name_x = ML
+
+    c.setFont('Sans-Bold', 20)
+    c.setFillColor(DARK)
+    c.drawString(name_x, HEADER_Y + 4*mm, 'MM MOTORS')
+    c.setFont('Sans', 7)
+    c.setFillColor(DIM)
+    c.drawString(name_x, HEADER_Y - 2*mm, 'MULTI-BRAND DEALERSHIP  ·  MALUR')
+
+    c.setFont('Mono-Bold', 8)
+    c.setFillColor(GOLD)
+    c.drawRightString(MR, HEADER_Y + 5*mm, 'SALE  INVOICE')
+    c.setFont('Mono-Bold', 13)
+    c.setFillColor(DARK)
+    c.drawRightString(MR, HEADER_Y - 2*mm, sale.get('invoice_number', '—'))
+    c.setFont('Sans', 7.5)
+    c.setFillColor(DIM)
+    c.drawRightString(MR, HEADER_Y - 7*mm, f"Date: {sale.get('sale_date', '—')}")
+
+    # Divider
+    DIV_Y = HEADER_Y - 12*mm
+    c.setStrokeColor(GOLD)
+    c.setLineWidth(0.8)
+    c.line(ML, DIV_Y, MR, DIV_Y)
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def sec_label(x, y, text):
+        c.setFont('Sans-Bold', 6.5)
+        c.setFillColor(GOLD)
+        c.drawString(x, y, text.upper())
+        c.setStrokeColor(GOLD)
+        c.setLineWidth(0.35)
+        c.line(x, y - 1*mm, x + 38*mm, y - 1*mm)
+
+    def irow(x, y, label, val, mono=False):
+        c.setFont('Sans', 7)
+        c.setFillColor(DIM)
+        c.drawString(x, y, label)
+        c.setFont('Mono' if mono else 'Sans-Bold', 7)
+        c.setFillColor(DARK)
+        c.drawString(x + 24*mm, y, str(val) if val else '—')
+
+    COL1 = ML
+    COL2 = W/2 + 2*mm
+    RH   = 5*mm
+
+    # ── Customer + Vehicle ────────────────────────────────────────────────────
+    INFO_Y = DIV_Y - 6*mm
+    nominee = sale.get('nominee', {}) or {}
+
+    sec_label(COL1, INFO_Y, 'Customer Details')
+    for i, (l, v) in enumerate([
+        ('Name',    sale.get('customer_name', '')),
+        ('C/O',     sale.get('care_of', '')),
+        ('Mobile',  sale.get('customer_mobile', '')),
+        ('Address', sale.get('customer_address', '')),
+        ('Payment', sale.get('payment_mode', '')),
+    ]):
+        irow(COL1, INFO_Y - (i+1.6)*RH, l, v)
+
+    sec_label(COL2, INFO_Y, 'Vehicle Details')
+    for i, (l, v) in enumerate([
+        ('Brand',     sale.get('vehicle_brand', '')),
+        ('Model',     sale.get('vehicle_model', '')),
+        ('Variant',   sale.get('vehicle_variant', '')),
+        ('Colour',    sale.get('vehicle_color', '')),
+        ('Financier', sale.get('financier', '')),
+    ]):
+        irow(COL2, INFO_Y - (i+1.6)*RH, l, v)
+
+    # ── Chassis + Nominee ─────────────────────────────────────────────────────
+    SEC2_Y = INFO_Y - 7.8*RH
+    sec_label(COL1, SEC2_Y, 'Registration / Chassis')
+    for i, (l, v, m) in enumerate([
+        ('Vehicle No', sale.get('vehicle_number', ''), False),
+        ('Chassis No', sale.get('chassis_number', ''), True),
+        ('Engine No',  sale.get('engine_number',  ''), True),
+    ]):
+        irow(COL1, SEC2_Y - (i+1.6)*RH, l, v, mono=m)
+
+    sec_label(COL2, SEC2_Y, 'Nominee (Insurance)')
+    for i, (l, v) in enumerate([
+        ('Name',     nominee.get('name', '')),
+        ('Relation', nominee.get('relation', '')),
+        ('Age',      nominee.get('age', '')),
+        ('Mobile',   nominee.get('number', '')),
+    ]):
+        irow(COL2, SEC2_Y - (i+1.6)*RH, l, v)
+
+    # ── Pricing table ─────────────────────────────────────────────────────────
+    TBL_Y  = SEC2_Y - 5.8*RH
+    TBL_TY = TBL_Y + 1*mm
+
+    c.setFillColor(DARK)
+    c.rect(ML, TBL_TY - 6.5*mm, TW, 6.5*mm, fill=1, stroke=0)
+    c.setFont('Sans-Bold', 7)
+    c.setFillColor(WHITE)
+    TC = [ML+3*mm, ML+65*mm, ML+100*mm, ML+128*mm, MR-3*mm]
+    c.drawString(TC[0], TBL_TY - 4.5*mm, 'DESCRIPTION')
+    c.drawString(TC[1], TBL_TY - 4.5*mm, 'CHASSIS / DETAILS')
+    c.drawString(TC[2], TBL_TY - 4.5*mm, 'PAYMENT')
+    c.drawString(TC[3], TBL_TY - 4.5*mm, 'MODE')
+    c.drawRightString(TC[4], TBL_TY - 4.5*mm, 'AMOUNT')
+
+    DR_Y = TBL_TY - 14*mm
+    c.setFillColor(STRIPE)
+    c.rect(ML, DR_Y - 1*mm, TW, 9*mm, fill=1, stroke=0)
+    c.setFont('Sans-Bold', 8)
+    c.setFillColor(DARK)
+    c.drawString(TC[0], DR_Y + 4*mm,
+        f"{sale.get('vehicle_brand','')} {sale.get('vehicle_model','')}")
+    c.setFont('Sans', 7)
+    c.setFillColor(DIM)
+    c.drawString(TC[0], DR_Y + 0.8*mm,
+        f"{sale.get('vehicle_variant','')}  ·  {sale.get('vehicle_color','')}")
+    c.setFont('Mono', 7)
+    c.setFillColor(DARK)
+    c.drawString(TC[1], DR_Y + 2.5*mm, sale.get('chassis_number', ''))
+    c.setFont('Sans', 7.5)
+    c.drawString(TC[2], DR_Y + 2.5*mm, sale.get('payment_mode', ''))
+    c.drawString(TC[3], DR_Y + 2.5*mm, 'Full Payment')
+
+    total = sale.get('total_amount') or sale.get('sale_price') or 0
+    total_str = f"{int(total):,}" if isinstance(total, (int, float)) else str(total)
+    c.setFont('Sans-Bold', 10)
+    c.setFillColor(GOLD)
+    c.drawRightString(TC[4], DR_Y + 2.5*mm, f"{RS}{total_str}")
+
+    c.setStrokeColor(GOLD)
+    c.setLineWidth(0.7)
+    c.line(ML, DR_Y - 2*mm, MR, DR_Y - 2*mm)
+
+    # ── Total box ─────────────────────────────────────────────────────────────
+    TOT_Y = DR_Y - 12*mm
+    c.setFont('Sans-Italic', 7)
+    c.setFillColor(DIM)
+    c.drawString(ML, TOT_Y + 4*mm, sale.get('amount_in_words', ''))
+
+    c.setFillColor(GOLD_LIGHT)
+    c.setStrokeColor(GOLD)
+    c.setLineWidth(0.6)
+    c.roundRect(MR - 58*mm, TOT_Y - 1*mm, 58*mm, 11*mm, 1.5*mm, fill=1, stroke=1)
+    c.setFont('Sans', 7)
+    c.setFillColor(MID)
+    c.drawString(MR - 55*mm, TOT_Y + 5.5*mm, 'TOTAL AMOUNT')
+    c.setFont('Sans-Bold', 13)
+    c.setFillColor(DARK)
+    c.drawRightString(MR - 3*mm, TOT_Y + 4*mm, f"{RS}{total_str}")
+
+    # ── Signatures ────────────────────────────────────────────────────────────
+    SIG_Y = TOT_Y - 14*mm
+    c.setStrokeColor(RULE)
+    c.setLineWidth(0.5)
+    c.line(ML, SIG_Y, ML + 52*mm, SIG_Y)
+    c.setFont('Sans', 6.5)
+    c.setFillColor(DIM)
+    c.drawString(ML, SIG_Y - 4*mm, "Customer's Signature")
+    c.setFont('Sans-Bold', 7)
+    c.setFillColor(DARK)
+    c.drawString(ML, SIG_Y - 8.5*mm, sale.get('customer_name', '').upper())
+
+    c.setFont('Sans', 6.5)
+    c.setFillColor(DIM)
+    c.drawCentredString(W/2, SIG_Y - 4*mm, f"Sold by: {sale.get('sold_by', 'MM Motors')}")
+
+    c.line(MR - 52*mm, SIG_Y, MR, SIG_Y)
+    c.setFont('Sans', 6.5)
+    c.setFillColor(DIM)
+    c.drawRightString(MR, SIG_Y - 4*mm, 'Authorised Signatory')
+    c.setFont('Sans-Bold', 7)
+    c.setFillColor(DARK)
+    c.drawRightString(MR, SIG_Y - 8.5*mm, 'MM MOTORS')
+
+    # ── Service Schedule ──────────────────────────────────────────────────────
+    SCHED_Y = SIG_Y - 20*mm
+
+    c.setFillColor(DARK)
+    c.rect(ML, SCHED_Y, TW, 6.5*mm, fill=1, stroke=0)
+    c.setFillColor(GOLD)
+    c.rect(ML, SCHED_Y + 6.5*mm, TW, 0.8*mm, fill=1, stroke=0)
+    c.setFont('Sans-Bold', 8.5)
+    c.setFillColor(WHITE)
+    c.drawString(ML + 4*mm, SCHED_Y + 2*mm, 'SERVICE SCHEDULE')
+
+    DEAR_Y = SCHED_Y - 13.5*mm
+    c.setFillColor(GOLD_LIGHT)
+    c.setStrokeColor(GOLD)
+    c.setLineWidth(0.5)
+    c.roundRect(ML, DEAR_Y, TW, 12*mm, 1*mm, fill=1, stroke=1)
+    c.setFont('Sans-Bold', 7.5)
+    c.setFillColor(DARK)
+    c.drawString(ML + 3*mm, DEAR_Y + 8*mm, 'DEAR VALUED CUSTOMER,')
+    c.setFont('Sans', 7)
+    c.setFillColor(MID)
+    c.drawString(ML + 3*mm, DEAR_Y + 4.5*mm,
+        'We thank you for choosing our world-class vehicle. To ensure optimal performance and longevity,')
+    c.drawString(ML + 3*mm, DEAR_Y + 1.5*mm,
+        'please follow the service schedule below for a pleasant riding experience at all times.')
+
+    TH_Y = DEAR_Y - 8*mm
+    c.setFillColor(DARK)
+    c.rect(ML, TH_Y, TW, 6.5*mm, fill=1, stroke=0)
+    c.setFont('Sans-Bold', 7)
+    c.setFillColor(WHITE)
+    SC1 = ML + 3*mm
+    SC2 = ML + 52*mm
+    SC3 = ML + 115*mm
+    c.drawString(SC1, TH_Y + 2*mm, 'SERVICE DATE')
+    c.drawString(SC2, TH_Y + 2*mm, 'SERVICE TYPE')
+    c.drawString(SC3, TH_Y + 2*mm, 'RECOMMENDED SCHEDULE')
+
+    SERVICES = [
+        ('FIRST SERVICE',   '500-700 kms or 15-30 days'),
+        ('SECOND SERVICE',  '3000-3500 kms or 30-90 days'),
+        ('THIRD SERVICE',   '6000-6500 kms or 90-180 days'),
+        ('FOURTH SERVICE',  '9000-9500 kms or 180-270 days'),
+    ]
+    SRH = 6.5*mm
+    for i, (stype, sched) in enumerate(SERVICES):
+        ry = TH_Y - (i + 1) * SRH
+        c.setFillColor(WHITE if i % 2 == 0 else STRIPE)
+        c.rect(ML, ry, TW, SRH, fill=1, stroke=0)
+        c.setStrokeColor(RULE)
+        c.setLineWidth(0.3)
+        c.line(ML, ry, MR, ry)
+        c.setFont('Mono', 7)
+        c.setFillColor(DIM)
+        c.drawString(SC1, ry + 2*mm, '__/__/____')
+        c.setFont('Sans-Bold', 7)
+        c.setFillColor(GOLD)
+        c.drawString(SC2, ry + 2*mm, stype)
+        c.setFont('Sans', 7)
+        c.setFillColor(DARK)
+        c.drawString(SC3, ry + 2*mm, sched)
+
+    c.setStrokeColor(RULE)
+    c.setLineWidth(0.5)
+    c.rect(ML, TH_Y - 4*SRH, TW, 6.5*mm + 13.5*mm + 8*mm + 4*SRH, fill=0, stroke=1)
+
+    NOTE_Y = TH_Y - 4*SRH - 6.5*mm
+    c.setFillColor(GOLD_LIGHT)
+    c.setStrokeColor(GOLD)
+    c.setLineWidth(0.5)
+    c.roundRect(ML, NOTE_Y - 0.5*mm, TW, 6*mm, 1*mm, fill=1, stroke=1)
+    c.setFont('Sans-Bold', 7.5)
+    c.setFillColor(colors.HexColor('#7A5800'))
+    c.drawCentredString(W/2, NOTE_Y + 1.8*mm,
+        '⚠  IMPORTANT: Follow whichever milestone comes first (kilometers or days)')
+
+    # ── Thank you section ─────────────────────────────────────────────────────
+    THANKS_Y = NOTE_Y - 17*mm
+    c.setFillColor(STRIPE)
+    c.setStrokeColor(RULE)
+    c.setLineWidth(0.5)
+    c.roundRect(ML, THANKS_Y - 1*mm, TW, 28*mm, 2*mm, fill=1, stroke=1)
+    c.setFillColor(GOLD)
+    c.rect(ML, THANKS_Y + 26*mm, TW, 1.5*mm, fill=1, stroke=0)
+
+    for label, x in [
+        ('🏆  Trusted Dealer',      ML + 6*mm),
+        ('🕑  24/7 Service Support', W/2 - 22*mm),
+        ('✅  Quality Guaranteed',       MR - 50*mm),
+    ]:
+        c.setFont('Sans', 7)
+        c.setFillColor(MID)
+        c.drawString(x, THANKS_Y + 20.5*mm, label)
+
+    c.setStrokeColor(RULE)
+    c.setLineWidth(0.4)
+    c.line(ML + 4*mm, THANKS_Y + 18.5*mm, MR - 4*mm, THANKS_Y + 18.5*mm)
+
+    c.setFont('Sans-Bold', 12)
+    c.setFillColor(DARK)
+    c.drawCentredString(W/2, THANKS_Y + 13*mm, 'Thank You for Choosing M M Motors!')
+    c.setFont('Sans-Italic', 7.5)
+    c.setFillColor(DIM)
+    c.drawCentredString(W/2, THANKS_Y + 8.5*mm,
+        'Your trust drives our excellence in two-wheeler sales and service.')
+    c.setFont('Sans', 7.5)
+    c.setFillColor(MID)
+    c.drawCentredString(W/2, THANKS_Y + 4.5*mm,
+        '🌟  Premium Quality  •  ⚡  Expert Service  •  🤝  Customer First')
+
+    # ── Footer ────────────────────────────────────────────────────────────────
+    c.setFillColor(DARK)
+    c.rect(0, 0, W, 7.5*mm, fill=1, stroke=0)
+    c.setFillColor(GOLD)
+    c.rect(0, 7.5*mm, W, 1*mm, fill=1, stroke=0)
+    c.setFont('Sans', 6)
+    c.setFillColor(colors.HexColor('#888888'))
+    c.drawString(ML, 2.8*mm,
+        'This is a computer-generated document. No signature required if digitally authenticated.')
+    c.drawRightString(MR, 2.8*mm, 'MM Motors  ·  Malur  ·  Multi-brand Dealership')
+
+    c.save()
+    buf.seek(0)
+    return buf.read()
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SALES
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -842,6 +1218,26 @@ async def get_sale(sale_id: str, current_user=Depends(verify_token)):
     if not doc:
         raise HTTPException(status_code=404, detail="Sale not found")
     return oid(doc)
+
+@api_router.get("/sales/{sale_id}/pdf")
+async def sale_pdf(sale_id: str, current_user=Depends(verify_token)):
+    """Generate and return a PDF invoice for a sale record."""
+    doc = await db.sales.find_one({"_id": obj_id(sale_id)})
+    if not doc:
+        doc = await db.sales.find_one({"invoice_number": sale_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Sale not found")
+    sale = oid(doc)
+    try:
+        pdf_bytes = _generate_sale_pdf(sale)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
+    invoice_no = sale.get("invoice_number", "invoice").replace("/", "-")
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=MM_Motors_{invoice_no}.pdf"},
+    )
 
 @api_router.put("/sales/{sale_id}")
 async def update_sale(sale_id: str, body: SaleUpdate, current_user=Depends(verify_token)):
