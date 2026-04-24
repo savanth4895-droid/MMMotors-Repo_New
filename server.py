@@ -92,9 +92,6 @@ async def lifespan(app):
         _db.client.close()
 
 # ─── App ──────────────────────────────────────────────────────────────────────
-# ALLOW_ORIGINS: comma-separated list of allowed origins, e.g.
-#   https://mmmotors-frontend.vercel.app,https://custom-domain.com
-# Leave unset (or empty) to allow all origins during development.
 _raw_origins = os.getenv("ALLOW_ORIGINS", "").strip()
 ALLOW_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["*"]
 
@@ -102,8 +99,8 @@ app = FastAPI(title="MM Motors API", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOW_ORIGINS,     # Set ALLOW_ORIGINS env var in production
-    allow_credentials=True,          # Required for httpOnly cookies
+    allow_origins=ALLOW_ORIGINS,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["X-Total-Count"],
@@ -143,6 +140,10 @@ async def _ensure_indexes():
     # parts_sales
     await db.parts_sales.create_index("bill_number", unique=True)
     await db.parts_sales.create_index("sale_date")
+    # parts_bills  ← PATCH 7: new collection index
+    await db.parts_bills.create_index("bill_number")
+    await db.parts_bills.create_index("customer_mobile")
+    await db.parts_bills.create_index("bill_date")
     # login_attempts — TTL 30 min
     await db.login_attempts.create_index(
         "created_at", expireAfterSeconds=LOGIN_LOCKOUT_MIN * 60
@@ -168,14 +169,6 @@ async def _seed_owner():
             "created_at": datetime.utcnow(),
         })
         print("[MM Motors] Default owner created  username=owner  password=mm@123456")
-
-# Auth helpers imported from database.py
-
-# Utilities imported from database.py
-
-# Utilities imported from database.py
-
-# GST + number-to-words imported from database.py
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -248,10 +241,10 @@ class VehicleCreate(BaseModel):
     location:          Optional[str] = ""
     outbound_date:     Optional[str] = ""
     outbound_location: Optional[str] = ""
-    status:            Optional[str] = "Instock" # Instock | Sold | Returned
-    type:           Optional[str] = "new"      # new | used
+    status:            Optional[str] = "Instock"
+    type:           Optional[str] = "new"
     notes:          Optional[str] = ""
-  
+
 class VehicleUpdate(BaseModel):
     brand:          Optional[str] = None
     model:          Optional[str] = None
@@ -268,13 +261,13 @@ class VehicleUpdate(BaseModel):
     type:           Optional[str] = None
     status:            Optional[str] = None
     notes:          Optional[str] = None
-    
+
 # ── Sales ─────────────────────────────────────────────────────────────────────
 class NomineeInfo(BaseModel):
     name:     Optional[str] = ""
     relation: Optional[str] = ""
     age:      Optional[str] = ""
-    number:   Optional[str] = ""  # <-- Added missing number field
+    number:   Optional[str] = ""
 
 class SaleCreate(BaseModel):
     customer_id:       str
@@ -323,7 +316,7 @@ class SaleUpdate(BaseModel):
     hsrp_back_id:      Optional[str]   = None
     hsrp_date:         Optional[str]   = None
     hsrp_notes:        Optional[str]   = None
-  
+
 # ── Service Jobs ──────────────────────────────────────────────────────────────
 class ServiceJobCreate(BaseModel):
     customer_id:    str
@@ -341,7 +334,7 @@ class ServiceJobCreate(BaseModel):
     vehicle_photo_id: Optional[str] = ""
 
 class ServiceJobUpdate(BaseModel):
-    status:         Optional[str] = None # pending | in_progress | ready | delivered
+    status:         Optional[str] = None
     technician:     Optional[str] = None
     estimated_delivery: Optional[str] = None
     delivery_date:  Optional[str] = None
@@ -356,7 +349,7 @@ class BillLineItem(BaseModel):
     hsn_code:    Optional[str] = ""
     qty:         int           = 1
     unit_price:  float
-    gst_rate:    float         = 18   # 5 | 12 | 18 | 28
+    gst_rate:    float         = 18
 
 class ServiceBillCreate(BaseModel):
     job_id:          str
@@ -399,8 +392,10 @@ class SparePartUpdate(BaseModel):
     hsn_code:        Optional[str] = None
     location:        Optional[str] = None
 
+# PATCH 4: Added action field ─────────────────────────────────────────────────
 class StockAdjust(BaseModel):
     qty:    int    # positive = stock in, negative = adjustment
+    action: Optional[str] = "add"   # "add" | "subtract"
     reason: Optional[str] = ""
 
 # ── Parts Sales ───────────────────────────────────────────────────────────────
@@ -421,6 +416,24 @@ class PartsSaleCreate(BaseModel):
     sold_by:        Optional[str] = ""
     notes:          Optional[str] = ""
 
+# PATCH 3: Parts Bills models ─────────────────────────────────────────────────
+class PartsBillItem(BaseModel):
+    part_id:         Optional[str]   = None
+    part_number:     Optional[str]   = ""
+    name:            str
+    hsn_code:        Optional[str]   = "8714"
+    qty:             int             = 1
+    unit_price:      float
+    gst_rate:        float           = 18.0
+
+class PartsBillCreate(BaseModel):
+    customer_name:    Optional[str] = ""
+    customer_mobile:  Optional[str] = ""
+    customer_vehicle: Optional[str] = ""
+    payment_mode:     Optional[str] = "Cash"
+    items:            List[PartsBillItem] = []
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  HEALTH
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -436,6 +449,7 @@ async def ready():
         return {"status": "ready", "db": DB_NAME}
     except Exception as e:
         return JSONResponse(status_code=503, content={"status": "not_ready", "error": str(e)})
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  FILES (GridFS Uploads)
@@ -458,11 +472,12 @@ async def get_file(file_id: str):
             while chunk := await grid_out.readchunk():
                 yield chunk
         return StreamingResponse(
-            file_stream(), 
+            file_stream(),
             media_type=grid_out.metadata.get("content_type", "application/octet-stream")
         )
     except Exception:
         raise HTTPException(status_code=404, detail="File not found")
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  AUTH
@@ -471,28 +486,19 @@ async def get_file(file_id: str):
 @api_router.post("/auth/login", response_model=TokenOut)
 async def login(body: LoginIn):
     username = body.username.strip().lower()
-
-    # Rate limit check
     attempt_count = await db.login_attempts.count_documents({"username": username})
     if attempt_count >= MAX_LOGIN_ATTEMPTS:
         raise HTTPException(
             status_code=429,
             detail=f"Account locked. Too many failed attempts. Try again in {LOGIN_LOCKOUT_MIN} minutes."
         )
-
     user = await db.users.find_one({"username": username})
     if not user or not pwd_ctx.verify(body.password, user.get("password", "")):
-        await db.login_attempts.insert_one({
-            "username": username, "created_at": datetime.utcnow()
-        })
+        await db.login_attempts.insert_one({"username": username, "created_at": datetime.utcnow()})
         raise HTTPException(status_code=401, detail="Invalid username or password")
-
     if user.get("status") != "active":
         raise HTTPException(status_code=403, detail="Account is inactive or deactivated")
-
-    # Clear failed attempts on success
     await db.login_attempts.delete_many({"username": username})
-
     token = create_token({"sub": str(user["_id"]), "role": user["role"]})
     user_data = {
         "id":       str(user["_id"]),
@@ -503,13 +509,8 @@ async def login(body: LoginIn):
     }
     response = JSONResponse(content={"user": user_data})
     response.set_cookie(
-        key="mm_token",
-        value=token,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        max_age=60 * JWT_EXPIRE_MIN,
-        path="/",
+        key="mm_token", value=token, httponly=True, secure=True,
+        samesite="none", max_age=60 * JWT_EXPIRE_MIN, path="/",
     )
     return response
 
@@ -525,15 +526,13 @@ async def logout(current_user: dict = Depends(verify_token)):
     response.delete_cookie(key="mm_token", path="/")
     return response
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  USERS / STAFF
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @api_router.get("/users")
-async def list_users(
-    p=Depends(paginate_params),
-    current_user=Depends(require_admin),
-):
+async def list_users(p=Depends(paginate_params), current_user=Depends(require_admin)):
     docs  = await db.users.find({}, {"password": 0}).skip(p["skip"]).limit(p["limit"]).to_list(p["limit"])
     total = await db.users.count_documents({})
     return JSONResponse(content=oids(docs), headers={"X-Total-Count": str(total)})
@@ -549,8 +548,7 @@ async def create_user(body: UserCreate, current_user=Depends(require_admin)):
     doc["created_at"] = datetime.utcnow()
     result = await db.users.insert_one(doc)
     doc["id"] = str(result.inserted_id)
-    doc.pop("_id", None)
-    doc.pop("password", None)
+    doc.pop("_id", None); doc.pop("password", None)
     return doc
 
 @api_router.get("/users/{user_id}")
@@ -566,13 +564,11 @@ async def update_user(user_id: str, body: UserUpdate, current_user=Depends(requi
     if not update:
         raise HTTPException(status_code=400, detail="Nothing to update")
     await db.users.update_one({"_id": obj_id(user_id)}, {"$set": update})
-    doc = await db.users.find_one({"_id": obj_id(user_id)}, {"password": 0})
-    return oid(doc)
+    return oid(await db.users.find_one({"_id": obj_id(user_id)}, {"password": 0}))
 
 @api_router.post("/users/{user_id}/password")
 async def change_password(user_id: str, body: PasswordChange, current_user=Depends(require_admin)):
-    hashed = pwd_ctx.hash(body.new_password)
-    await db.users.update_one({"_id": obj_id(user_id)}, {"$set": {"password": hashed}})
+    await db.users.update_one({"_id": obj_id(user_id)}, {"$set": {"password": pwd_ctx.hash(body.new_password)}})
     return {"message": "Password updated"}
 
 @api_router.delete("/users/{user_id}")
@@ -583,6 +579,7 @@ async def delete_user(user_id: str, current_user=Depends(require_admin)):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
     return {"message": "Deleted"}
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  CUSTOMERS
@@ -613,8 +610,7 @@ async def create_customer(body: CustomerCreate, current_user=Depends(verify_toke
     doc = body.dict()
     doc["created_at"] = datetime.utcnow().isoformat()
     result = await db.customers.insert_one(doc)
-    doc["id"] = str(result.inserted_id)
-    doc.pop("_id", None)
+    doc["id"] = str(result.inserted_id); doc.pop("_id", None)
     return doc
 
 @api_router.get("/customers/{cust_id}")
@@ -637,29 +633,26 @@ async def delete_customer(cust_id: str, current_user=Depends(require_admin)):
         raise HTTPException(status_code=404, detail="Customer not found")
     return {"message": "Deleted"}
 
-# Customer timeline — all sales + service jobs
 @api_router.get("/customers/{cust_id}/timeline")
 async def customer_timeline(cust_id: str, current_user=Depends(verify_token)):
     sales, jobs = await asyncio.gather(
         db.sales.find({"customer_id": cust_id}).sort("sale_date", -1).to_list(None),
         db.service_jobs.find({"customer_id": cust_id}).sort("check_in_date", -1).to_list(None),
     )
-    # Get service bills for all jobs to calculate real service spend
     job_ids = [str(j["_id"]) for j in jobs]
     bills = []
     if job_ids:
         bills = await db.service_bills.find({"job_id": {"$in": job_ids}}).to_list(None)
-
-    service_spend = sum(b.get("grand_total", 0) for b in bills)
-    total_sales_spend = sum(s.get("total_amount", 0) for s in sales)
-
+    service_spend       = sum(b.get("grand_total", 0) for b in bills)
+    total_sales_spend   = sum(s.get("total_amount", 0) for s in sales)
     return {
-        "sales":         oids(sales),
-        "service":       oids(jobs),
-        "total_spent":   total_sales_spend + service_spend,
-        "service_spend": service_spend,
+        "sales":             oids(sales),
+        "service":           oids(jobs),
+        "total_spent":       total_sales_spend + service_spend,
+        "service_spend":     service_spend,
         "total_sales_spend": total_sales_spend,
     }
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  VEHICLES
@@ -699,8 +692,7 @@ async def create_vehicle(body: VehicleCreate, current_user=Depends(verify_token)
     doc["brand"]          = doc["brand"].upper()
     doc["created_at"]     = datetime.utcnow().isoformat()
     result = await db.vehicles.insert_one(doc)
-    doc["id"] = str(result.inserted_id)
-    doc.pop("_id", None)
+    doc["id"] = str(result.inserted_id); doc.pop("_id", None)
     return doc
 
 @api_router.get("/vehicles/stats/summary")
@@ -715,10 +707,7 @@ async def vehicle_stats(current_user=Depends(verify_token)):
     pipeline = [{"$match": {"status": "in_stock"}}, {"$group": {"_id": None, "total": {"$sum": "$purchase_price"}}}]
     result   = await db.vehicles.aggregate(pipeline).to_list(1)
     stock_val = result[0]["total"] if result else 0
-    return {
-        "in_stock": in_stock, "sold": sold, "in_service": in_service,
-        "new": new_count, "used": used_count, "stock_value": stock_val,
-    }
+    return {"in_stock": in_stock, "sold": sold, "in_service": in_service, "new": new_count, "used": used_count, "stock_value": stock_val}
 
 @api_router.get("/vehicles/{veh_id}")
 async def get_vehicle(veh_id: str, current_user=Depends(verify_token)):
@@ -750,10 +739,7 @@ async def delete_vehicle(veh_id: str, current_user=Depends(require_admin)):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _generate_sale_pdf(sale: dict) -> bytes:
-    """Generate a professional A4 invoice PDF for a sale record. Returns bytes."""
     _register_fonts()
-
-    # ── Colors ────────────────────────────────────────────────────────────────
     GOLD        = colors.HexColor('#B8860B')
     GOLD_LIGHT  = colors.HexColor('#F5E6C0')
     DARK        = colors.HexColor('#1A1A1A')
@@ -764,334 +750,135 @@ def _generate_sale_pdf(sale: dict) -> bytes:
     WHITE       = colors.white
     PAGE_BG     = colors.HexColor('#FDFCF8')
     RS          = '₹'
-
     W, H = A4
-    ML = 16*mm
-    MR = W - 16*mm
-    TW = MR - ML
-
+    ML = 16*mm; MR = W - 16*mm; TW = MR - ML
     buf = io.BytesIO()
     c = pdf_canvas.Canvas(buf, pagesize=A4)
-
-    # ── Page background ───────────────────────────────────────────────────────
-    c.setFillColor(PAGE_BG)
-    c.rect(0, 0, W, H, fill=1, stroke=0)
-
-    # ── Top bar ───────────────────────────────────────────────────────────────
-    c.setFillColor(DARK)
-    c.rect(0, H - 5*mm, W, 5*mm, fill=1, stroke=0)
-    c.setFillColor(GOLD)
-    c.rect(0, H - 6.5*mm, W, 1.5*mm, fill=1, stroke=0)
-
-    # ── Header ────────────────────────────────────────────────────────────────
+    c.setFillColor(PAGE_BG); c.rect(0, 0, W, H, fill=1, stroke=0)
+    c.setFillColor(DARK); c.rect(0, H - 5*mm, W, 5*mm, fill=1, stroke=0)
+    c.setFillColor(GOLD); c.rect(0, H - 6.5*mm, W, 1.5*mm, fill=1, stroke=0)
     HEADER_Y = H - 30*mm
-
-    # Logo path — place mm_logo.png next to server.py on Render
     logo_path = os.path.join(os.path.dirname(__file__), 'mm_logo.png')
     if os.path.exists(logo_path):
         LOGO_SIZE = 30*mm
-        c.drawImage(logo_path, ML, HEADER_Y - 10*mm,
-                    width=LOGO_SIZE, height=LOGO_SIZE,
-                    preserveAspectRatio=True, mask='auto')
+        c.drawImage(logo_path, ML, HEADER_Y - 10*mm, width=LOGO_SIZE, height=LOGO_SIZE, preserveAspectRatio=True, mask='auto')
         name_x = ML + 30*mm
     else:
         name_x = ML
-
-    c.setFont('Sans-Bold', 20)
-    c.setFillColor(DARK)
-    c.drawString(name_x, HEADER_Y + 4*mm, 'MM MOTORS')
-    c.setFont('Sans', 7)
-    c.setFillColor(DIM)
-    c.drawString(name_x, HEADER_Y - 2*mm, 'MULTI-BRAND DEALERSHIP  ·  MALUR')
-
-    c.setFont('Mono-Bold', 8)
-    c.setFillColor(GOLD)
-    c.drawRightString(MR, HEADER_Y + 5*mm, 'SALE  INVOICE')
-    c.setFont('Mono-Bold', 13)
-    c.setFillColor(DARK)
-    c.drawRightString(MR, HEADER_Y - 2*mm, sale.get('invoice_number', '—'))
-    c.setFont('Sans', 7.5)
-    c.setFillColor(DIM)
-    c.drawRightString(MR, HEADER_Y - 7*mm, f"Date: {sale.get('sale_date', '—')}")
-
-    # Divider
+    c.setFont('Sans-Bold', 20); c.setFillColor(DARK); c.drawString(name_x, HEADER_Y + 4*mm, 'MM MOTORS')
+    c.setFont('Sans', 7); c.setFillColor(DIM); c.drawString(name_x, HEADER_Y - 2*mm, 'MULTI-BRAND DEALERSHIP  ·  MALUR')
+    c.setFont('Mono-Bold', 8); c.setFillColor(GOLD); c.drawRightString(MR, HEADER_Y + 5*mm, 'SALE  INVOICE')
+    c.setFont('Mono-Bold', 13); c.setFillColor(DARK); c.drawRightString(MR, HEADER_Y - 2*mm, sale.get('invoice_number', '—'))
+    c.setFont('Sans', 7.5); c.setFillColor(DIM); c.drawRightString(MR, HEADER_Y - 7*mm, f"Date: {sale.get('sale_date', '—')}")
     DIV_Y = HEADER_Y - 12*mm
-    c.setStrokeColor(GOLD)
-    c.setLineWidth(0.8)
-    c.line(ML, DIV_Y, MR, DIV_Y)
-
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    c.setStrokeColor(GOLD); c.setLineWidth(0.8); c.line(ML, DIV_Y, MR, DIV_Y)
     def sec_label(x, y, text):
-        c.setFont('Sans-Bold', 6.5)
-        c.setFillColor(GOLD)
-        c.drawString(x, y, text.upper())
-        c.setStrokeColor(GOLD)
-        c.setLineWidth(0.35)
-        c.line(x, y - 1*mm, x + 38*mm, y - 1*mm)
-
+        c.setFont('Sans-Bold', 6.5); c.setFillColor(GOLD); c.drawString(x, y, text.upper())
+        c.setStrokeColor(GOLD); c.setLineWidth(0.35); c.line(x, y - 1*mm, x + 38*mm, y - 1*mm)
     def irow(x, y, label, val, mono=False):
-        c.setFont('Sans', 7)
-        c.setFillColor(DIM)
-        c.drawString(x, y, label)
-        c.setFont('Mono' if mono else 'Sans-Bold', 7)
-        c.setFillColor(DARK)
+        c.setFont('Sans', 7); c.setFillColor(DIM); c.drawString(x, y, label)
+        c.setFont('Mono' if mono else 'Sans-Bold', 7); c.setFillColor(DARK)
         c.drawString(x + 24*mm, y, str(val) if val else '—')
-
-    COL1 = ML
-    COL2 = W/2 + 2*mm
-    RH   = 5*mm
-
-    # ── Customer + Vehicle ────────────────────────────────────────────────────
+    COL1 = ML; COL2 = W/2 + 2*mm; RH = 5*mm
     INFO_Y = DIV_Y - 6*mm
     nominee = sale.get('nominee', {}) or {}
-
     sec_label(COL1, INFO_Y, 'Customer Details')
-    for i, (l, v) in enumerate([
-        ('Name',    sale.get('customer_name', '')),
-        ('C/O',     sale.get('care_of', '')),
-        ('Mobile',  sale.get('customer_mobile', '')),
-        ('Address', sale.get('customer_address', '')),
-        ('Payment', sale.get('payment_mode', '')),
-    ]):
+    for i, (l, v) in enumerate([('Name', sale.get('customer_name','')), ('C/O', sale.get('care_of','')), ('Mobile', sale.get('customer_mobile','')), ('Address', sale.get('customer_address','')), ('Payment', sale.get('payment_mode',''))]):
         irow(COL1, INFO_Y - (i+1.6)*RH, l, v)
-
     sec_label(COL2, INFO_Y, 'Vehicle Details')
-    for i, (l, v) in enumerate([
-        ('Brand',     sale.get('vehicle_brand', '')),
-        ('Model',     sale.get('vehicle_model', '')),
-        ('Variant',   sale.get('vehicle_variant', '')),
-        ('Colour',    sale.get('vehicle_color', '')),
-        ('Financier', sale.get('financier', '')),
-    ]):
+    for i, (l, v) in enumerate([('Brand', sale.get('vehicle_brand','')), ('Model', sale.get('vehicle_model','')), ('Variant', sale.get('vehicle_variant','')), ('Colour', sale.get('vehicle_color','')), ('Financier', sale.get('financier',''))]):
         irow(COL2, INFO_Y - (i+1.6)*RH, l, v)
-
-    # ── Chassis + Nominee ─────────────────────────────────────────────────────
     SEC2_Y = INFO_Y - 7.8*RH
     sec_label(COL1, SEC2_Y, 'Registration / Chassis')
-    for i, (l, v, m) in enumerate([
-        ('Vehicle No', sale.get('vehicle_number', ''), False),
-        ('Chassis No', sale.get('chassis_number', ''), True),
-        ('Engine No',  sale.get('engine_number',  ''), True),
-    ]):
+    for i, (l, v, m) in enumerate([('Vehicle No', sale.get('vehicle_number',''), False), ('Chassis No', sale.get('chassis_number',''), True), ('Engine No', sale.get('engine_number',''), True)]):
         irow(COL1, SEC2_Y - (i+1.6)*RH, l, v, mono=m)
-
     sec_label(COL2, SEC2_Y, 'Nominee (Insurance)')
-    for i, (l, v) in enumerate([
-        ('Name',     nominee.get('name', '')),
-        ('Relation', nominee.get('relation', '')),
-        ('Age',      nominee.get('age', '')),
-        ('Mobile',   nominee.get('number', '')),
-    ]):
+    for i, (l, v) in enumerate([('Name', nominee.get('name','')), ('Relation', nominee.get('relation','')), ('Age', nominee.get('age','')), ('Mobile', nominee.get('number',''))]):
         irow(COL2, SEC2_Y - (i+1.6)*RH, l, v)
-
-    # ── Pricing table ─────────────────────────────────────────────────────────
-    TBL_Y  = SEC2_Y - 5.8*RH
-    TBL_TY = TBL_Y + 1*mm
-
-    c.setFillColor(DARK)
-    c.rect(ML, TBL_TY - 6.5*mm, TW, 6.5*mm, fill=1, stroke=0)
-    c.setFont('Sans-Bold', 7)
-    c.setFillColor(WHITE)
+    TBL_Y = SEC2_Y - 5.8*RH; TBL_TY = TBL_Y + 1*mm
+    c.setFillColor(DARK); c.rect(ML, TBL_TY - 6.5*mm, TW, 6.5*mm, fill=1, stroke=0)
+    c.setFont('Sans-Bold', 7); c.setFillColor(WHITE)
     TC = [ML+3*mm, ML+65*mm, ML+100*mm, ML+128*mm, MR-3*mm]
-    c.drawString(TC[0], TBL_TY - 4.5*mm, 'DESCRIPTION')
-    c.drawString(TC[1], TBL_TY - 4.5*mm, 'CHASSIS / DETAILS')
-    c.drawString(TC[2], TBL_TY - 4.5*mm, 'PAYMENT')
-    c.drawString(TC[3], TBL_TY - 4.5*mm, 'MODE')
+    c.drawString(TC[0], TBL_TY - 4.5*mm, 'DESCRIPTION'); c.drawString(TC[1], TBL_TY - 4.5*mm, 'CHASSIS / DETAILS')
+    c.drawString(TC[2], TBL_TY - 4.5*mm, 'PAYMENT'); c.drawString(TC[3], TBL_TY - 4.5*mm, 'MODE')
     c.drawRightString(TC[4], TBL_TY - 4.5*mm, 'AMOUNT')
-
     DR_Y = TBL_TY - 14*mm
-    c.setFillColor(STRIPE)
-    c.rect(ML, DR_Y - 1*mm, TW, 9*mm, fill=1, stroke=0)
-    c.setFont('Sans-Bold', 8)
-    c.setFillColor(DARK)
-    c.drawString(TC[0], DR_Y + 4*mm,
-        f"{sale.get('vehicle_brand','')} {sale.get('vehicle_model','')}")
-    c.setFont('Sans', 7)
-    c.setFillColor(DIM)
-    c.drawString(TC[0], DR_Y + 0.8*mm,
-        f"{sale.get('vehicle_variant','')}  ·  {sale.get('vehicle_color','')}")
-    c.setFont('Mono', 7)
-    c.setFillColor(DARK)
-    c.drawString(TC[1], DR_Y + 2.5*mm, sale.get('chassis_number', ''))
-    c.setFont('Sans', 7.5)
-    c.drawString(TC[2], DR_Y + 2.5*mm, sale.get('payment_mode', ''))
-    c.drawString(TC[3], DR_Y + 2.5*mm, 'Full Payment')
-
+    c.setFillColor(STRIPE); c.rect(ML, DR_Y - 1*mm, TW, 9*mm, fill=1, stroke=0)
+    c.setFont('Sans-Bold', 8); c.setFillColor(DARK)
+    c.drawString(TC[0], DR_Y + 4*mm, f"{sale.get('vehicle_brand','')} {sale.get('vehicle_model','')}")
+    c.setFont('Sans', 7); c.setFillColor(DIM)
+    c.drawString(TC[0], DR_Y + 0.8*mm, f"{sale.get('vehicle_variant','')}  ·  {sale.get('vehicle_color','')}")
+    c.setFont('Mono', 7); c.setFillColor(DARK); c.drawString(TC[1], DR_Y + 2.5*mm, sale.get('chassis_number',''))
+    c.setFont('Sans', 7.5); c.drawString(TC[2], DR_Y + 2.5*mm, sale.get('payment_mode','')); c.drawString(TC[3], DR_Y + 2.5*mm, 'Full Payment')
     total = sale.get('total_amount') or sale.get('sale_price') or 0
     total_str = f"{int(total):,}" if isinstance(total, (int, float)) else str(total)
-    c.setFont('Sans-Bold', 10)
-    c.setFillColor(GOLD)
-    c.drawRightString(TC[4], DR_Y + 2.5*mm, f"{RS}{total_str}")
-
-    c.setStrokeColor(GOLD)
-    c.setLineWidth(0.7)
-    c.line(ML, DR_Y - 2*mm, MR, DR_Y - 2*mm)
-
-    # ── Total box ─────────────────────────────────────────────────────────────
+    c.setFont('Sans-Bold', 10); c.setFillColor(GOLD); c.drawRightString(TC[4], DR_Y + 2.5*mm, f"{RS}{total_str}")
+    c.setStrokeColor(GOLD); c.setLineWidth(0.7); c.line(ML, DR_Y - 2*mm, MR, DR_Y - 2*mm)
     TOT_Y = DR_Y - 12*mm
-    c.setFont('Sans-Italic', 7)
-    c.setFillColor(DIM)
-    c.drawString(ML, TOT_Y + 4*mm, sale.get('amount_in_words', ''))
-
-    c.setFillColor(GOLD_LIGHT)
-    c.setStrokeColor(GOLD)
-    c.setLineWidth(0.6)
+    c.setFont('Sans-Italic', 7); c.setFillColor(DIM); c.drawString(ML, TOT_Y + 4*mm, sale.get('amount_in_words',''))
+    c.setFillColor(GOLD_LIGHT); c.setStrokeColor(GOLD); c.setLineWidth(0.6)
     c.roundRect(MR - 58*mm, TOT_Y - 1*mm, 58*mm, 11*mm, 1.5*mm, fill=1, stroke=1)
-    c.setFont('Sans', 7)
-    c.setFillColor(MID)
-    c.drawString(MR - 55*mm, TOT_Y + 5.5*mm, 'TOTAL AMOUNT')
-    c.setFont('Sans-Bold', 13)
-    c.setFillColor(DARK)
-    c.drawRightString(MR - 3*mm, TOT_Y + 4*mm, f"{RS}{total_str}")
-
-    # ── Signatures ────────────────────────────────────────────────────────────
+    c.setFont('Sans', 7); c.setFillColor(MID); c.drawString(MR - 55*mm, TOT_Y + 5.5*mm, 'TOTAL AMOUNT')
+    c.setFont('Sans-Bold', 13); c.setFillColor(DARK); c.drawRightString(MR - 3*mm, TOT_Y + 4*mm, f"{RS}{total_str}")
     SIG_Y = TOT_Y - 14*mm
-    c.setStrokeColor(RULE)
-    c.setLineWidth(0.5)
+    c.setStrokeColor(RULE); c.setLineWidth(0.5)
     c.line(ML, SIG_Y, ML + 52*mm, SIG_Y)
-    c.setFont('Sans', 6.5)
-    c.setFillColor(DIM)
-    c.drawString(ML, SIG_Y - 4*mm, "Customer's Signature")
-    c.setFont('Sans-Bold', 7)
-    c.setFillColor(DARK)
-    c.drawString(ML, SIG_Y - 8.5*mm, sale.get('customer_name', '').upper())
-
-    c.setFont('Sans', 6.5)
-    c.setFillColor(DIM)
-    c.drawCentredString(W/2, SIG_Y - 4*mm, f"Sold by: {sale.get('sold_by', 'MM Motors')}")
-
+    c.setFont('Sans', 6.5); c.setFillColor(DIM); c.drawString(ML, SIG_Y - 4*mm, "Customer's Signature")
+    c.setFont('Sans-Bold', 7); c.setFillColor(DARK); c.drawString(ML, SIG_Y - 8.5*mm, sale.get('customer_name','').upper())
+    c.setFont('Sans', 6.5); c.setFillColor(DIM); c.drawCentredString(W/2, SIG_Y - 4*mm, f"Sold by: {sale.get('sold_by','MM Motors')}")
     c.line(MR - 52*mm, SIG_Y, MR, SIG_Y)
-    c.setFont('Sans', 6.5)
-    c.setFillColor(DIM)
-    c.drawRightString(MR, SIG_Y - 4*mm, 'Authorised Signatory')
-    c.setFont('Sans-Bold', 7)
-    c.setFillColor(DARK)
-    c.drawRightString(MR, SIG_Y - 8.5*mm, 'MM MOTORS')
-
-    # ── Service Schedule ──────────────────────────────────────────────────────
+    c.setFont('Sans', 6.5); c.setFillColor(DIM); c.drawRightString(MR, SIG_Y - 4*mm, 'Authorised Signatory')
+    c.setFont('Sans-Bold', 7); c.setFillColor(DARK); c.drawRightString(MR, SIG_Y - 8.5*mm, 'MM MOTORS')
     SCHED_Y = SIG_Y - 20*mm
-
-    c.setFillColor(DARK)
-    c.rect(ML, SCHED_Y, TW, 6.5*mm, fill=1, stroke=0)
-    c.setFillColor(GOLD)
-    c.rect(ML, SCHED_Y + 6.5*mm, TW, 0.8*mm, fill=1, stroke=0)
-    c.setFont('Sans-Bold', 8.5)
-    c.setFillColor(WHITE)
-    c.drawString(ML + 4*mm, SCHED_Y + 2*mm, 'SERVICE SCHEDULE')
-
+    c.setFillColor(DARK); c.rect(ML, SCHED_Y, TW, 6.5*mm, fill=1, stroke=0)
+    c.setFillColor(GOLD); c.rect(ML, SCHED_Y + 6.5*mm, TW, 0.8*mm, fill=1, stroke=0)
+    c.setFont('Sans-Bold', 8.5); c.setFillColor(WHITE); c.drawString(ML + 4*mm, SCHED_Y + 2*mm, 'SERVICE SCHEDULE')
     DEAR_Y = SCHED_Y - 13.5*mm
-    c.setFillColor(GOLD_LIGHT)
-    c.setStrokeColor(GOLD)
-    c.setLineWidth(0.5)
+    c.setFillColor(GOLD_LIGHT); c.setStrokeColor(GOLD); c.setLineWidth(0.5)
     c.roundRect(ML, DEAR_Y, TW, 12*mm, 1*mm, fill=1, stroke=1)
-    c.setFont('Sans-Bold', 7.5)
-    c.setFillColor(DARK)
-    c.drawString(ML + 3*mm, DEAR_Y + 8*mm, 'DEAR VALUED CUSTOMER,')
-    c.setFont('Sans', 7)
-    c.setFillColor(MID)
-    c.drawString(ML + 3*mm, DEAR_Y + 4.5*mm,
-        'We thank you for choosing our world-class vehicle. To ensure optimal performance and longevity,')
-    c.drawString(ML + 3*mm, DEAR_Y + 1.5*mm,
-        'please follow the service schedule below for a pleasant riding experience at all times.')
-
+    c.setFont('Sans-Bold', 7.5); c.setFillColor(DARK); c.drawString(ML + 3*mm, DEAR_Y + 8*mm, 'DEAR VALUED CUSTOMER,')
+    c.setFont('Sans', 7); c.setFillColor(MID)
+    c.drawString(ML + 3*mm, DEAR_Y + 4.5*mm, 'We thank you for choosing our world-class vehicle. To ensure optimal performance and longevity,')
+    c.drawString(ML + 3*mm, DEAR_Y + 1.5*mm, 'please follow the service schedule below for a pleasant riding experience at all times.')
     TH_Y = DEAR_Y - 8*mm
-    c.setFillColor(DARK)
-    c.rect(ML, TH_Y, TW, 6.5*mm, fill=1, stroke=0)
-    c.setFont('Sans-Bold', 7)
-    c.setFillColor(WHITE)
-    SC1 = ML + 3*mm
-    SC2 = ML + 52*mm
-    SC3 = ML + 115*mm
-    c.drawString(SC1, TH_Y + 2*mm, 'SERVICE DATE')
-    c.drawString(SC2, TH_Y + 2*mm, 'SERVICE TYPE')
-    c.drawString(SC3, TH_Y + 2*mm, 'RECOMMENDED SCHEDULE')
-
-    SERVICES = [
-        ('FIRST SERVICE',   '500-700 kms or 15-30 days'),
-        ('SECOND SERVICE',  '3000-3500 kms or 30-90 days'),
-        ('THIRD SERVICE',   '6000-6500 kms or 90-180 days'),
-        ('FOURTH SERVICE',  '9000-9500 kms or 180-270 days'),
-    ]
+    c.setFillColor(DARK); c.rect(ML, TH_Y, TW, 6.5*mm, fill=1, stroke=0)
+    c.setFont('Sans-Bold', 7); c.setFillColor(WHITE)
+    SC1 = ML + 3*mm; SC2 = ML + 52*mm; SC3 = ML + 115*mm
+    c.drawString(SC1, TH_Y + 2*mm, 'SERVICE DATE'); c.drawString(SC2, TH_Y + 2*mm, 'SERVICE TYPE'); c.drawString(SC3, TH_Y + 2*mm, 'RECOMMENDED SCHEDULE')
+    SERVICES = [('FIRST SERVICE','500-700 kms or 15-30 days'),('SECOND SERVICE','3000-3500 kms or 30-90 days'),('THIRD SERVICE','6000-6500 kms or 90-180 days'),('FOURTH SERVICE','9000-9500 kms or 180-270 days')]
     SRH = 6.5*mm
     for i, (stype, sched) in enumerate(SERVICES):
         ry = TH_Y - (i + 1) * SRH
-        c.setFillColor(WHITE if i % 2 == 0 else STRIPE)
-        c.rect(ML, ry, TW, SRH, fill=1, stroke=0)
-        c.setStrokeColor(RULE)
-        c.setLineWidth(0.3)
-        c.line(ML, ry, MR, ry)
-        c.setFont('Mono', 7)
-        c.setFillColor(DIM)
-        c.drawString(SC1, ry + 2*mm, '__/__/____')
-        c.setFont('Sans-Bold', 7)
-        c.setFillColor(GOLD)
-        c.drawString(SC2, ry + 2*mm, stype)
-        c.setFont('Sans', 7)
-        c.setFillColor(DARK)
-        c.drawString(SC3, ry + 2*mm, sched)
-
-    c.setStrokeColor(RULE)
-    c.setLineWidth(0.5)
+        c.setFillColor(WHITE if i % 2 == 0 else STRIPE); c.rect(ML, ry, TW, SRH, fill=1, stroke=0)
+        c.setStrokeColor(RULE); c.setLineWidth(0.3); c.line(ML, ry, MR, ry)
+        c.setFont('Mono', 7); c.setFillColor(DIM); c.drawString(SC1, ry + 2*mm, '__/__/____')
+        c.setFont('Sans-Bold', 7); c.setFillColor(GOLD); c.drawString(SC2, ry + 2*mm, stype)
+        c.setFont('Sans', 7); c.setFillColor(DARK); c.drawString(SC3, ry + 2*mm, sched)
+    c.setStrokeColor(RULE); c.setLineWidth(0.5)
     c.rect(ML, TH_Y - 4*SRH, TW, 6.5*mm + 13.5*mm + 8*mm + 4*SRH, fill=0, stroke=1)
-
     NOTE_Y = TH_Y - 4*SRH - 6.5*mm
-    c.setFillColor(GOLD_LIGHT)
-    c.setStrokeColor(GOLD)
-    c.setLineWidth(0.5)
+    c.setFillColor(GOLD_LIGHT); c.setStrokeColor(GOLD); c.setLineWidth(0.5)
     c.roundRect(ML, NOTE_Y - 0.5*mm, TW, 6*mm, 1*mm, fill=1, stroke=1)
-    c.setFont('Sans-Bold', 7.5)
-    c.setFillColor(colors.HexColor('#7A5800'))
-    c.drawCentredString(W/2, NOTE_Y + 1.8*mm,
-        '⚠  IMPORTANT: Follow whichever milestone comes first (kilometers or days)')
-
-    # ── Thank you section ─────────────────────────────────────────────────────
+    c.setFont('Sans-Bold', 7.5); c.setFillColor(colors.HexColor('#7A5800'))
+    c.drawCentredString(W/2, NOTE_Y + 1.8*mm, '⚠  IMPORTANT: Follow whichever milestone comes first (kilometers or days)')
     THANKS_Y = NOTE_Y - 17*mm
-    c.setFillColor(STRIPE)
-    c.setStrokeColor(RULE)
-    c.setLineWidth(0.5)
+    c.setFillColor(STRIPE); c.setStrokeColor(RULE); c.setLineWidth(0.5)
     c.roundRect(ML, THANKS_Y - 1*mm, TW, 28*mm, 2*mm, fill=1, stroke=1)
-    c.setFillColor(GOLD)
-    c.rect(ML, THANKS_Y + 26*mm, TW, 1.5*mm, fill=1, stroke=0)
-
-    for label, x in [
-        ('🏆  Trusted Dealer',      ML + 6*mm),
-        ('🕑  24/7 Service Support', W/2 - 22*mm),
-        ('✅  Quality Guaranteed',       MR - 50*mm),
-    ]:
-        c.setFont('Sans', 7)
-        c.setFillColor(MID)
-        c.drawString(x, THANKS_Y + 20.5*mm, label)
-
-    c.setStrokeColor(RULE)
-    c.setLineWidth(0.4)
-    c.line(ML + 4*mm, THANKS_Y + 18.5*mm, MR - 4*mm, THANKS_Y + 18.5*mm)
-
-    c.setFont('Sans-Bold', 12)
-    c.setFillColor(DARK)
-    c.drawCentredString(W/2, THANKS_Y + 13*mm, 'Thank You for Choosing M M Motors!')
-    c.setFont('Sans-Italic', 7.5)
-    c.setFillColor(DIM)
-    c.drawCentredString(W/2, THANKS_Y + 8.5*mm,
-        'Your trust drives our excellence in two-wheeler sales and service.')
-    c.setFont('Sans', 7.5)
-    c.setFillColor(MID)
-    c.drawCentredString(W/2, THANKS_Y + 4.5*mm,
-        '🌟  Premium Quality  •  ⚡  Expert Service  •  🤝  Customer First')
-
-    # ── Footer ────────────────────────────────────────────────────────────────
-    c.setFillColor(DARK)
-    c.rect(0, 0, W, 7.5*mm, fill=1, stroke=0)
-    c.setFillColor(GOLD)
-    c.rect(0, 7.5*mm, W, 1*mm, fill=1, stroke=0)
-    c.setFont('Sans', 6)
-    c.setFillColor(colors.HexColor('#888888'))
-    c.drawString(ML, 2.8*mm,
-        'This is a computer-generated document. No signature required if digitally authenticated.')
+    c.setFillColor(GOLD); c.rect(ML, THANKS_Y + 26*mm, TW, 1.5*mm, fill=1, stroke=0)
+    for label, x in [('🏆  Trusted Dealer', ML + 6*mm), ('🕑  24/7 Service Support', W/2 - 22*mm), ('✅  Quality Guaranteed', MR - 50*mm)]:
+        c.setFont('Sans', 7); c.setFillColor(MID); c.drawString(x, THANKS_Y + 20.5*mm, label)
+    c.setStrokeColor(RULE); c.setLineWidth(0.4); c.line(ML + 4*mm, THANKS_Y + 18.5*mm, MR - 4*mm, THANKS_Y + 18.5*mm)
+    c.setFont('Sans-Bold', 12); c.setFillColor(DARK); c.drawCentredString(W/2, THANKS_Y + 13*mm, 'Thank You for Choosing M M Motors!')
+    c.setFont('Sans-Italic', 7.5); c.setFillColor(DIM); c.drawCentredString(W/2, THANKS_Y + 8.5*mm, 'Your trust drives our excellence in two-wheeler sales and service.')
+    c.setFont('Sans', 7.5); c.setFillColor(MID); c.drawCentredString(W/2, THANKS_Y + 4.5*mm, '🌟  Premium Quality  •  ⚡  Expert Service  •  🤝  Customer First')
+    c.setFillColor(DARK); c.rect(0, 0, W, 7.5*mm, fill=1, stroke=0)
+    c.setFillColor(GOLD); c.rect(0, 7.5*mm, W, 1*mm, fill=1, stroke=0)
+    c.setFont('Sans', 6); c.setFillColor(colors.HexColor('#888888'))
+    c.drawString(ML, 2.8*mm, 'This is a computer-generated document. No signature required if digitally authenticated.')
     c.drawRightString(MR, 2.8*mm, 'MM Motors  ·  Malur  ·  Multi-brand Dealership')
-
-    c.save()
-    buf.seek(0)
+    c.save(); buf.seek(0)
     return buf.read()
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SALES
@@ -1112,10 +899,10 @@ async def list_sales(
     if status:      query["status"]      = status
     if search:
         query["$or"] = [
-            {"invoice_number":  {"$regex": search, "$options": "i"}},
-            {"customer_name":   {"$regex": search, "$options": "i"}},
-            {"vehicle_model":   {"$regex": search, "$options": "i"}},
-            {"vehicle_number":  {"$regex": search, "$options": "i"}},
+            {"invoice_number": {"$regex": search, "$options": "i"}},
+            {"customer_name":  {"$regex": search, "$options": "i"}},
+            {"vehicle_model":  {"$regex": search, "$options": "i"}},
+            {"vehicle_number": {"$regex": search, "$options": "i"}},
         ]
     docs  = await db.sales.find(query).skip(p["skip"]).limit(p["limit"]).sort("created_at", -1).to_list(p["limit"])
     total = await db.sales.count_documents(query)
@@ -1123,75 +910,58 @@ async def list_sales(
 
 @api_router.post("/sales", status_code=201)
 async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
-    # Validate customer
     customer = await db.customers.find_one({"_id": obj_id(body.customer_id)})
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
-
-    # Validate vehicle
     vehicle = await db.vehicles.find_one({"_id": obj_id(body.vehicle_id)})
     if not vehicle:
         raise HTTPException(status_code=404, detail="Vehicle not found")
     if vehicle.get("status") == "sold":
         raise HTTPException(status_code=409, detail="Vehicle already sold")
-
-    # Calculate totals — use sale_price as total if total_amount not supplied
-    if body.total_amount is not None:
-        total_amount = body.total_amount
-    else:
-        total_amount = body.sale_price or 0
-
-    inv_no = await next_sequence("invoice")
+    total_amount = body.total_amount if body.total_amount is not None else (body.sale_price or 0)
+    inv_no    = await next_sequence("invoice")
     sale_date = body.sale_date or datetime.utcnow().strftime("%d %b %Y")
-
     doc = {
-        "invoice_number": inv_no,
-        "customer_id":    body.customer_id,
-        "customer_name":  customer["name"],
-        "customer_mobile":customer.get("mobile", ""),
+        "invoice_number":  inv_no,
+        "customer_id":     body.customer_id,
+        "customer_name":   customer["name"],
+        "customer_mobile": customer.get("mobile",""),
         "customer_address":customer.get("address",""),
-        "care_of":        body.care_of or "",
-        "vehicle_id":     body.vehicle_id,
-        "vehicle_brand":  vehicle["brand"],
-        "vehicle_model":  vehicle["model"],
-        "vehicle_variant":vehicle.get("variant",""),
-        "vehicle_color":  vehicle.get("color",""),
-        "chassis_number": vehicle.get("chassis_number",""),
-        "engine_number":  vehicle.get("engine_number",""),
-        "vehicle_number": body.vehicle_number or vehicle.get("vehicle_number",""),
-        "sale_price":     body.sale_price,
-
-        "total_amount":   round(total_amount, 2),
-        "amount_in_words":amount_in_words(total_amount),
-        "finance_type":   body.finance_type or "cash",
-        "financier":      body.financier or "",
-        "loan_amount":    body.loan_amount or 0,
-        "nominee":        body.nominee.dict() if body.nominee else {},
-        "payment_mode":   body.payment_mode or "Cash",
-        "sold_by":        body.sold_by or current_user.get("name",""),
-        "sale_date":      sale_date,
-        "status":         "pending",    # pending | delivered
-        "notes":          body.notes or "",
-        "hsrp_front":     body.hsrp_front or "",
-        "hsrp_back":      body.hsrp_back or "",
-        "hsrp_front_id":  body.hsrp_front_id or "",
-        "hsrp_back_id":   body.hsrp_back_id or "",
-        "hsrp_date":      body.hsrp_date or "",
-        "hsrp_notes":     body.hsrp_notes or "",
-        
-        "created_at":     datetime.utcnow().isoformat(),
+        "care_of":         body.care_of or "",
+        "vehicle_id":      body.vehicle_id,
+        "vehicle_brand":   vehicle["brand"],
+        "vehicle_model":   vehicle["model"],
+        "vehicle_variant": vehicle.get("variant",""),
+        "vehicle_color":   vehicle.get("color",""),
+        "chassis_number":  vehicle.get("chassis_number",""),
+        "engine_number":   vehicle.get("engine_number",""),
+        "vehicle_number":  body.vehicle_number or vehicle.get("vehicle_number",""),
+        "sale_price":      body.sale_price,
+        "total_amount":    round(total_amount, 2),
+        "amount_in_words": amount_in_words(total_amount),
+        "finance_type":    body.finance_type or "cash",
+        "financier":       body.financier or "",
+        "loan_amount":     body.loan_amount or 0,
+        "nominee":         body.nominee.dict() if body.nominee else {},
+        "payment_mode":    body.payment_mode or "Cash",
+        "sold_by":         body.sold_by or current_user.get("name",""),
+        "sale_date":       sale_date,
+        "status":          "pending",
+        "notes":           body.notes or "",
+        "hsrp_front":      body.hsrp_front or "",
+        "hsrp_back":       body.hsrp_back or "",
+        "hsrp_front_id":   body.hsrp_front_id or "",
+        "hsrp_back_id":    body.hsrp_back_id or "",
+        "hsrp_date":       body.hsrp_date or "",
+        "hsrp_notes":      body.hsrp_notes or "",
+        "created_at":      datetime.utcnow().isoformat(),
     }
-  
     result = await db.sales.insert_one(doc)
-
-    # Mark vehicle as sold
     await db.vehicles.update_one(
         {"_id": obj_id(body.vehicle_id)},
         {"$set": {"status": "sold", "sold_date": sale_date, "invoice_number": inv_no}}
     )
-
-    doc["id"] = str(result.inserted_id)
-    doc.pop("_id", None)
+    doc["id"] = str(result.inserted_id); doc.pop("_id", None)
     return doc
 
 @api_router.get("/sales/stats/summary")
@@ -1199,21 +969,15 @@ async def sales_stats(current_user=Depends(verify_token)):
     today = datetime.utcnow().strftime("%d %b %Y")
     pipeline_total = [{"$group": {"_id": None, "total": {"$sum": "$total_amount"}, "count": {"$sum": 1}}}]
     result = await db.sales.aggregate(pipeline_total).to_list(1)
-    all_time = result[0] if result else {"total": 0, "count": 0}
+    all_time    = result[0] if result else {"total": 0, "count": 0}
     today_sales = await db.sales.count_documents({"sale_date": today})
     pending     = await db.sales.count_documents({"status": "pending"})
-    return {
-        "total_count":    all_time.get("count", 0),
-        "total_revenue":  all_time.get("total", 0),
-        "today_count":    today_sales,
-        "pending_delivery": pending,
-    }
+    return {"total_count": all_time.get("count",0), "total_revenue": all_time.get("total",0), "today_count": today_sales, "pending_delivery": pending}
 
 @api_router.get("/sales/{sale_id}")
 async def get_sale(sale_id: str, current_user=Depends(verify_token)):
     doc = await db.sales.find_one({"_id": obj_id(sale_id)})
     if not doc:
-        # try invoice_number
         doc = await db.sales.find_one({"invoice_number": sale_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Sale not found")
@@ -1221,7 +985,6 @@ async def get_sale(sale_id: str, current_user=Depends(verify_token)):
 
 @api_router.get("/sales/{sale_id}/pdf")
 async def sale_pdf(sale_id: str, current_user=Depends(verify_token)):
-    """Generate and return a PDF invoice for a sale record."""
     doc = await db.sales.find_one({"_id": obj_id(sale_id)})
     if not doc:
         doc = await db.sales.find_one({"invoice_number": sale_id})
@@ -1232,10 +995,9 @@ async def sale_pdf(sale_id: str, current_user=Depends(verify_token)):
         pdf_bytes = _generate_sale_pdf(sale)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
-    invoice_no = sale.get("invoice_number", "invoice").replace("/", "-")
+    invoice_no = sale.get("invoice_number","invoice").replace("/","-")
     return StreamingResponse(
-        io.BytesIO(pdf_bytes),
-        media_type="application/pdf",
+        io.BytesIO(pdf_bytes), media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=MM_Motors_{invoice_no}.pdf"},
     )
 
@@ -1244,29 +1006,16 @@ async def update_sale(sale_id: str, body: SaleUpdate, current_user=Depends(verif
     sale = await db.sales.find_one({"_id": obj_id(sale_id)})
     if not sale:
         raise HTTPException(status_code=404, detail="Sale not found")
-
     update: dict = {}
-
-    # Simple scalar fields
-    for field in ("status", "delivery_date", "vehicle_number", "payment_mode",
-                  "notes", "customer_name", "customer_mobile", "customer_address",
-                  "care_of", "total_amount", "sale_price", "finance_type",
-                  "financier", "loan_amount", "sale_date", "sold_by",
-                  "hsrp_front", "hsrp_back", "hsrp_front_id", "hsrp_back_id", "hsrp_date", "hsrp_notes"):
+    for field in ("status","delivery_date","vehicle_number","payment_mode","notes","customer_name","customer_mobile","customer_address","care_of","total_amount","sale_price","finance_type","financier","loan_amount","sale_date","sold_by","hsrp_front","hsrp_back","hsrp_front_id","hsrp_back_id","hsrp_date","hsrp_notes"):
         val = getattr(body, field)
         if val is not None:
             update[field] = val
-
-    # Recalculate amount_in_words when total_amount changes
     if "total_amount" in update:
         update["amount_in_words"] = amount_in_words(update["total_amount"])
-
-    # Nominee
     if body.nominee is not None:
         update["nominee"] = body.nominee.dict()
-
-    # Vehicle swap — owner only
-    if body.vehicle_id is not None and body.vehicle_id != sale.get("vehicle_id", ""):
+    if body.vehicle_id is not None and body.vehicle_id != sale.get("vehicle_id",""):
         if current_user.get("role") != "owner":
             raise HTTPException(status_code=403, detail="Only owner can change vehicle on a sale")
         new_vehicle = await db.vehicles.find_one({"_id": obj_id(body.vehicle_id)})
@@ -1274,32 +1023,18 @@ async def update_sale(sale_id: str, body: SaleUpdate, current_user=Depends(verif
             raise HTTPException(status_code=404, detail="New vehicle not found")
         if new_vehicle.get("status") == "sold" and str(new_vehicle["_id"]) != sale.get("vehicle_id",""):
             raise HTTPException(status_code=409, detail="Vehicle already sold")
-        # Restore old vehicle to in_stock
         if sale.get("vehicle_id"):
-            await db.vehicles.update_one(
-                {"_id": obj_id(sale["vehicle_id"])},
-                {"$set": {"status": "in_stock"}, "$unset": {"sold_date": "", "invoice_number": ""}}
-            )
-        # Mark new vehicle as sold
-        await db.vehicles.update_one(
-            {"_id": obj_id(body.vehicle_id)},
-            {"$set": {
-                "status":         "sold",
-                "sold_date":      sale.get("sale_date", ""),
-                "invoice_number": sale.get("invoice_number", ""),
-            }}
-        )
+            await db.vehicles.update_one({"_id": obj_id(sale["vehicle_id"])}, {"$set": {"status": "in_stock"}, "$unset": {"sold_date":"","invoice_number":""}})
+        await db.vehicles.update_one({"_id": obj_id(body.vehicle_id)}, {"$set": {"status":"sold","sold_date":sale.get("sale_date",""),"invoice_number":sale.get("invoice_number","")}})
         update["vehicle_id"]      = body.vehicle_id
-        update["vehicle_brand"]   = new_vehicle.get("brand", "")
-        update["vehicle_model"]   = new_vehicle.get("model", "")
-        update["vehicle_variant"] = new_vehicle.get("variant", "")
-        update["vehicle_color"]   = new_vehicle.get("color", "")
-        update["chassis_number"]  = new_vehicle.get("chassis_number", "")
-        update["engine_number"]   = new_vehicle.get("engine_number", "")
-
+        update["vehicle_brand"]   = new_vehicle.get("brand","")
+        update["vehicle_model"]   = new_vehicle.get("model","")
+        update["vehicle_variant"] = new_vehicle.get("variant","")
+        update["vehicle_color"]   = new_vehicle.get("color","")
+        update["chassis_number"]  = new_vehicle.get("chassis_number","")
+        update["engine_number"]   = new_vehicle.get("engine_number","")
     if not update:
         raise HTTPException(status_code=400, detail="Nothing to update")
-
     await db.sales.update_one({"_id": obj_id(sale_id)}, {"$set": update})
     return oid(await db.sales.find_one({"_id": obj_id(sale_id)}))
 
@@ -1308,11 +1043,7 @@ async def delete_sale(sale_id: str, current_user=Depends(require_admin)):
     sale = await db.sales.find_one({"_id": obj_id(sale_id)})
     if not sale:
         raise HTTPException(status_code=404, detail="Sale not found")
-    # Restore vehicle to in_stock
-    await db.vehicles.update_one(
-        {"_id": obj_id(sale["vehicle_id"])},
-        {"$set": {"status": "in_stock"}, "$unset": {"sold_date": "", "invoice_number": ""}}
-    )
+    await db.vehicles.update_one({"_id": obj_id(sale["vehicle_id"])}, {"$set": {"status":"in_stock"}, "$unset": {"sold_date":"","invoice_number":""}})
     await db.sales.delete_one({"_id": obj_id(sale_id)})
     await _sync_counter("invoice", "sales", "invoice_number")
     return {"message": "Deleted"}
@@ -1343,7 +1074,7 @@ async def list_service_jobs(
             {"model":          {"$regex": search, "$options": "i"}},
             {"complaint":      {"$regex": search, "$options": "i"}},
         ]
-    docs  = await db.service_jobs.find(query).skip(p["skip"]).limit(p["limit"]).sort("created_at", -1).to_list(p["limit"])
+    docs  = await db.service_jobs.find(query).skip(p["skip"]).limit(p["limit"]).sort("created_at",-1).to_list(p["limit"])
     total = await db.service_jobs.count_documents(query)
     return JSONResponse(content=oids(docs), headers={"X-Total-Count": str(total)})
 
@@ -1352,49 +1083,42 @@ async def create_service_job(body: ServiceJobCreate, current_user=Depends(verify
     customer = await db.customers.find_one({"_id": obj_id(body.customer_id)})
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
-
-    job_no     = await next_sequence("job")
-    check_in   = body.check_in_date or datetime.utcnow().strftime("%d %b %Y")
-
+    job_no   = await next_sequence("job")
+    check_in = body.check_in_date or datetime.utcnow().strftime("%d %b %Y")
     doc = {
-        "job_number":        job_no,
-        "customer_id":       body.customer_id,
-        "customer_name":     customer["name"],
-        "customer_mobile":   customer.get("mobile",""),
-        "vehicle_number":    body.vehicle_number.strip().upper(),
-        "brand":             body.brand.upper(),
-        "model":             body.model,
-        "variant":           body.variant or "",
-        "odometer_km":       body.odometer_km or 0,
-        "odometer_out":      0,
-        "complaint":         body.complaint,
-        "advisor_id":        body.advisor_id or "",
-        "technician":        body.technician or "",
-        "check_in_date":     check_in,
-        "estimated_delivery":body.estimated_delivery or "",
-        "delivery_date":     "",
-        "status":            "pending",   # pending | in_progress | ready | delivered
-        "notes":             body.notes or "",
-        "created_at":        datetime.utcnow().isoformat(),
+        "job_number":         job_no,
+        "customer_id":        body.customer_id,
+        "customer_name":      customer["name"],
+        "customer_mobile":    customer.get("mobile",""),
+        "vehicle_number":     body.vehicle_number.strip().upper(),
+        "brand":              body.brand.upper(),
+        "model":              body.model,
+        "variant":            body.variant or "",
+        "odometer_km":        body.odometer_km or 0,
+        "odometer_out":       0,
+        "complaint":          body.complaint,
+        "advisor_id":         body.advisor_id or "",
+        "technician":         body.technician or "",
+        "check_in_date":      check_in,
+        "estimated_delivery": body.estimated_delivery or "",
+        "delivery_date":      "",
+        "status":             "pending",
+        "notes":              body.notes or "",
+        "created_at":         datetime.utcnow().isoformat(),
     }
     result = await db.service_jobs.insert_one(doc)
-    doc["id"] = str(result.inserted_id)
-    doc.pop("_id", None)
+    doc["id"] = str(result.inserted_id); doc.pop("_id", None)
     return doc
 
 @api_router.get("/service/stats/summary")
 async def service_stats(current_user=Depends(verify_token)):
     pending, in_progress, ready, delivered = await asyncio.gather(
-        db.service_jobs.count_documents({"status": "pending"}),
-        db.service_jobs.count_documents({"status": "in_progress"}),
-        db.service_jobs.count_documents({"status": "ready"}),
-        db.service_jobs.count_documents({"status": "delivered"}),
+        db.service_jobs.count_documents({"status":"pending"}),
+        db.service_jobs.count_documents({"status":"in_progress"}),
+        db.service_jobs.count_documents({"status":"ready"}),
+        db.service_jobs.count_documents({"status":"delivered"}),
     )
-    return {
-        "pending": pending, "in_progress": in_progress,
-        "ready": ready, "delivered": delivered,
-        "total_active": pending + in_progress + ready,
-    }
+    return {"pending":pending,"in_progress":in_progress,"ready":ready,"delivered":delivered,"total_active":pending+in_progress+ready}
 
 @api_router.get("/service/{job_id}")
 async def get_service_job(job_id: str, current_user=Depends(verify_token)):
@@ -1418,7 +1142,6 @@ async def delete_service_job(job_id: str, current_user=Depends(require_admin)):
     result = await db.service_jobs.delete_one({"_id": obj_id(job_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Job not found")
-    # Also delete related bill
     await db.service_bills.delete_many({"job_id": job_id})
     await _sync_counter("job", "service_jobs", "job_number")
     return {"message": "Deleted"}
@@ -1435,18 +1158,20 @@ async def list_service_bills(
     current_user=Depends(verify_token),
 ):
     query = {"job_id": job_id} if job_id else {}
-    docs  = await db.service_bills.find(query).skip(p["skip"]).limit(p["limit"]).sort("created_at", -1).to_list(p["limit"])
+    docs  = await db.service_bills.find(query).skip(p["skip"]).limit(p["limit"]).sort("created_at",-1).to_list(p["limit"])
     total = await db.service_bills.count_documents(query)
     return JSONResponse(content=oids(docs), headers={"X-Total-Count": str(total)})
 
+# PATCH 1: Fixed indentation + returns existing bill instead of 409 ────────────
 @api_router.post("/service-bills", status_code=201)
 async def create_service_bill(body: ServiceBillCreate, current_user=Depends(verify_token)):
     job = await db.service_jobs.find_one({"_id": obj_id(body.job_id)})
     if not job:
         raise HTTPException(status_code=404, detail="Service job not found")
-    existing_bill = await db.service_bills.find_one({"job_id": body.job_id})
-    if existing_bill:
-        return oid(existing_bill)
+    existing = await db.service_bills.find_one({"job_id": body.job_id})
+    if existing:
+        # Return the existing bill instead of 409 — frontend uses GET to load anyway
+        return JSONResponse(content=oid(existing), status_code=200)
 
     # Build line items with GST
     items_out = []
@@ -1473,36 +1198,34 @@ async def create_service_bill(body: ServiceBillCreate, current_user=Depends(veri
             **lab_line,
         })
 
-    totals   = calc_bill_totals([{"unit_price": i["unit_price"], "qty": i["qty"], "gst_rate": i["gst_rate"]} for i in items_out])
-    bill_no  = await next_sequence("job")  # reuse SRV prefix — alternatively add separate "service_bill" counter
+    totals  = calc_bill_totals([{"unit_price": i["unit_price"], "qty": i["qty"], "gst_rate": i["gst_rate"]} for i in items_out])
+    bill_no = await next_sequence("job")
 
     doc = {
-        "bill_number":   bill_no.replace("SRV", "SRV-B"),   # e.g. SRV-B-000041
-        "job_id":        body.job_id,
-        "job_number":    job.get("job_number",""),
-        "customer_id":   job.get("customer_id",""),
-        "customer_name": job.get("customer_name",""),
+        "bill_number":    bill_no.replace("SRV", "SRV-B"),
+        "job_id":         body.job_id,
+        "job_number":     job.get("job_number",""),
+        "customer_id":    job.get("customer_id",""),
+        "customer_name":  job.get("customer_name",""),
         "customer_mobile":job.get("customer_mobile",""),
-        "vehicle_number":job.get("vehicle_number",""),
-        "brand":         job.get("brand",""),
-        "model":         job.get("model",""),
-        "items":         items_out,
-        "labour_charges":body.labour_charges or 0,
+        "vehicle_number": job.get("vehicle_number",""),
+        "brand":          job.get("brand",""),
+        "model":          job.get("model",""),
+        "items":          items_out,
+        "labour_charges": body.labour_charges or 0,
         **totals,
         "amount_in_words": amount_in_words(totals["grand_total"]),
-        "payment_mode":  body.payment_mode or "Cash",
-        "notes":         body.notes or "",
-        "bill_date":     datetime.utcnow().strftime("%d %b %Y"),
-        "created_at":    datetime.utcnow().isoformat(),
+        "payment_mode":   body.payment_mode or "Cash",
+        "notes":          body.notes or "",
+        "bill_date":      datetime.utcnow().strftime("%d %b %Y"),
+        "created_at":     datetime.utcnow().isoformat(),
     }
     result = await db.service_bills.insert_one(doc)
-    # Mark job as ready
     await db.service_jobs.update_one(
         {"_id": obj_id(body.job_id)},
         {"$set": {"status": "ready", "bill_number": doc["bill_number"], "grand_total": totals["grand_total"]}}
     )
-    doc["id"] = str(result.inserted_id)
-    doc.pop("_id", None)
+    doc["id"] = str(result.inserted_id); doc.pop("_id", None)
     return doc
 
 @api_router.get("/service-bills/{bill_id}")
@@ -1514,48 +1237,45 @@ async def get_service_bill(bill_id: str, current_user=Depends(verify_token)):
         raise HTTPException(status_code=404, detail="Bill not found")
     return oid(doc)
 
+# PATCH 2: PUT /service-bills/{bill_id} — was a string variable, now real code ─
 @api_router.put("/service-bills/{bill_id}")
-async def update_service_bill(bill_id: str, body: ServiceBillUpdate, current_user=Depends(verify_token)):
+async def update_service_bill(bill_id: str, body: ServiceBillCreate, current_user=Depends(verify_token)):
     bill = await db.service_bills.find_one({"_id": obj_id(bill_id)})
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
 
-    update: dict = {}
+    items_out = []
+    for item in (body.items or []):
+        line = calc_gst_line(item.unit_price, item.qty, item.gst_rate)
+        items_out.append({
+            "description": item.description,
+            "part_number": item.part_number or "",
+            "hsn_code":    item.hsn_code or "",
+            "qty":         item.qty,
+            "unit_price":  item.unit_price,
+            "gst_rate":    item.gst_rate,
+            **line,
+        })
 
-    if body.payment_mode is not None:
-        update["payment_mode"] = body.payment_mode
-    if body.notes is not None:
-        update["notes"] = body.notes
+    totals = calc_bill_totals([
+        {"unit_price": i["unit_price"], "qty": i["qty"], "gst_rate": i["gst_rate"]}
+        for i in items_out
+    ])
 
-    if body.items is not None:
-        items_out = []
-        for item in body.items:
-            line = calc_gst_line(item.unit_price, item.qty, item.gst_rate)
-            items_out.append({
-                "description": item.description,
-                "part_number": item.part_number or "",
-                "hsn_code":    item.hsn_code or "",
-                "qty":         item.qty,
-                "unit_price":  item.unit_price,
-                "gst_rate":    item.gst_rate,
-                **line,
-            })
-        totals = calc_bill_totals([
-            {"unit_price": i["unit_price"], "qty": i["qty"], "gst_rate": i["gst_rate"]}
-            for i in items_out
-        ])
-        update["items"]          = items_out
-        update["subtotal"]       = totals["subtotal"]
-        update["gst_total"]      = totals["gst_total"]
-        update["grand_total"]    = totals["grand_total"]
-        update["gst_breakup"]    = totals["gst_breakup"]
-        update["amount_in_words"]= amount_in_words(totals["grand_total"])
-
-    if not update:
-        raise HTTPException(status_code=400, detail="Nothing to update")
-
+    update = {
+        "items":           items_out,
+        "payment_mode":    body.payment_mode or bill.get("payment_mode", "Cash"),
+        "updated_at":      datetime.utcnow(),
+        "amount_in_words": amount_in_words(totals["grand_total"]),
+        **totals,
+    }
     await db.service_bills.update_one({"_id": obj_id(bill_id)}, {"$set": update})
-    return oid(await db.service_bills.find_one({"_id": obj_id(bill_id)}))
+    await db.service_jobs.update_one(
+        {"_id": obj_id(bill["job_id"])},
+        {"$set": {"grand_total": totals["grand_total"]}}
+    )
+    updated = await db.service_bills.find_one({"_id": obj_id(bill_id)})
+    return JSONResponse(content=oid(updated))
 
 @api_router.delete("/service-bills/{bill_id}")
 async def delete_service_bill(bill_id: str, current_user=Depends(require_admin)):
@@ -1563,12 +1283,12 @@ async def delete_service_bill(bill_id: str, current_user=Depends(require_admin))
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
     await db.service_bills.delete_one({"_id": obj_id(bill_id)})
-    # Revert job status
     await db.service_jobs.update_one(
         {"_id": obj_id(bill["job_id"])},
         {"$set": {"status": "in_progress"}, "$unset": {"bill_number": ""}}
     )
     return {"message": "Deleted"}
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SPARE PARTS
@@ -1576,11 +1296,11 @@ async def delete_service_bill(bill_id: str, current_user=Depends(require_admin))
 
 @api_router.get("/parts")
 async def list_parts(
-    category:   Optional[str] = Query(None),
-    brand:      Optional[str] = Query(None),
-    low_stock:  Optional[bool]= Query(None),
-    out_of_stock:Optional[bool]=Query(None),
-    search:     Optional[str] = Query(None),
+    category:    Optional[str]  = Query(None),
+    brand:       Optional[str]  = Query(None),
+    low_stock:   Optional[bool] = Query(None),
+    out_of_stock:Optional[bool] = Query(None),
+    search:      Optional[str]  = Query(None),
     p=Depends(paginate_params),
     current_user=Depends(verify_token),
 ):
@@ -1588,16 +1308,16 @@ async def list_parts(
     if category: query["category"] = category
     if brand:    query["brand"]    = brand
     if low_stock:
-        query["$expr"] = {"$and": [{"$gt": ["$stock", 0]}, {"$lte": ["$stock", "$reorder_level"]}]}
+        query["$expr"] = {"$and":[{"$gt":["$stock",0]},{"$lte":["$stock","$reorder_level"]}]}
     if out_of_stock:
         query["stock"] = 0
     if search:
         query["$or"] = [
-            {"name":        {"$regex": search, "$options": "i"}},
-            {"part_number": {"$regex": search, "$options": "i"}},
-            {"brand":       {"$regex": search, "$options": "i"}},
+            {"name":        {"$regex": search, "$options":"i"}},
+            {"part_number": {"$regex": search, "$options":"i"}},
+            {"brand":       {"$regex": search, "$options":"i"}},
         ]
-    docs  = await db.spare_parts.find(query).skip(p["skip"]).limit(p["limit"]).sort("name", 1).to_list(p["limit"])
+    docs  = await db.spare_parts.find(query).skip(p["skip"]).limit(p["limit"]).sort("name",1).to_list(p["limit"])
     total = await db.spare_parts.count_documents(query)
     return JSONResponse(content=oids(docs), headers={"X-Total-Count": str(total)})
 
@@ -1609,44 +1329,28 @@ async def create_part(body: SparePartCreate, current_user=Depends(verify_token))
     doc["part_number"] = doc["part_number"].strip()
     doc["created_at"]  = datetime.utcnow().isoformat()
     result = await db.spare_parts.insert_one(doc)
-    doc["id"] = str(result.inserted_id)
-    doc.pop("_id", None)
+    doc["id"] = str(result.inserted_id); doc.pop("_id", None)
     return doc
 
 @api_router.get("/parts/stats/summary")
 async def parts_stats(current_user=Depends(verify_token)):
-    pipeline_val = [
-        {"$group": {
-            "_id": None,
-            "stock_value":  {"$sum": {"$multiply": ["$purchase_price", "$stock"]}},
-            "selling_value":{"$sum": {"$multiply": ["$selling_price", "$stock"]}},
-            "total_skus":   {"$sum": 1},
-        }}
-    ]
-    result   = await db.spare_parts.aggregate(pipeline_val).to_list(1)
-    stats    = result[0] if result else {}
+    pipeline_val = [{"$group": {"_id":None,"stock_value":{"$sum":{"$multiply":["$purchase_price","$stock"]}},"selling_value":{"$sum":{"$multiply":["$selling_price","$stock"]}},"total_skus":{"$sum":1}}}]
+    result = await db.spare_parts.aggregate(pipeline_val).to_list(1)
+    stats  = result[0] if result else {}
     low, out = await asyncio.gather(
-        db.spare_parts.count_documents({"$expr": {"$and": [{"$gt":["$stock",0]},{"$lte":["$stock","$reorder_level"]}]}}),
+        db.spare_parts.count_documents({"$expr":{"$and":[{"$gt":["$stock",0]},{"$lte":["$stock","$reorder_level"]}]}}),
         db.spare_parts.count_documents({"stock": 0}),
     )
-    return {
-        "total_skus":    stats.get("total_skus", 0),
-        "low_stock":     low,
-        "out_of_stock":  out,
-        "stock_value":   round(stats.get("stock_value", 0), 2),
-        "selling_value": round(stats.get("selling_value", 0), 2),
-    }
+    return {"total_skus":stats.get("total_skus",0),"low_stock":low,"out_of_stock":out,"stock_value":round(stats.get("stock_value",0),2),"selling_value":round(stats.get("selling_value",0),2)}
 
 @api_router.get("/parts/low-stock")
 async def low_stock_parts(current_user=Depends(verify_token)):
-    """Parts at or below reorder level (excluding out-of-stock)."""
-    pipeline = [{"$match": {"$expr": {"$and": [{"$gt":["$stock",0]},{"$lte":["$stock","$reorder_level"]}]}}}]
-    docs = await db.spare_parts.aggregate(pipeline).to_list(None)
+    docs = await db.spare_parts.aggregate([{"$match":{"$expr":{"$and":[{"$gt":["$stock",0]},{"$lte":["$stock","$reorder_level"]}]}}}]).to_list(None)
     return oids(docs)
 
 @api_router.get("/parts/out-of-stock")
 async def out_of_stock_parts(current_user=Depends(verify_token)):
-    docs = await db.spare_parts.find({"stock": 0}).to_list(None)
+    docs = await db.spare_parts.find({"stock":0}).to_list(None)
     return oids(docs)
 
 @api_router.get("/parts/{part_id}")
@@ -1664,16 +1368,47 @@ async def update_part(part_id: str, body: SparePartUpdate, current_user=Depends(
     await db.spare_parts.update_one({"_id": obj_id(part_id)}, {"$set": update})
     return oid(await db.spare_parts.find_one({"_id": obj_id(part_id)}))
 
+# PATCH 5: adjust-stock by part_number (for service bill modal) ───────────────
+@api_router.post("/parts/{part_number}/adjust-stock-by-number")
+async def adjust_stock_by_number(
+    part_number: str,
+    body: StockAdjust,
+    current_user=Depends(verify_token),
+):
+    """Adjust stock by part_number string — used by service bill modal for deduction/restore."""
+    part = await db.spare_parts.find_one({"part_number": part_number})
+    if not part:
+        raise HTTPException(status_code=404, detail=f"Part '{part_number}' not found")
+    current_stock = part.get("stock") or 0
+    action = body.action or "add"
+    if action == "subtract":
+        new_stock = max(0, current_stock - abs(body.qty))
+    else:
+        new_stock = current_stock + abs(body.qty)
+    await db.spare_parts.update_one(
+        {"part_number": part_number},
+        {"$set": {"stock": new_stock}, "$push": {"stock_log": {
+            "qty": body.qty, "action": action, "reason": body.reason or "service_bill",
+            "new_stock": new_stock, "date": datetime.utcnow().isoformat(),
+        }}}
+    )
+    return JSONResponse(content={"part_number": part_number, "old_stock": current_stock, "new_stock": new_stock})
+
 @api_router.post("/parts/{part_id}/adjust-stock")
 async def adjust_stock(part_id: str, body: StockAdjust, current_user=Depends(verify_token)):
     part = await db.spare_parts.find_one({"_id": obj_id(part_id)})
     if not part:
         raise HTTPException(status_code=404, detail="Part not found")
-    new_stock = max(0, part["stock"] + body.qty)
+    # PATCH 4: respect action field (add/subtract), fall back to qty sign
+    action = body.action or "add"
+    if action == "subtract":
+        new_stock = max(0, part["stock"] - abs(body.qty))
+    else:
+        new_stock = max(0, part["stock"] + body.qty)
     await db.spare_parts.update_one(
         {"_id": obj_id(part_id)},
         {"$set": {"stock": new_stock}, "$push": {"stock_log": {
-            "qty": body.qty, "reason": body.reason,
+            "qty": body.qty, "action": action, "reason": body.reason,
             "new_stock": new_stock, "date": datetime.utcnow().isoformat()
         }}}
     )
@@ -1686,8 +1421,9 @@ async def delete_part(part_id: str, current_user=Depends(require_admin)):
         raise HTTPException(status_code=404, detail="Part not found")
     return {"message": "Deleted"}
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
-#  PARTS SALES (Counter bills with GST)
+#  PARTS SALES (Counter bills with GST — requires part_id)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @api_router.get("/parts-sales")
@@ -1699,11 +1435,11 @@ async def list_parts_sales(
     query: dict = {}
     if search:
         query["$or"] = [
-            {"bill_number":     {"$regex": search, "$options": "i"}},
-            {"customer_name":   {"$regex": search, "$options": "i"}},
-            {"customer_mobile": {"$regex": search, "$options": "i"}},
+            {"bill_number":     {"$regex": search, "$options":"i"}},
+            {"customer_name":   {"$regex": search, "$options":"i"}},
+            {"customer_mobile": {"$regex": search, "$options":"i"}},
         ]
-    docs  = await db.parts_sales.find(query).skip(p["skip"]).limit(p["limit"]).sort("created_at", -1).to_list(p["limit"])
+    docs  = await db.parts_sales.find(query).skip(p["skip"]).limit(p["limit"]).sort("created_at",-1).to_list(p["limit"])
     total = await db.parts_sales.count_documents(query)
     return JSONResponse(content=oids(docs), headers={"X-Total-Count": str(total)})
 
@@ -1711,54 +1447,21 @@ async def list_parts_sales(
 async def create_parts_sale(body: PartsSaleCreate, current_user=Depends(verify_token)):
     if not body.items:
         raise HTTPException(status_code=400, detail="At least one item required")
-
-    # Build line items + deduct stock
     items_out = []
     for item in body.items:
         part = await db.spare_parts.find_one({"_id": obj_id(item.part_id)})
         if not part:
             raise HTTPException(status_code=404, detail=f"Part {item.part_id} not found")
         if part["stock"] < item.qty:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Insufficient stock for {part['name']} (have {part['stock']}, need {item.qty})"
-            )
+            raise HTTPException(status_code=409, detail=f"Insufficient stock for {part['name']} (have {part['stock']}, need {item.qty})")
         line = calc_gst_line(item.unit_price, item.qty, item.gst_rate)
-        items_out.append({
-            "part_id":    item.part_id,
-            "part_number":item.part_number,
-            "name":       item.name,
-            "hsn_code":   item.hsn_code or part.get("hsn_code",""),
-            "qty":        item.qty,
-            "unit_price": item.unit_price,
-            "gst_rate":   item.gst_rate,
-            **line,
-        })
-        # Deduct stock
-        await db.spare_parts.update_one(
-            {"_id": obj_id(item.part_id)},
-            {"$inc": {"stock": -item.qty}}
-        )
-
-    totals  = calc_bill_totals([{"unit_price": i["unit_price"], "qty": i["qty"], "gst_rate": i["gst_rate"]} for i in items_out])
+        items_out.append({"part_id":item.part_id,"part_number":item.part_number,"name":item.name,"hsn_code":item.hsn_code or part.get("hsn_code",""),"qty":item.qty,"unit_price":item.unit_price,"gst_rate":item.gst_rate,**line})
+        await db.spare_parts.update_one({"_id": obj_id(item.part_id)}, {"$inc": {"stock": -item.qty}})
+    totals  = calc_bill_totals([{"unit_price":i["unit_price"],"qty":i["qty"],"gst_rate":i["gst_rate"]} for i in items_out])
     bill_no = await next_sequence("part_bill")
-
-    doc = {
-        "bill_number":    bill_no,
-        "customer_name":  body.customer_name or "",
-        "customer_mobile":body.customer_mobile or "",
-        "items":          items_out,
-        **totals,
-        "amount_in_words": amount_in_words(totals["grand_total"]),
-        "payment_mode":   body.payment_mode or "Cash",
-        "sold_by":        body.sold_by or current_user.get("name",""),
-        "sale_date":      datetime.utcnow().strftime("%d %b %Y"),
-        "notes":          body.notes or "",
-        "created_at":     datetime.utcnow().isoformat(),
-    }
+    doc = {"bill_number":bill_no,"customer_name":body.customer_name or "","customer_mobile":body.customer_mobile or "","items":items_out,**totals,"amount_in_words":amount_in_words(totals["grand_total"]),"payment_mode":body.payment_mode or "Cash","sold_by":body.sold_by or current_user.get("name",""),"sale_date":datetime.utcnow().strftime("%d %b %Y"),"notes":body.notes or "","created_at":datetime.utcnow().isoformat()}
     result = await db.parts_sales.insert_one(doc)
-    doc["id"] = str(result.inserted_id)
-    doc.pop("_id", None)
+    doc["id"] = str(result.inserted_id); doc.pop("_id", None)
     return doc
 
 @api_router.get("/parts-sales/{bill_id}")
@@ -1775,15 +1478,130 @@ async def delete_parts_sale(bill_id: str, current_user=Depends(require_admin)):
     bill = await db.parts_sales.find_one({"_id": obj_id(bill_id)})
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
-    # Restore stock
     for item in bill.get("items", []):
-        await db.spare_parts.update_one(
-            {"_id": obj_id(item["part_id"])},
-            {"$inc": {"stock": item["qty"]}}
-        )
+        await db.spare_parts.update_one({"_id": obj_id(item["part_id"])}, {"$inc": {"stock": item["qty"]}})
     await db.parts_sales.delete_one({"_id": obj_id(bill_id)})
     await _sync_counter("part_bill", "parts_sales", "bill_number")
     return {"message": "Deleted — stock restored"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PARTS BILLS — PATCH 6 (walk-in counter, vehicle number optional)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@api_router.get("/parts-bills")
+async def list_parts_bills(
+    search: Optional[str] = Query(None),
+    p=Depends(paginate_params),
+    current_user=Depends(verify_token),
+):
+    query: dict = {}
+    if search:
+        query["$or"] = [
+            {"bill_number":      {"$regex": search, "$options":"i"}},
+            {"customer_name":    {"$regex": search, "$options":"i"}},
+            {"customer_mobile":  {"$regex": search, "$options":"i"}},
+            {"customer_vehicle": {"$regex": search, "$options":"i"}},
+        ]
+    docs  = await db.parts_bills.find(query).skip(p["skip"]).limit(p["limit"]).sort("created_at",-1).to_list(p["limit"])
+    total = await db.parts_bills.count_documents(query)
+    return JSONResponse(content=oids(docs), headers={"X-Total-Count": str(total)})
+
+
+@api_router.post("/parts-bills", status_code=201)
+async def create_parts_bill(body: PartsBillCreate, current_user=Depends(verify_token)):
+    if not body.items:
+        raise HTTPException(status_code=400, detail="At least one item required")
+
+    items_out = []
+    for item in body.items:
+        # Resolve part by part_id first, fall back to part_number
+        part = None
+        if item.part_id:
+            part = await db.spare_parts.find_one({"_id": obj_id(item.part_id)})
+        if not part and item.part_number:
+            part = await db.spare_parts.find_one({"part_number": item.part_number})
+
+        if part:
+            current_stock = part.get("stock") or 0
+            if current_stock < item.qty:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Insufficient stock for {item.name} (have {current_stock}, need {item.qty})"
+                )
+            new_stock = max(0, current_stock - item.qty)
+            await db.spare_parts.update_one(
+                {"_id": part["_id"]},
+                {"$set": {"stock": new_stock}, "$push": {"stock_log": {
+                    "qty": -item.qty, "action": "subtract", "reason": "parts_bill",
+                    "new_stock": new_stock, "date": datetime.utcnow().isoformat(),
+                }}}
+            )
+
+        line = calc_gst_line(item.unit_price, item.qty, item.gst_rate)
+        items_out.append({
+            "part_id":     str(part["_id"]) if part else (item.part_id or ""),
+            "part_number": item.part_number or (part.get("part_number","") if part else ""),
+            "name":        item.name,
+            "hsn_code":    item.hsn_code or (part.get("hsn_code","8714") if part else "8714"),
+            "qty":         item.qty,
+            "unit_price":  item.unit_price,
+            "gst_rate":    item.gst_rate,
+            **line,
+        })
+
+    totals  = calc_bill_totals([{"unit_price":i["unit_price"],"qty":i["qty"],"gst_rate":i["gst_rate"]} for i in items_out])
+    bill_no = await next_sequence("part_bill")   # shared counter with parts_sales
+
+    doc = {
+        "bill_number":      bill_no,
+        "customer_name":    body.customer_name or "",
+        "customer_mobile":  body.customer_mobile or "",
+        "customer_vehicle": body.customer_vehicle or "",
+        "payment_mode":     body.payment_mode or "Cash",
+        "items":            items_out,
+        "amount_in_words":  amount_in_words(totals["grand_total"]),
+        "sold_by":          current_user.get("name",""),
+        "bill_date":        datetime.utcnow().strftime("%d %b %Y"),
+        "created_at":       datetime.utcnow().isoformat(),
+        **totals,
+    }
+    res     = await db.parts_bills.insert_one(doc)
+    created = await db.parts_bills.find_one({"_id": res.inserted_id})
+    return JSONResponse(content=oid(created), status_code=201)
+
+
+@api_router.get("/parts-bills/{bill_id}")
+async def get_parts_bill(bill_id: str, current_user=Depends(verify_token)):
+    doc = await db.parts_bills.find_one({"_id": obj_id(bill_id)})
+    if not doc:
+        doc = await db.parts_bills.find_one({"bill_number": bill_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Parts bill not found")
+    return oid(doc)
+
+
+@api_router.delete("/parts-bills/{bill_id}")
+async def delete_parts_bill(bill_id: str, current_user=Depends(require_admin)):
+    bill = await db.parts_bills.find_one({"_id": obj_id(bill_id)})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Parts bill not found")
+    # Restore stock for each item
+    for item in bill.get("items", []):
+        query = {}
+        if item.get("part_id"):
+            try:
+                from bson import ObjectId as _OID
+                query = {"_id": _OID(item["part_id"])}
+            except Exception:
+                query = {"part_number": item.get("part_number","")}
+        elif item.get("part_number"):
+            query = {"part_number": item["part_number"]}
+        if query:
+            await db.spare_parts.update_one(query, {"$inc": {"stock": item["qty"]}})
+    await db.parts_bills.delete_one({"_id": obj_id(bill_id)})
+    return {"message": "Deleted — stock restored"}
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DASHBOARD STATS
@@ -1792,63 +1610,38 @@ async def delete_parts_sale(bill_id: str, current_user=Depends(require_admin)):
 @api_router.get("/dashboard/stats")
 async def dashboard_stats(current_user=Depends(verify_token)):
     today = datetime.utcnow().strftime("%d %b %Y")
-
-    (
-        vehicles_in_stock, vehicles_sold_today,
-        jobs_pending, jobs_in_progress, jobs_ready,
-        customers_total,
-        parts_low, parts_out,
-        sales_today_count,
-    ) = await asyncio.gather(
-        db.vehicles.count_documents({"status": "in_stock"}),
-        db.sales.count_documents({"sale_date": today}),
-        db.service_jobs.count_documents({"status": "pending"}),
-        db.service_jobs.count_documents({"status": "in_progress"}),
-        db.service_jobs.count_documents({"status": "ready"}),
+    (vehicles_in_stock, vehicles_sold_today, jobs_pending, jobs_in_progress, jobs_ready, customers_total, parts_low, parts_out, sales_today_count) = await asyncio.gather(
+        db.vehicles.count_documents({"status":"in_stock"}),
+        db.sales.count_documents({"sale_date":today}),
+        db.service_jobs.count_documents({"status":"pending"}),
+        db.service_jobs.count_documents({"status":"in_progress"}),
+        db.service_jobs.count_documents({"status":"ready"}),
         db.customers.count_documents({}),
-        db.spare_parts.count_documents({"$expr": {"$and": [{"$gt":["$stock",0]},{"$lte":["$stock","$reorder_level"]}]}}),
-        db.spare_parts.count_documents({"stock": 0}),
-        db.sales.count_documents({"sale_date": today}),
+        db.spare_parts.count_documents({"$expr":{"$and":[{"$gt":["$stock",0]},{"$lte":["$stock","$reorder_level"]}]}}),
+        db.spare_parts.count_documents({"stock":0}),
+        db.sales.count_documents({"sale_date":today}),
     )
-
-    # Revenue aggregations in parallel
-    pipeline_today_rev   = [{"$match":{"sale_date": today}},     {"$group":{"_id":None,"total":{"$sum":"$total_amount"}}}]
-    pipeline_month_rev   = [{"$match":{"sale_date":{"$regex": datetime.utcnow().strftime("%b %Y")}}}, {"$group":{"_id":None,"total":{"$sum":"$total_amount"}}}]
-
+    pipeline_today_rev = [{"$match":{"sale_date":today}},{"$group":{"_id":None,"total":{"$sum":"$total_amount"}}}]
+    pipeline_month_rev = [{"$match":{"sale_date":{"$regex":datetime.utcnow().strftime("%b %Y")}}},{"$group":{"_id":None,"total":{"$sum":"$total_amount"}}}]
     today_rev_r, month_rev_r = await asyncio.gather(
         db.sales.aggregate(pipeline_today_rev).to_list(1),
         db.sales.aggregate(pipeline_month_rev).to_list(1),
     )
-
     return {
-        "vehicles": {
-            "in_stock":     vehicles_in_stock,
-            "sold_today":   vehicles_sold_today,
-        },
-        "service": {
-            "pending":      jobs_pending,
-            "in_progress":  jobs_in_progress,
-            "ready":        jobs_ready,
-            "active_total": jobs_pending + jobs_in_progress + jobs_ready,
-        },
-        "customers":        customers_total,
-        "parts": {
-            "low_stock":    parts_low,
-            "out_of_stock": parts_out,
-        },
-        "revenue": {
-            "today":        today_rev_r[0]["total"] if today_rev_r else 0,
-            "month":        month_rev_r[0]["total"] if month_rev_r else 0,
-        },
+        "vehicles":  {"in_stock":vehicles_in_stock,"sold_today":vehicles_sold_today},
+        "service":   {"pending":jobs_pending,"in_progress":jobs_in_progress,"ready":jobs_ready,"active_total":jobs_pending+jobs_in_progress+jobs_ready},
+        "customers": customers_total,
+        "parts":     {"low_stock":parts_low,"out_of_stock":parts_out},
+        "revenue":   {"today":today_rev_r[0]["total"] if today_rev_r else 0,"month":month_rev_r[0]["total"] if month_rev_r else 0},
         "sales_today_count": sales_today_count,
     }
 
 @api_router.get("/dashboard/recent-activity")
 async def recent_activity(limit: int = Query(10, le=50), current_user=Depends(verify_token)):
     sales_docs, job_docs, bill_docs = await asyncio.gather(
-        db.sales.find({}).sort("created_at", -1).limit(limit).to_list(limit),
-        db.service_jobs.find({}).sort("created_at", -1).limit(limit).to_list(limit),
-        db.parts_sales.find({}).sort("created_at", -1).limit(limit).to_list(limit),
+        db.sales.find({}).sort("created_at",-1).limit(limit).to_list(limit),
+        db.service_jobs.find({}).sort("created_at",-1).limit(limit).to_list(limit),
+        db.parts_sales.find({}).sort("created_at",-1).limit(limit).to_list(limit),
     )
     activity = []
     for s in sales_docs:
@@ -1860,118 +1653,55 @@ async def recent_activity(limit: int = Query(10, le=50), current_user=Depends(ve
     activity.sort(key=lambda x: x["time"], reverse=True)
     return activity[:limit]
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  REPORTS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @api_router.get("/reports/revenue")
-async def revenue_report(
-    months: int = Query(6, ge=1, le=24),
-    current_user=Depends(require_admin),
-):
-    """Monthly revenue breakdown: sales + service + parts."""
-    pipeline = [
-        {"$addFields": {"month_key": {"$substr": ["$created_at", 0, 7]}}},
-        {"$group": {
-            "_id":     "$month_key",
-            "sales":   {"$sum": "$total_amount"},
-            "count":   {"$sum": 1},
-        }},
-        {"$sort": {"_id": -1}},
-        {"$limit": months},
-    ]
+async def revenue_report(months: int = Query(6, ge=1, le=24), current_user=Depends(require_admin)):
+    pipeline = [{"$addFields":{"month_key":{"$substr":["$created_at",0,7]}}},{"$group":{"_id":"$month_key","sales":{"$sum":"$total_amount"},"count":{"$sum":1}}},{"$sort":{"_id":-1}},{"$limit":months}]
     sales_by_month = await db.sales.aggregate(pipeline).to_list(months)
-
-    svc_pipeline = [
-        {"$addFields": {"month_key": {"$substr": ["$created_at", 0, 7]}}},
-        {"$group": {"_id": "$month_key", "service": {"$sum": "$grand_total"}}},
-        {"$sort": {"_id": -1}},
-        {"$limit": months},
-    ]
+    svc_pipeline   = [{"$addFields":{"month_key":{"$substr":["$created_at",0,7]}}},{"$group":{"_id":"$month_key","service":{"$sum":"$grand_total"}}},{"$sort":{"_id":-1}},{"$limit":months}]
     svc_by_month   = await db.service_bills.aggregate(svc_pipeline).to_list(months)
-    parts_pipeline  = [
-        {"$addFields": {"month_key": {"$substr": ["$created_at", 0, 7]}}},
-        {"$group": {"_id": "$month_key", "parts": {"$sum": "$grand_total"}}},
-        {"$sort": {"_id": -1}},
-        {"$limit": months},
-    ]
+    parts_pipeline = [{"$addFields":{"month_key":{"$substr":["$created_at",0,7]}}},{"$group":{"_id":"$month_key","parts":{"$sum":"$grand_total"}}},{"$sort":{"_id":-1}},{"$limit":months}]
     parts_by_month = await db.parts_sales.aggregate(parts_pipeline).to_list(months)
-
-    return {
-        "sales":   oids(sales_by_month),
-        "service": oids(svc_by_month),
-        "parts":   oids(parts_by_month),
-    }
+    return {"sales":oids(sales_by_month),"service":oids(svc_by_month),"parts":oids(parts_by_month)}
 
 @api_router.get("/reports/daily-closing")
-async def daily_closing_report(
-    date: Optional[str] = Query(None), 
-    current_user=Depends(require_admin)
-):
+async def daily_closing_report(date: Optional[str] = Query(None), current_user=Depends(require_admin)):
     target_date = date or datetime.utcnow().strftime("%d %b %Y")
-    
     async def get_totals(collection, date_field, amount_field):
-        pipeline = [
-            {"$match": {date_field: target_date}},
-            {"$group": {
-                "_id": {"$toLower": "$payment_mode"},
-                "total": {"$sum": amount_field}
-            }}
-        ]
+        pipeline = [{"$match":{date_field:target_date}},{"$group":{"_id":{"$toLower":"$payment_mode"},"total":{"$sum":amount_field}}}]
         return await db[collection].aggregate(pipeline).to_list(None)
-
     sales_r, service_r, parts_r = await asyncio.gather(
-        get_totals("sales", "sale_date", "$total_amount"),
-        get_totals("service_bills", "bill_date", "$grand_total"),
-        get_totals("parts_sales", "sale_date", "$grand_total"),
+        get_totals("sales","sale_date","$total_amount"),
+        get_totals("service_bills","bill_date","$grand_total"),
+        get_totals("parts_sales","sale_date","$grand_total"),
     )
-
     summary = {}
-    for source, data in [("Vehicles", sales_r), ("Service", service_r), ("Parts", parts_r)]:
+    for source, data in [("Vehicles",sales_r),("Service",service_r),("Parts",parts_r)]:
         for item in data:
             mode = (item["_id"] or "unknown").title()
             if mode not in summary:
-                summary[mode] = {"total": 0, "Vehicles": 0, "Service": 0, "Parts": 0}
+                summary[mode] = {"total":0,"Vehicles":0,"Service":0,"Parts":0}
             summary[mode][source] += item["total"]
             summary[mode]["total"] += item["total"]
+    result = [{"payment_mode":k,**v} for k,v in summary.items()]
+    result.sort(key=lambda x: 0 if x["payment_mode"]=="Cash" else 1)
+    return {"date":target_date,"breakdown":result,"grand_total":sum(r["total"] for r in result)}
 
-    result = [{"payment_mode": k, **v} for k, v in summary.items()]
-    result.sort(key=lambda x: 0 if x["payment_mode"] == "Cash" else 1)
-    grand_total = sum(r["total"] for r in result)
-    
-    return {
-        "date": target_date,
-        "breakdown": result,
-        "grand_total": grand_total
-    }
-  
 @api_router.get("/reports/brand-sales")
 async def brand_sales_report(current_user=Depends(require_admin)):
-    pipeline = [
-        {"$group": {
-            "_id":     "$vehicle_brand",
-            "units":   {"$sum": 1},
-            "revenue": {"$sum": "$total_amount"},
-        }},
-        {"$sort": {"units": -1}},
-    ]
+    pipeline = [{"$group":{"_id":"$vehicle_brand","units":{"$sum":1},"revenue":{"$sum":"$total_amount"}}},{"$sort":{"units":-1}}]
     docs = await db.sales.aggregate(pipeline).to_list(None)
-    return [{"brand": d["_id"], "units": d["units"], "revenue": d["revenue"]} for d in docs]
+    return [{"brand":d["_id"],"units":d["units"],"revenue":d["revenue"]} for d in docs]
 
 @api_router.get("/reports/top-parts")
 async def top_parts_report(limit: int = Query(10), current_user=Depends(require_admin)):
-    pipeline = [
-        {"$unwind": "$items"},
-        {"$group": {
-            "_id":     "$items.name",
-            "qty":     {"$sum": "$items.qty"},
-            "revenue": {"$sum": "$items.total"},
-        }},
-        {"$sort": {"qty": -1}},
-        {"$limit": limit},
-    ]
+    pipeline = [{"$unwind":"$items"},{"$group":{"_id":"$items.name","qty":{"$sum":"$items.qty"},"revenue":{"$sum":"$items.total"}}},{"$sort":{"qty":-1}},{"$limit":limit}]
     docs = await db.parts_sales.aggregate(pipeline).to_list(limit)
-    return [{"name": d["_id"], "qty_sold": d["qty"], "revenue": round(d["revenue"], 2)} for d in docs]
+    return [{"name":d["_id"],"qty_sold":d["qty"],"revenue":round(d["revenue"],2)} for d in docs]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1987,13 +1717,10 @@ from fastapi.responses import StreamingResponse
 
 import_router = APIRouter(prefix="/api/import", tags=["import"])
 
-# ─── helpers ──────────────────────────────────────────────────────────────────
-
 def safe(val, default=""):
-    if val is None or str(val).strip() in ("", "None", "nan"):
+    if val is None or str(val).strip() in ("","None","nan"):
         return default
     v = str(val).strip()
-    # Convert float-like integers (e.g. "9876543210.0" → "9876543210")
     try:
         f = float(v)
         if f == int(f):
@@ -2004,115 +1731,61 @@ def safe(val, default=""):
 
 def safe_float(val, default=0.0) -> float:
     try:
-        return float(str(val).replace(",", "").strip())
+        return float(str(val).replace(",","").strip())
     except (ValueError, TypeError):
         return default
 
 def safe_int(val, default=0) -> int:
     try:
-        return int(float(str(val).replace(",", "").strip()))
+        return int(float(str(val).replace(",","").strip()))
     except (ValueError, TypeError):
         return default
 
-def read_file(content: bytes, filename: str) -> list[dict]:
-    """Parse Excel or CSV bytes into list of dicts. No pandas needed."""
+def read_file(content: bytes, filename: str) -> list:
     name = (filename or "").lower()
     rows = []
     if name.endswith(".csv"):
-        text = content.decode("utf-8-sig", errors="replace")
+        text   = content.decode("utf-8-sig", errors="replace")
         reader = csv_module.DictReader(io.StringIO(text))
         for row in reader:
-            rows.append({k.strip().lower().replace(" ","_").replace("/","_"): safe(v) for k, v in row.items()})
+            rows.append({k.strip().lower().replace(" ","_").replace("/","_"): safe(v) for k,v in row.items()})
     else:
-        wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
-        ws = wb.active
+        wb   = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        ws   = wb.active
         data = list(ws.values)
         wb.close()
         if len(data) < 2:
             return []
-        headers = [str(h).strip().lower().replace(" ","_").replace("/","_") if h else f"col{i}"
-                   for i, h in enumerate(data[0])]
+        headers = [str(h).strip().lower().replace(" ","_").replace("/","_") if h else f"col{i}" for i,h in enumerate(data[0])]
         for row in data[1:]:
-            if all(v is None or str(v).strip() == "" for v in row):
+            if all(v is None or str(v).strip()=="" for v in row):
                 continue
-            rows.append({headers[i]: safe(row[i]) for i in range(min(len(headers), len(row)))})
+            rows.append({headers[i]: safe(row[i]) for i in range(min(len(headers),len(row)))})
     return rows
 
-def result_summary(inserted: int, skipped: list, errors: list) -> dict:
-    return {
-        "inserted":      inserted,
-        "skipped_count": len(skipped),
-        "error_count":   len(errors),
-        "skipped":       skipped[:50],
-        "errors":        errors[:50],
-    }
-
-# ─── Template download (openpyxl, no pandas) ──────────────────────────────────
+def result_summary(inserted, skipped, errors):
+    return {"inserted":inserted,"skipped_count":len(skipped),"error_count":len(errors),"skipped":skipped[:50],"errors":errors[:50]}
 
 TEMPLATES = {
-    "customers": {
-        "cols": ["name","mobile","email","address","gstin","tags"],
-        "rows": [
-            ["Ravi Kumar","9876543210","ravi@example.com","12 MG Road, Bengaluru","","VIP"],
-            ["Meena S","9845123456","","45 Koramangala","","Regular"],
-        ]
-    },
-    "vehicles": {
-        "cols": ["brand","model","variant","color","chassis_number","engine_number","vehicle_number","type"],
-        "rows": [
-            ["HONDA","Activa 6G","STD","Pearl Black","ME4JF502RH7000001","JF50E7000001","KA01HH1234","new"],
-            ["HERO","Splendor+","Self","Heavy Grey","MBLHA10EVHM000002","HA10EAHM00002","KA03AB5678","new"],
-        ]
-    },
-    "sales": {
-        "cols": ["customer_name","customer_mobile","vehicle_brand","vehicle_model","chassis_number","engine_number","vehicle_number","vehicle_color","sale_price","discount","insurance","rto","payment_mode","nominee_name","nominee_relation","nominee_age","sale_date"],
-        "rows": [
-            ["Ravi Kumar","9876543210","HONDA","Activa 6G","ME4JF502RH7000001","JF50E7000001","KA01HH1234","Pearl Black","80500","0","4500","8000","Cash","Balakrishna","Father","54 years","08/04/2026"],
-        ]
-    },
-    "service": {
-        "cols": ["customer_name","customer_mobile","vehicle_number","brand","model","odometer_km","complaint","technician","check_in_date","status"],
-        "rows": [
-            ["Ravi Kumar","9876543210","KA01HH1234","HONDA","Activa 6G","8420","Engine noise","Suresh","07/04/2026","in_progress"],
-        ]
-    },
-    "parts": {
-        "cols": ["part_number","name","category","brand","compatible_with","stock","reorder_level","purchase_price","selling_price","gst_rate","hsn_code","location"],
-        "rows": [
-            ["30050-KWB-901","Spark Plug (Iridium)","Engine","NGK","HONDA,TVS","24","10","180","280","18","8511","A1-R2"],
-            ["15400-PLM-A01","Oil Filter","Filters","Honda","HONDA","18","15","120","195","18","8421","A2-R1"],
-        ]
-    },
-    "staff": {
-        "cols": ["name","mobile","email","username","role","salary","join_date"],
-        "rows": [
-            ["Rajesh Kumar","9845001122","rajesh@mmmotors.com","rajesh","sales","18000","01/03/2023"],
-            ["Arun Shetty","9566001122","arun@mmmotors.com","arun","service_advisor","20000","01/04/2023"],
-        ]
-    },
+    "customers": {"cols":["name","mobile","email","address","gstin","tags"],"rows":[["Ravi Kumar","9876543210","ravi@example.com","12 MG Road, Bengaluru","","VIP"],["Meena S","9845123456","","45 Koramangala","","Regular"]]},
+    "vehicles":  {"cols":["brand","model","variant","color","chassis_number","engine_number","vehicle_number","type"],"rows":[["HONDA","Activa 6G","STD","Pearl Black","ME4JF502RH7000001","JF50E7000001","KA01HH1234","new"],["HERO","Splendor+","Self","Heavy Grey","MBLHA10EVHM000002","HA10EAHM00002","KA03AB5678","new"]]},
+    "sales":     {"cols":["customer_name","customer_mobile","vehicle_brand","vehicle_model","chassis_number","engine_number","vehicle_number","vehicle_color","sale_price","discount","insurance","rto","payment_mode","nominee_name","nominee_relation","nominee_age","sale_date"],"rows":[["Ravi Kumar","9876543210","HONDA","Activa 6G","ME4JF502RH7000001","JF50E7000001","KA01HH1234","Pearl Black","80500","0","4500","8000","Cash","Balakrishna","Father","54 years","08/04/2026"]]},
+    "service":   {"cols":["customer_name","customer_mobile","vehicle_number","brand","model","odometer_km","complaint","technician","check_in_date","status"],"rows":[["Ravi Kumar","9876543210","KA01HH1234","HONDA","Activa 6G","8420","Engine noise","Suresh","07/04/2026","in_progress"]]},
+    "parts":     {"cols":["part_number","name","category","brand","compatible_with","stock","reorder_level","purchase_price","selling_price","gst_rate","hsn_code","location"],"rows":[["30050-KWB-901","Spark Plug (Iridium)","Engine","NGK","HONDA,TVS","24","10","180","280","18","8511","A1-R2"],["15400-PLM-A01","Oil Filter","Filters","Honda","HONDA","18","15","120","195","18","8421","A2-R1"]]},
+    "staff":     {"cols":["name","mobile","email","username","role","salary","join_date"],"rows":[["Rajesh Kumar","9845001122","rajesh@mmmotors.com","rajesh","sales","18000","01/03/2023"],["Arun Shetty","9566001122","arun@mmmotors.com","arun","service_advisor","20000","01/04/2023"]]},
 }
 
 @import_router.get("/template/{entity}")
 async def download_template(entity: str, current_user=Depends(verify_token)):
     if entity not in TEMPLATES:
         raise HTTPException(status_code=404, detail=f"No template for '{entity}'")
-    t   = TEMPLATES[entity]
-    wb  = Workbook()
-    ws  = wb.active
-    ws.title = entity
+    t  = TEMPLATES[entity]
+    wb = Workbook(); ws = wb.active; ws.title = entity
     ws.append(t["cols"])
     for row in t["rows"]:
-        ws.append(row + [""] * (len(t["cols"]) - len(row)))
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return StreamingResponse(
-        buf,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="template_{entity}.xlsx"'},
-    )
-
-# ─── Preview ──────────────────────────────────────────────────────────────────
+        ws.append(row + [""]*(len(t["cols"])-len(row)))
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition":f'attachment; filename="template_{entity}.xlsx"'})
 
 @import_router.post("/preview/{entity}")
 async def preview_import(entity: str, file: UploadFile = File(...), current_user=Depends(verify_token)):
@@ -2120,219 +1793,162 @@ async def preview_import(entity: str, file: UploadFile = File(...), current_user
         raise HTTPException(status_code=404, detail=f"Unknown entity: {entity}")
     content = await file.read()
     rows    = read_file(content, file.filename or "")
-    return {
-        "entity":        entity,
-        "total_rows":    len(rows),
-        "columns_found": list(rows[0].keys()) if rows else [],
-        "preview":       rows[:10],
-        "template_cols": TEMPLATES[entity]["cols"],
-    }
-
-# ─── CUSTOMERS ────────────────────────────────────────────────────────────────
+    return {"entity":entity,"total_rows":len(rows),"columns_found":list(rows[0].keys()) if rows else [],"preview":rows[:10],"template_cols":TEMPLATES[entity]["cols"]}
 
 @import_router.post("/customers")
 async def import_customers(file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
-    content = await file.read()
-    rows    = read_file(content, file.filename or "")
-    if not rows:
-        raise HTTPException(status_code=400, detail="File is empty or could not be parsed")
+    content = await file.read(); rows = read_file(content, file.filename or "")
+    if not rows: raise HTTPException(status_code=400, detail="File is empty or could not be parsed")
     inserted, skipped, errors = 0, [], []
     for i, row in enumerate(rows):
-        rn = i + 2
+        rn = i+2
         try:
             name, mobile = safe(row.get("name")), safe(row.get("mobile"))
-            if not name:   skipped.append({"row": rn, "reason": "Missing name"});   continue
-            if not mobile: skipped.append({"row": rn, "reason": "Missing mobile"}); continue
-            existing = await db.customers.find_one({"mobile": mobile})
+            if not name:   skipped.append({"row":rn,"reason":"Missing name"});   continue
+            if not mobile: skipped.append({"row":rn,"reason":"Missing mobile"}); continue
+            existing = await db.customers.find_one({"mobile":mobile})
             if existing:
-                if mode == "overwrite":
-                    await db.customers.update_one({"mobile": mobile}, {"$set": {"name": name, "email": safe(row.get("email")), "address": safe(row.get("address")), "tags": [t.strip() for t in safe(row.get("tags","")).split(",") if t.strip()]}})
+                if mode=="overwrite":
+                    await db.customers.update_one({"mobile":mobile},{"$set":{"name":name,"email":safe(row.get("email")),"address":safe(row.get("address")),"tags":[t.strip() for t in safe(row.get("tags","")).split(",") if t.strip()]}})
                     inserted += 1
-                else:
-                    skipped.append({"row": rn, "reason": f"Mobile {mobile} already exists"})
+                else: skipped.append({"row":rn,"reason":f"Mobile {mobile} already exists"})
                 continue
-            await db.customers.insert_one({"name": name, "mobile": mobile, "email": safe(row.get("email")), "address": safe(row.get("address")), "gstin": safe(row.get("gstin")), "tags": [t.strip() for t in safe(row.get("tags","")).split(",") if t.strip()], "created_at": datetime.utcnow().isoformat()})
+            await db.customers.insert_one({"name":name,"mobile":mobile,"email":safe(row.get("email")),"address":safe(row.get("address")),"gstin":safe(row.get("gstin")),"tags":[t.strip() for t in safe(row.get("tags","")).split(",") if t.strip()],"created_at":datetime.utcnow().isoformat()})
             inserted += 1
         except Exception as e:
-            traceback.print_exc()
-            errors.append({"row": rn, "error": str(e)})
+            traceback.print_exc(); errors.append({"row":rn,"error":str(e)})
     return result_summary(inserted, skipped, errors)
-
-# ─── VEHICLES ─────────────────────────────────────────────────────────────────
 
 @import_router.post("/vehicles")
 async def import_vehicles(file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
-    content = await file.read()
-    rows    = read_file(content, file.filename or "")
+    content = await file.read(); rows = read_file(content, file.filename or "")
     inserted, skipped, errors = 0, [], []
     for i, row in enumerate(rows):
-        rn = i + 2
+        rn = i+2
         try:
             chassis = safe(row.get("chassis_number","")).upper().replace(" ","")
             brand   = safe(row.get("brand","")).upper()
             model   = safe(row.get("model",""))
-            if not chassis: skipped.append({"row": rn, "reason": "Missing chassis_number"}); continue
-            if not brand:   skipped.append({"row": rn, "reason": "Missing brand"});          continue
-            if not model:   skipped.append({"row": rn, "reason": "Missing model"});          continue
-            existing = await db.vehicles.find_one({"chassis_number": chassis})
+            if not chassis: skipped.append({"row":rn,"reason":"Missing chassis_number"}); continue
+            if not brand:   skipped.append({"row":rn,"reason":"Missing brand"});          continue
+            if not model:   skipped.append({"row":rn,"reason":"Missing model"});          continue
+            existing = await db.vehicles.find_one({"chassis_number":chassis})
             if existing:
-                if mode == "overwrite":
-                    await db.vehicles.update_one({"chassis_number": chassis}, {"$set": {"brand": brand, "model": model, "color": safe(row.get("color")), "engine_number": safe(row.get("engine_number")), "vehicle_number": safe(row.get("vehicle_number"))}})
+                if mode=="overwrite":
+                    await db.vehicles.update_one({"chassis_number":chassis},{"$set":{"brand":brand,"model":model,"color":safe(row.get("color")),"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number"))}})
                     inserted += 1
-                else:
-                    skipped.append({"row": rn, "reason": f"Chassis {chassis} already exists"})
+                else: skipped.append({"row":rn,"reason":f"Chassis {chassis} already exists"})
                 continue
-            await db.vehicles.insert_one({"brand": brand, "model": model, "variant": safe(row.get("variant")), "color": safe(row.get("color")), "chassis_number": chassis, "engine_number": safe(row.get("engine_number")), "vehicle_number": safe(row.get("vehicle_number")), "key_number": safe(row.get("key_number")), "type": safe(row.get("type","new")).lower() or "new", "status": "in_stock", "created_at": datetime.utcnow().isoformat()})
+            await db.vehicles.insert_one({"brand":brand,"model":model,"variant":safe(row.get("variant")),"color":safe(row.get("color")),"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"key_number":safe(row.get("key_number")),"type":safe(row.get("type","new")).lower() or "new","status":"in_stock","created_at":datetime.utcnow().isoformat()})
             inserted += 1
         except Exception as e:
-            traceback.print_exc()
-            errors.append({"row": rn, "error": str(e)})
+            traceback.print_exc(); errors.append({"row":rn,"error":str(e)})
     return result_summary(inserted, skipped, errors)
-
-# ─── SALES ────────────────────────────────────────────────────────────────────
 
 @import_router.post("/sales")
 async def import_sales(file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
-    content = await file.read()
-    rows    = read_file(content, file.filename or "")
+    content = await file.read(); rows = read_file(content, file.filename or "")
     inserted, skipped, errors = 0, [], []
     for i, row in enumerate(rows):
-        rn = i + 2
+        rn = i+2
         try:
-            name   = safe(row.get("customer_name"))
-            mobile = safe(row.get("customer_mobile"))
-            brand  = safe(row.get("vehicle_brand","")).upper()
-            model  = safe(row.get("vehicle_model",""))
-            price  = safe_float(row.get("sale_price",0))
-            chassis = safe(row.get("chassis_number","")).upper().replace(" ","")
-            if not name or not mobile or not brand or not model or not price:
-                skipped.append({"row": rn, "reason": "Missing required fields"}); continue
-            if chassis and await db.sales.find_one({"chassis_number": chassis}):
-                skipped.append({"row": rn, "reason": f"Sale for chassis {chassis} already exists"}); continue
-            cust = await db.customers.find_one({"mobile": mobile})
+            name=safe(row.get("customer_name")); mobile=safe(row.get("customer_mobile")); brand=safe(row.get("vehicle_brand","")).upper(); model=safe(row.get("vehicle_model","")); price=safe_float(row.get("sale_price",0)); chassis=safe(row.get("chassis_number","")).upper().replace(" ","")
+            if not name or not mobile or not brand or not model or not price: skipped.append({"row":rn,"reason":"Missing required fields"}); continue
+            if chassis and await db.sales.find_one({"chassis_number":chassis}): skipped.append({"row":rn,"reason":f"Sale for chassis {chassis} already exists"}); continue
+            cust = await db.customers.find_one({"mobile":mobile})
             if not cust:
-                r = await db.customers.insert_one({"name": name, "mobile": mobile, "email": "", "address": safe(row.get("customer_address","")), "tags": [], "created_at": datetime.utcnow().isoformat()})
+                r = await db.customers.insert_one({"name":name,"mobile":mobile,"email":"","address":safe(row.get("customer_address","")),"tags":[],"created_at":datetime.utcnow().isoformat()})
                 cust_id = str(r.inserted_id)
-            else:
-                cust_id = str(cust["_id"])
-            discount  = safe_float(row.get("discount",0))
-            insurance = safe_float(row.get("insurance",0))
-            rto       = safe_float(row.get("rto",0))
-            total     = price - discount + insurance + rto
-            inv_no    = await next_sequence("invoice")
-            await db.sales.insert_one({"invoice_number": inv_no, "customer_id": cust_id, "customer_name": name, "customer_mobile": mobile, "vehicle_brand": brand, "vehicle_model": model, "chassis_number": chassis, "engine_number": safe(row.get("engine_number")), "vehicle_number": safe(row.get("vehicle_number")), "sale_price": price, "discount": discount, "insurance": insurance, "rto": rto, "total_amount": round(total,2), "amount_in_words": amount_in_words(total), "payment_mode": safe(row.get("payment_mode","Cash")), "nominee": {"name": safe(row.get("nominee_name")), "relation": safe(row.get("nominee_relation")), "age": safe(row.get("nominee_age"))}, "sale_date": safe(row.get("sale_date","")) or datetime.utcnow().strftime("%d %b %Y"), "status": "delivered", "created_at": datetime.utcnow().isoformat(), "_imported": True})
+            else: cust_id = str(cust["_id"])
+            discount=safe_float(row.get("discount",0)); insurance=safe_float(row.get("insurance",0)); rto=safe_float(row.get("rto",0)); total=price-discount+insurance+rto
+            inv_no = await next_sequence("invoice")
+            await db.sales.insert_one({"invoice_number":inv_no,"customer_id":cust_id,"customer_name":name,"customer_mobile":mobile,"vehicle_brand":brand,"vehicle_model":model,"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"sale_price":price,"discount":discount,"insurance":insurance,"rto":rto,"total_amount":round(total,2),"amount_in_words":amount_in_words(total),"payment_mode":safe(row.get("payment_mode","Cash")),"nominee":{"name":safe(row.get("nominee_name")),"relation":safe(row.get("nominee_relation")),"age":safe(row.get("nominee_age"))},"sale_date":safe(row.get("sale_date","")) or datetime.utcnow().strftime("%d %b %Y"),"status":"delivered","created_at":datetime.utcnow().isoformat(),"_imported":True})
             inserted += 1
         except Exception as e:
-            traceback.print_exc()
-            errors.append({"row": rn, "error": str(e)})
+            traceback.print_exc(); errors.append({"row":rn,"error":str(e)})
     return result_summary(inserted, skipped, errors)
-
-# ─── SERVICE ──────────────────────────────────────────────────────────────────
 
 @import_router.post("/service")
 async def import_service(file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
-    content = await file.read()
-    rows    = read_file(content, file.filename or "")
+    content = await file.read(); rows = read_file(content, file.filename or "")
     inserted, skipped, errors = 0, [], []
     for i, row in enumerate(rows):
-        rn = i + 2
+        rn = i+2
         try:
-            name    = safe(row.get("customer_name"))
-            mobile  = safe(row.get("customer_mobile"))
-            veh_no  = safe(row.get("vehicle_number","")).upper()
-            complaint = safe(row.get("complaint",""))
-            check_in  = safe(row.get("check_in_date","")) or datetime.utcnow().strftime("%d %b %Y")
-            if not veh_no or not complaint: skipped.append({"row": rn, "reason": "Missing vehicle_number or complaint"}); continue
-            if await db.service_jobs.find_one({"vehicle_number": veh_no, "check_in_date": check_in}):
-                skipped.append({"row": rn, "reason": f"Job for {veh_no} on {check_in} exists"}); continue
-            cust = await db.customers.find_one({"mobile": mobile}) if mobile else None
+            name=safe(row.get("customer_name")); mobile=safe(row.get("customer_mobile")); veh_no=safe(row.get("vehicle_number","")).upper(); complaint=safe(row.get("complaint","")); check_in=safe(row.get("check_in_date","")) or datetime.utcnow().strftime("%d %b %Y")
+            if not veh_no or not complaint: skipped.append({"row":rn,"reason":"Missing vehicle_number or complaint"}); continue
+            if await db.service_jobs.find_one({"vehicle_number":veh_no,"check_in_date":check_in}): skipped.append({"row":rn,"reason":f"Job for {veh_no} on {check_in} exists"}); continue
+            cust = await db.customers.find_one({"mobile":mobile}) if mobile else None
             if not cust and name:
-                r = await db.customers.insert_one({"name": name, "mobile": mobile, "email": "", "address": "", "tags": [], "created_at": datetime.utcnow().isoformat()})
+                r = await db.customers.insert_one({"name":name,"mobile":mobile,"email":"","address":"","tags":[],"created_at":datetime.utcnow().isoformat()})
                 cust_id = str(r.inserted_id)
-            else:
-                cust_id = str(cust["_id"]) if cust else ""
+            else: cust_id = str(cust["_id"]) if cust else ""
             status = safe(row.get("status","delivered")).lower()
             if status not in ("pending","in_progress","ready","delivered"): status = "delivered"
             job_no = await next_sequence("job")
-            await db.service_jobs.insert_one({"job_number": job_no, "customer_id": cust_id, "customer_name": name or "", "customer_mobile": mobile or "", "vehicle_number": veh_no, "brand": safe(row.get("brand","")).upper(), "model": safe(row.get("model","")), "odometer_km": safe_int(row.get("odometer_km",0)), "complaint": complaint, "technician": safe(row.get("technician","")), "check_in_date": check_in, "status": status, "created_at": datetime.utcnow().isoformat(), "_imported": True})
+            await db.service_jobs.insert_one({"job_number":job_no,"customer_id":cust_id,"customer_name":name or "","customer_mobile":mobile or "","vehicle_number":veh_no,"brand":safe(row.get("brand","")).upper(),"model":safe(row.get("model","")),"odometer_km":safe_int(row.get("odometer_km",0)),"complaint":complaint,"technician":safe(row.get("technician","")),"check_in_date":check_in,"status":status,"created_at":datetime.utcnow().isoformat(),"_imported":True})
             inserted += 1
         except Exception as e:
-            traceback.print_exc()
-            errors.append({"row": rn, "error": str(e)})
+            traceback.print_exc(); errors.append({"row":rn,"error":str(e)})
     return result_summary(inserted, skipped, errors)
-
-# ─── PARTS ────────────────────────────────────────────────────────────────────
 
 @import_router.post("/parts")
 async def import_parts(file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
-    content = await file.read()
-    rows    = read_file(content, file.filename or "")
+    content = await file.read(); rows = read_file(content, file.filename or "")
     inserted, skipped, errors = 0, [], []
     for i, row in enumerate(rows):
-        rn = i + 2
+        rn = i+2
         try:
-            part_no = safe(row.get("part_number","")).strip()
-            name    = safe(row.get("name",""))
-            if not part_no: skipped.append({"row": rn, "reason": "Missing part_number"}); continue
-            if not name:    skipped.append({"row": rn, "reason": "Missing name"});        continue
-            existing = await db.spare_parts.find_one({"part_number": part_no})
+            part_no=safe(row.get("part_number","")).strip(); name=safe(row.get("name",""))
+            if not part_no: skipped.append({"row":rn,"reason":"Missing part_number"}); continue
+            if not name:    skipped.append({"row":rn,"reason":"Missing name"});        continue
+            existing = await db.spare_parts.find_one({"part_number":part_no})
             if existing:
-                if mode == "overwrite":
-                    await db.spare_parts.update_one({"part_number": part_no}, {"$set": {"name": name, "stock": safe_int(row.get("stock",existing["stock"])), "selling_price": safe_float(row.get("selling_price",existing["selling_price"])), "purchase_price": safe_float(row.get("purchase_price",existing["purchase_price"]))}})
+                if mode=="overwrite":
+                    await db.spare_parts.update_one({"part_number":part_no},{"$set":{"name":name,"stock":safe_int(row.get("stock",existing["stock"])),"selling_price":safe_float(row.get("selling_price",existing["selling_price"])),"purchase_price":safe_float(row.get("purchase_price",existing["purchase_price"]))}})
                     inserted += 1
-                else:
-                    skipped.append({"row": rn, "reason": f"Part {part_no} already exists"})
+                else: skipped.append({"row":rn,"reason":f"Part {part_no} already exists"})
                 continue
             compat_raw = safe(row.get("compatible_with",""))
-            await db.spare_parts.insert_one({"part_number": part_no, "name": name, "category": safe(row.get("category","")), "brand": safe(row.get("brand","")), "compatible_with": [c.strip().upper() for c in compat_raw.split(",") if c.strip()], "stock": safe_int(row.get("stock",0)), "reorder_level": safe_int(row.get("reorder_level",5)), "purchase_price": safe_float(row.get("purchase_price",0)), "selling_price": safe_float(row.get("selling_price",0)), "gst_rate": safe_float(row.get("gst_rate",18)), "hsn_code": safe(row.get("hsn_code","")), "location": safe(row.get("location","")), "created_at": datetime.utcnow().isoformat()})
+            await db.spare_parts.insert_one({"part_number":part_no,"name":name,"category":safe(row.get("category","")),"brand":safe(row.get("brand","")),"compatible_with":[c.strip().upper() for c in compat_raw.split(",") if c.strip()],"stock":safe_int(row.get("stock",0)),"reorder_level":safe_int(row.get("reorder_level",5)),"purchase_price":safe_float(row.get("purchase_price",0)),"selling_price":safe_float(row.get("selling_price",0)),"gst_rate":safe_float(row.get("gst_rate",18)),"hsn_code":safe(row.get("hsn_code","")),"location":safe(row.get("location","")),"created_at":datetime.utcnow().isoformat()})
             inserted += 1
         except Exception as e:
-            traceback.print_exc()
-            errors.append({"row": rn, "error": str(e)})
+            traceback.print_exc(); errors.append({"row":rn,"error":str(e)})
     return result_summary(inserted, skipped, errors)
-
-# ─── STAFF ────────────────────────────────────────────────────────────────────
 
 @import_router.post("/staff")
 async def import_staff(file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(require_admin)):
-    content = await file.read()
-    rows    = read_file(content, file.filename or "")
+    content = await file.read(); rows = read_file(content, file.filename or "")
     inserted, skipped, errors = 0, [], []
     valid_roles = {"owner","sales","service_advisor","parts_counter","technician"}
     for i, row in enumerate(rows):
-        rn = i + 2
+        rn = i+2
         try:
-            name     = safe(row.get("name",""))
-            username = safe(row.get("username","")).strip().lower()
-            role     = safe(row.get("role","sales")).strip().lower()
-            if not name or not username: skipped.append({"row": rn, "reason": "Missing name or username"}); continue
-            if role not in valid_roles:  skipped.append({"row": rn, "reason": f"Invalid role: {role}"});   continue
-            existing = await db.users.find_one({"username": username})
+            name=safe(row.get("name","")); username=safe(row.get("username","")).strip().lower(); role=safe(row.get("role","sales")).strip().lower()
+            if not name or not username: skipped.append({"row":rn,"reason":"Missing name or username"}); continue
+            if role not in valid_roles:  skipped.append({"row":rn,"reason":f"Invalid role: {role}"});   continue
+            existing = await db.users.find_one({"username":username})
             if existing:
-                if mode == "overwrite":
-                    await db.users.update_one({"username": username}, {"$set": {"name": name, "role": role, "salary": safe_float(row.get("salary",0))}})
+                if mode=="overwrite":
+                    await db.users.update_one({"username":username},{"$set":{"name":name,"role":role,"salary":safe_float(row.get("salary",0))}})
                     inserted += 1
-                else:
-                    skipped.append({"row": rn, "reason": f"Username {username} already exists"})
+                else: skipped.append({"row":rn,"reason":f"Username {username} already exists"})
                 continue
-            await db.users.insert_one({"username": username, "name": name, "mobile": safe(row.get("mobile","")), "email": safe(row.get("email","")), "role": role, "password": pwd_ctx.hash("mm@123456"), "salary": safe_float(row.get("salary",0)), "join_date": safe(row.get("join_date","")), "status": "active", "created_at": datetime.utcnow().isoformat()})
+            await db.users.insert_one({"username":username,"name":name,"mobile":safe(row.get("mobile","")),"email":safe(row.get("email","")),"role":role,"password":pwd_ctx.hash("mm@123456"),"salary":safe_float(row.get("salary",0)),"join_date":safe(row.get("join_date","")),"status":"active","created_at":datetime.utcnow().isoformat()})
             inserted += 1
         except Exception as e:
-            traceback.print_exc()
-            errors.append({"row": rn, "error": str(e)})
+            traceback.print_exc(); errors.append({"row":rn,"error":str(e)})
     return result_summary(inserted, skipped, errors)
-
-# ─── CLEAR ────────────────────────────────────────────────────────────────────
 
 @import_router.delete("/clear/{entity}")
 async def clear_entity(entity: str, current_user=Depends(require_admin)):
     entity_map = {
-        "customers":  ("customers",   None,         None),
-        "vehicles":   ("vehicles",    None,         None),
-        "sales":      ("sales",       "invoice",    "invoice_number"),
-        "service":    ("service_jobs","job",         "job_number"),
-        "parts":      ("spare_parts", None,         None),
-        "parts_sales":("parts_sales", "part_bill",  "bill_number"),
+        "customers":  ("customers","",  ""),
+        "vehicles":   ("vehicles","",   ""),
+        "sales":      ("sales","invoice","invoice_number"),
+        "service":    ("service_jobs","job","job_number"),
+        "parts":      ("spare_parts","",""),
+        "parts_sales":("parts_sales","part_bill","bill_number"),
     }
     if entity not in entity_map:
         raise HTTPException(status_code=400, detail=f"Cannot clear '{entity}'")
@@ -2340,23 +1956,21 @@ async def clear_entity(entity: str, current_user=Depends(require_admin)):
     result = await db[coll].delete_many({})
     if counter_name and counter_field:
         await _sync_counter(counter_name, coll, counter_field)
-    return {"entity": entity, "deleted": result.deleted_count}
+    return {"entity":entity,"deleted":result.deleted_count}
 
 @import_router.get("/counts")
 async def import_counts(current_user=Depends(verify_token)):
     counts = await asyncio.gather(
-        db.customers.count_documents({}),
-        db.vehicles.count_documents({}),
-        db.sales.count_documents({}),
-        db.service_jobs.count_documents({}),
-        db.spare_parts.count_documents({}),
-        db.parts_sales.count_documents({}),
+        db.customers.count_documents({}), db.vehicles.count_documents({}),
+        db.sales.count_documents({}), db.service_jobs.count_documents({}),
+        db.spare_parts.count_documents({}), db.parts_sales.count_documents({}),
         db.users.count_documents({}),
     )
-    return {"customers": counts[0], "vehicles": counts[1], "sales": counts[2], "service_jobs": counts[3], "spare_parts": counts[4], "parts_sales": counts[5], "users": counts[6]}
+    return {"customers":counts[0],"vehicles":counts[1],"sales":counts[2],"service_jobs":counts[3],"spare_parts":counts[4],"parts_sales":counts[5],"users":counts[6]}
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  Mount router & run
+#  Mount routers & run
 # ═══════════════════════════════════════════════════════════════════════════════
 
 app.include_router(api_router)
@@ -2364,6 +1978,5 @@ app.include_router(import_router)
 
 if __name__ == "__main__":
     import uvicorn
-    import os
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run("server:app", host="0.0.0.0", port=port)
