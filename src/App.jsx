@@ -23,8 +23,9 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       retry: 1,
-      staleTime: 30_000,
-      refetchOnWindowFocus: true,
+      staleTime: 15_000,          // data considered fresh for 15s
+      refetchOnWindowFocus: true,  // refetch when user comes back to the tab
+      refetchOnReconnect: true,    // refetch when internet reconnects
     },
   },
 });
