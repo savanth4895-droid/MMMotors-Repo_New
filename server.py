@@ -596,7 +596,7 @@ async def delete_user(user_id: str, current_user=Depends(require_admin)):
 async def list_customers(
     search: Optional[str] = Query(None),
     tag:    Optional[str] = Query(None),
-    p=Depends(paginate_params),
+    limit:  int           = Query(200, ge=1, le=2000),
     current_user=Depends(verify_token),
 ):
     query: dict = {}
@@ -608,7 +608,7 @@ async def list_customers(
         ]
     if tag:
         query["tags"] = tag
-    docs  = await db.customers.find(query).skip(p["skip"]).limit(p["limit"]).sort("name", 1).to_list(p["limit"])
+    docs  = await db.customers.find(query).sort("name", 1).limit(limit).to_list(limit)
     total = await db.customers.count_documents(query)
     return JSONResponse(content=oids(docs), headers={"X-Total-Count": str(total)})
 
@@ -1678,7 +1678,22 @@ async def recent_activity(limit: int = Query(10, le=50), current_user=Depends(ve
 
 @api_router.get("/reports/revenue")
 async def revenue_report(months: int = Query(6, ge=1, le=24), current_user=Depends(require_admin)):
-    pipeline = [{"$addFields":{"month_key":{"$substr":["$created_at",0,7]}}},{"$group":{"_id":"$month_key","sales":{"$sum":"$total_amount"},"count":{"$sum":1}}},{"$sort":{"_id":-1}},{"$limit":months}]
+    # Sales: parse sale_date "DD Mon YYYY" → extract "YYYY-MM" for grouping
+    # Use dateFromString to handle "08 Apr 2026" format
+    pipeline = [
+        {"$addFields": {
+            "parsed_date": {"$dateFromString": {"dateString": "$sale_date", "format": "%d %b %Y", "onError": None, "onNull": None}},
+        }},
+        {"$addFields": {
+            "month_key": {"$cond": [
+                {"$and": [{"$ne": ["$parsed_date", None]}, {"$ne": ["$sale_date", None]}]},
+                {"$dateToString": {"format": "%Y-%m", "date": "$parsed_date"}},
+                {"$substr": ["$created_at", 0, 7]}
+            ]}
+        }},
+        {"$group": {"_id": "$month_key", "sales": {"$sum": "$total_amount"}, "count": {"$sum": 1}}},
+        {"$sort": {"_id": -1}}, {"$limit": months},
+    ]
     sales_by_month = await db.sales.aggregate(pipeline).to_list(months)
     svc_pipeline   = [{"$addFields":{"month_key":{"$substr":["$created_at",0,7]}}},{"$group":{"_id":"$month_key","service":{"$sum":"$grand_total"}}},{"$sort":{"_id":-1}},{"$limit":months}]
     svc_by_month   = await db.service_bills.aggregate(svc_pipeline).to_list(months)
