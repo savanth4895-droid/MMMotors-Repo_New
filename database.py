@@ -128,13 +128,15 @@ def now() -> str:
 
 # ── GST calculation ─────────────────────────────────────────────────────────────
 def calc_gst_line(price: float, qty: int, gst_rate: float) -> dict:
-    taxable = round(price * qty, 2)
-    gst_amt = round(taxable * gst_rate / 100, 2)
+    # price is GST-inclusive; extract taxable and GST from it
+    total   = round(price * qty, 2)
+    taxable = round(total / (1 + gst_rate / 100), 2) if gst_rate else total
+    gst_amt = round(total - taxable, 2)
     cgst    = round(gst_amt / 2, 2)
     sgst    = round(gst_amt / 2, 2)
     return {
         "taxable": taxable, "cgst": cgst, "sgst": sgst,
-        "gst_total": gst_amt, "total": round(taxable + gst_amt, 2),
+        "gst_total": gst_amt, "total": total,
     }
 
 def calc_bill_totals(items: list) -> dict:
