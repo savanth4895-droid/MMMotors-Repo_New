@@ -602,7 +602,7 @@ function NewJobModal({ onClose }) {
           <button onClick={() => createMut.mutate()}
             disabled={createMut.isPending || !form.vehicle_number || !form.model || !form.complaint}
             style={{ ...btnPrimary,
-              opacity:createMut.isPending||!form.vehicle_number||!form.model||!form.complaint?.5:1 }}>
+              opacity:createMut.isPending||!form.vehicle_number||!form.model||!form.complaint ? .5 : 1 }}>
             {createMut.isPending ? 'Creating…' : 'Create Job Card'}
           </button>
         )}
@@ -896,7 +896,7 @@ export function ServiceBillModal({ job, onClose }) {
         )}
         <button onClick={() => saveMut.mutate()}
           disabled={saveMut.isPending || validRows.length===0}
-          style={{ ...btnPrimary, opacity:saveMut.isPending||validRows.length===0?.5:1 }}>
+          style={{ ...btnPrimary, opacity:saveMut.isPending||validRows.length===0 ? .5 : 1 }}>
           {saveMut.isPending ? 'Saving…' : existingBill ? 'Update Bill' : 'Generate Bill'}
         </button>
       </ModalFoot>
@@ -1169,7 +1169,7 @@ export function PartsBillModal({ onClose }) {
           <button onClick={onClose} style={btnGhost}>Cancel</button>
           <button onClick={()=>genMut.mutate()}
             disabled={genMut.isPending||cart.length===0}
-            style={{ ...btnPrimary, opacity:genMut.isPending||cart.length===0?.5:1 }}>
+            style={{ ...btnPrimary, opacity:genMut.isPending||cart.length===0 ? .5 : 1 }}>
             {genMut.isPending?'Generating…':`Generate Bill — ${RS}${fmtI(total)}`}
           </button>
         </ModalFoot>
