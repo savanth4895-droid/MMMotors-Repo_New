@@ -1987,9 +1987,118 @@ async def import_counts(current_user=Depends(verify_token)):
     return {"customers":counts[0],"vehicles":counts[1],"sales":counts[2],"service_jobs":counts[3],"spare_parts":counts[4],"parts_sales":counts[5],"users":counts[6]}
 
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
-#  Mount routers & run
+#  Debt Ledger
 # ═══════════════════════════════════════════════════════════════════════════════
+
+class DebtCreate(BaseModel):
+    customer_id:   str
+    amount:        float
+    description:   Optional[str] = ""
+    due_date:      Optional[str] = ""
+    source:        Optional[str] = "manual"   # manual | sale | service
+
+class PaymentCreate(BaseModel):
+    amount:     float
+    notes:      Optional[str] = ""
+    paid_date:  Optional[str] = ""
+
+@api_router.get("/debts")
+async def list_debts(
+    customer_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 200,
+    current_user=Depends(verify_token)
+):
+    q: dict = {}
+    if customer_id: q["customer_id"] = customer_id
+    if status:      q["status"] = status
+    cursor = db.debts.find(q).sort("created_at", -1).limit(limit)
+    return oids(await cursor.to_list(length=limit))
+
+@api_router.post("/debts", status_code=201)
+async def create_debt(body: DebtCreate, current_user=Depends(verify_token)):
+    customer = await db.customers.find_one({"_id": obj_id(body.customer_id)})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    doc = {
+        "customer_id":    body.customer_id,
+        "customer_name":  customer["name"],
+        "customer_mobile": customer.get("mobile", ""),
+        "amount":         body.amount,
+        "paid":           0.0,
+        "balance":        body.amount,
+        "description":    body.description or "",
+        "due_date":       body.due_date or "",
+        "source":         body.source or "manual",
+        "status":         "pending",
+        "payments":       [],
+        "created_at":     datetime.utcnow().isoformat(),
+    }
+    result = await db.debts.insert_one(doc)
+    doc["id"] = str(result.inserted_id); doc.pop("_id", None)
+    return doc
+
+@api_router.get("/debts/summary")
+async def debt_summary(current_user=Depends(verify_token)):
+    pipeline = [
+        {"$group": {
+            "_id": "$status",
+            "total_amount":  {"$sum": "$amount"},
+            "total_balance": {"$sum": "$balance"},
+            "count":         {"$sum": 1},
+        }}
+    ]
+    rows = await db.debts.aggregate(pipeline).to_list(length=20)
+    return rows
+
+@api_router.post("/debts/{debt_id}/payments", status_code=201)
+async def add_payment(debt_id: str, body: PaymentCreate, current_user=Depends(verify_token)):
+    debt = await db.debts.find_one({"_id": obj_id(debt_id)})
+    if not debt:
+        raise HTTPException(status_code=404, detail="Debt not found")
+    payment = {
+        "amount":    body.amount,
+        "notes":     body.notes or "",
+        "paid_date": body.paid_date or datetime.utcnow().strftime("%Y-%m-%d"),
+        "recorded_at": datetime.utcnow().isoformat(),
+        "recorded_by": current_user.get("name", ""),
+    }
+    new_paid    = round(debt.get("paid", 0) + body.amount, 2)
+    new_balance = round(debt["amount"] - new_paid, 2)
+    new_status  = "paid" if new_balance <= 0 else ("partial" if new_paid > 0 else "pending")
+    await db.debts.update_one(
+        {"_id": obj_id(debt_id)},
+        {"$push": {"payments": payment},
+         "$set":  {"paid": new_paid, "balance": max(new_balance, 0), "status": new_status}}
+    )
+    updated = await db.debts.find_one({"_id": obj_id(debt_id)})
+    return oid(updated)
+
+@api_router.put("/debts/{debt_id}")
+async def update_debt(debt_id: str, body: dict, current_user=Depends(verify_token)):
+    allowed = {"description", "due_date", "amount", "status"}
+    update  = {k: v for k, v in body.items() if k in allowed}
+    if not update:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    # recalc balance if amount changed
+    debt = await db.debts.find_one({"_id": obj_id(debt_id)})
+    if "amount" in update:
+        update["balance"] = max(round(update["amount"] - debt.get("paid", 0), 2), 0)
+        update["status"]  = "paid" if update["balance"] <= 0 else ("partial" if debt.get("paid",0)>0 else "pending")
+    await db.debts.update_one({"_id": obj_id(debt_id)}, {"$set": update})
+    updated = await db.debts.find_one({"_id": obj_id(debt_id)})
+    return oid(updated)
+
+@api_router.delete("/debts/{debt_id}")
+async def delete_debt(debt_id: str, current_user=Depends(require_admin)):
+    result = await db.debts.delete_one({"_id": obj_id(debt_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"message": "Deleted"}
+
+
 
 app.include_router(api_router)
 app.include_router(import_router)
