@@ -6,17 +6,29 @@ const api = axios.create({
   baseURL: `${BASE_URL}/api`,
   timeout: 15000,
   headers: { 'Content-Type': 'application/json' },
-  withCredentials: true,   // Send httpOnly cookie on every request
+  withCredentials: true,
 });
 
-// Handle 401 → redirect to login
-// Skip /auth/me — AuthContext uses it to check session; a 401 there is expected (not logged in)
+// Attach stored token to every request
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('mm_token');
+  if (token) config.headers['Authorization'] = `Bearer ${token}`;
+  return config;
+});
+
+// Handle 401 — only redirect if we actually have a token (i.e. session expired)
+// Skip /auth/me — used at startup to check if already logged in
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    const url = err.config?.url || '';
-    if (err.response?.status === 401 && !url.includes('/auth/me')) {
-      window.location.href = '/';
+    const url  = err.config?.url || '';
+    const code = err.response?.status;
+    if (code === 401 && !url.includes('/auth/me')) {
+      const hasToken = !!localStorage.getItem('mm_token');
+      if (hasToken) {
+        localStorage.removeItem('mm_token');
+        window.location.href = '/';
+      }
     }
     return Promise.reject(err);
   }
