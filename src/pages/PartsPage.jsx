@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { partsApi, partsSalesApi } from '../api/client';
 import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError } from '../components/ui';
 import toast from 'react-hot-toast';
+import { PartsBillModal } from './ServicePage';
 
 const CATEGORIES = ['Engine','Electrical','Brakes','Tyres & Tubes','Filters','Body Parts','Transmission','Suspension','Accessories','Consumables'];
 
@@ -213,6 +214,7 @@ export default function PartsPage() {
   const [search, setSearch] = useState('');
   const [cat,    setCat]    = useState('');
   const [filter, setFilter] = useState('all');
+  const [partsBillOpen, setPartsBillOpen] = useState(false);
 
   const { data:statsData } = useQuery({
     queryKey:['parts-stats'],
@@ -293,6 +295,7 @@ export default function PartsPage() {
           </button>
         ))}
         <div style={{ marginLeft:'auto', display:'flex', gap:8, alignItems:'center', padding:'0 16px' }}>
+          <Btn onClick={()=>setPartsBillOpen(true)}>+ Parts Bill</Btn>
           <Btn onClick={()=>setView('new-bill')}>+ New bill</Btn>
           <GhostBtn onClick={()=>setView('add')}>+ Add part</GhostBtn>
         </div>
@@ -408,6 +411,7 @@ export default function PartsPage() {
           </table>
         )
       )}
+      {partsBillOpen && <PartsBillModal onClose={() => setPartsBillOpen(false)} />}
     </div>
   );
 }
