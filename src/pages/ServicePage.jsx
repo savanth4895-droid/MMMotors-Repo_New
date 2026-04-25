@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { serviceApi, partsApi, customersApi } from '../api/client';
+import { serviceApi, partsApi, customersApi, billsApi, salesApi } from '../api/client';
 import toast from 'react-hot-toast';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -87,7 +87,7 @@ export default function ServicePage() {
   const [search, setSearch]         = useState('');
   const [newJobOpen, setNewJobOpen]  = useState(false);
   const [billJob, setBillJob]       = useState(null);
-  const [partsBillOpen, setPartsBillOpen] = useState(false);
+  const [editJob, setEditJob]       = useState(null); // FIX #2: edit state
 
   // ── Jobs list ────────────────────────────────────────────────────────────────
   const { data, isLoading } = useQuery({
@@ -111,13 +111,24 @@ export default function ServicePage() {
 
   // ── Update status ────────────────────────────────────────────────────────────
   const updateMut = useMutation({
-    mutationFn: ({ jobId, status }) => serviceApi.updateJob(jobId, { status }),
+    mutationFn: ({ jobId, status }) => serviceApi.update(jobId, { status }), // FIX #5: updateJob → update
     onSuccess: () => {
       qc.invalidateQueries(['service-jobs']);
       qc.invalidateQueries(['service-stats']);
       toast.success('Status updated');
     },
     onError: () => toast.error('Failed to update'),
+  });
+
+  // FIX #2: delete mutation
+  const deleteMut = useMutation({
+    mutationFn: (id) => serviceApi.delete(id),
+    onSuccess: () => {
+      qc.invalidateQueries(['service-jobs']);
+      qc.invalidateQueries(['service-stats']);
+      toast.success('Job deleted');
+    },
+    onError: () => toast.error('Failed to delete'),
   });
 
   const TABS = [
@@ -138,10 +149,8 @@ export default function ServicePage() {
           <div style={{ fontSize:9, letterSpacing:'.12em', color:C.gold, fontWeight:700, marginBottom:3 }}>SERVICE</div>
           <div style={{ fontSize:20, fontWeight:800, letterSpacing:'-.01em' }}>Job Board</div>
         </div>
+        {/* FIX #3: removed + Parts Bill button — moved to PartsPage */}
         <div style={{ display:'flex', gap:8 }}>
-          <button onClick={() => setPartsBillOpen(true)} style={{ ...btnGhost, fontSize:11 }}>
-            + Parts Bill
-          </button>
           <button onClick={() => setNewJobOpen(true)} style={btnPrimary}>
             + New Job Card
           </button>
@@ -267,6 +276,21 @@ export default function ServicePage() {
                           borderColor:job.bill_number ? C.gold : '#2a2a2a' }}>
                         {job.bill_number ? 'View Bill' : 'Bill'}
                       </button>
+                      {/* FIX #2: Edit button */}
+                      <button onClick={() => setEditJob(job)}
+                        style={{ ...btnGhost, padding:'5px 9px', fontSize:10 }}>
+                        Edit
+                      </button>
+                      {/* FIX #2: Delete button */}
+                      <button
+                        onClick={() => {
+                          if (window.confirm(`Delete job ${job.job_number || job._id}? This cannot be undone.`))
+                            deleteMut.mutate(job._id || job.id);
+                        }}
+                        style={{ ...btnGhost, padding:'5px 9px', fontSize:10,
+                          color:C.red, borderColor:'rgba(248,113,113,.3)' }}>
+                        Delete
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -277,10 +301,83 @@ export default function ServicePage() {
       </div>
 
       {/* ── Modals ── */}
-      {newJobOpen    && <NewJobModal   onClose={() => setNewJobOpen(false)} />}
-      {billJob       && <ServiceBillModal job={billJob} onClose={() => setBillJob(null)} />}
-      {partsBillOpen && <PartsBillModal  onClose={() => setPartsBillOpen(false)} />}
+      {newJobOpen && <NewJobModal   onClose={() => setNewJobOpen(false)} />}
+      {billJob    && <ServiceBillModal job={billJob} onClose={() => setBillJob(null)} />}
+      {editJob    && <EditJobModal job={editJob} onClose={() => setEditJob(null)} />}
+      {/* FIX #3: PartsBillModal removed — moved to PartsPage */}
     </div>
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  EDIT JOB MODAL  — FIX #2
+// ═══════════════════════════════════════════════════════════════════════════════
+function EditJobModal({ job, onClose }) {
+  const qc = useQueryClient();
+  const [form, setForm] = useState({
+    technician:         job.technician         || '',
+    status:             job.status             || 'pending',
+    complaint:          job.complaint          || '',
+    estimated_delivery: job.estimated_delivery || '',
+    notes:              job.notes              || '',
+  });
+  const upd = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+
+  const editMut = useMutation({
+    mutationFn: () => serviceApi.update(job._id || job.id, form),
+    onSuccess: () => {
+      toast.success('Job updated');
+      qc.invalidateQueries(['service-jobs']);
+      qc.invalidateQueries(['service-stats']);
+      onClose();
+    },
+    onError: e => toast.error(e?.response?.data?.detail || 'Failed to update job'),
+  });
+
+  const STATUSES = ['pending','in_progress','ready','delivered'];
+
+  return (
+    <ModalShell onClose={onClose}
+      title={`Edit — ${job.job_number || (job._id||'').slice(-6)}`}
+      sub={`${job.customer_name} · ${job.vehicle_number}`}>
+      <div style={{ padding:'20px 20px 0' }}>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }}>
+          <div>
+            <label style={labelSt}>Technician</label>
+            <input value={form.technician} onChange={upd('technician')} placeholder="Technician name" style={inp} />
+          </div>
+          <div>
+            <label style={labelSt}>Status</label>
+            <select value={form.status} onChange={upd('status')} style={inp}>
+              {STATUSES.map(s => (
+                <option key={s} value={s}>{s.replace('_',' ').replace(/\b\w/g,c=>c.toUpperCase())}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label style={labelSt}>Est. Delivery</label>
+            <input type="date" value={form.estimated_delivery} onChange={upd('estimated_delivery')} style={inp} />
+          </div>
+        </div>
+        <div style={{ marginBottom:12 }}>
+          <label style={labelSt}>Complaint / Work Required</label>
+          <textarea value={form.complaint} onChange={upd('complaint')} rows={3}
+            style={{ ...inp, resize:'vertical', fontFamily:'inherit' }} />
+        </div>
+        <div style={{ marginBottom:20 }}>
+          <label style={labelSt}>Notes</label>
+          <input value={form.notes} onChange={upd('notes')} placeholder="Additional notes" style={inp} />
+        </div>
+      </div>
+      <ModalFoot>
+        <button onClick={onClose} style={btnGhost}>Cancel</button>
+        <button onClick={() => editMut.mutate()} disabled={editMut.isPending}
+          style={{ ...btnPrimary, opacity: editMut.isPending ? .5 : 1 }}>
+          {editMut.isPending ? 'Saving…' : 'Save Changes'}
+        </button>
+      </ModalFoot>
+    </ModalShell>
   );
 }
 
@@ -290,10 +387,11 @@ export default function ServicePage() {
 // ═══════════════════════════════════════════════════════════════════════════════
 function NewJobModal({ onClose }) {
   const qc = useQueryClient();
-  const [step, setStep]         = useState(1);
+  const [step, setStep]             = useState(1);
   const [custSearch, setCustSearch] = useState('');
-  const [selCust, setSelCust]   = useState(null);
-  const [form, setForm]         = useState({
+  const [selCust, setSelCust]       = useState(null);
+  const [vehicleSearch, setVehicleSearch] = useState(''); // FIX #4
+  const [form, setForm]             = useState({
     vehicle_number:'', brand:'HERO', model:'', odometer_km:'',
     complaint:'', technician:'', estimated_delivery:'', notes:'',
   });
@@ -306,8 +404,17 @@ function NewJobModal({ onClose }) {
   });
   const custs = custData?.data?.items || custData?.data || [];
 
+  // FIX #4: lookup vehicle from sales records
+  const { data:salesData } = useQuery({
+    queryKey: ['sales-vehicle-lookup', vehicleSearch],
+    queryFn: () => salesApi.list({ search: vehicleSearch, limit:5 }),
+    enabled: vehicleSearch.length > 3,
+  });
+  const salesVehicles = salesData?.data?.items || salesData?.data || [];
+
+  // FIX #5: createJob → create
   const createMut = useMutation({
-    mutationFn: () => serviceApi.createJob({
+    mutationFn: () => serviceApi.create({
       customer_id: selCust._id || selCust.id,
       ...form,
       odometer_km: Number(form.odometer_km) || 0,
@@ -362,8 +469,48 @@ function NewJobModal({ onClose }) {
               style={{ background:'transparent', border:'none', color:C.muted, cursor:'pointer', fontSize:14 }}>×</button>
           </div>
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }}>
+            {/* FIX #4: vehicle_number has its own block with sales lookup dropdown */}
+            <div style={{ position:'relative' }}>
+              <label style={labelSt}>Vehicle Number *</label>
+              <input
+                value={form.vehicle_number}
+                onChange={e => {
+                  upd('vehicle_number')(e);
+                  setVehicleSearch(e.target.value);
+                }}
+                placeholder="KA 07 U 3915"
+                style={inp}
+              />
+              {salesVehicles.length > 0 && form.vehicle_number && !form.model && (
+                <div style={{ position:'absolute', top:'100%', left:0, right:0, zIndex:300,
+                  background:C.surface, border:'1px solid var(--border2,#2a2a2a)',
+                  borderRadius:4, boxShadow:'0 8px 24px rgba(0,0,0,.5)', overflow:'hidden' }}>
+                  {salesVehicles.map(s => (
+                    <div key={s._id}
+                      onClick={() => {
+                        setForm(p => ({
+                          ...p,
+                          vehicle_number: s.vehicle_number || p.vehicle_number,
+                          brand:          s.vehicle_brand  || p.brand,
+                          model:          s.vehicle_model  || p.model,
+                        }));
+                        setVehicleSearch('');
+                      }}
+                      style={{ padding:'8px 12px', cursor:'pointer',
+                        borderBottom:'1px solid var(--border,#222)', fontSize:12 }}
+                      onMouseEnter={e => e.currentTarget.style.background=C.s2}
+                      onMouseLeave={e => e.currentTarget.style.background='transparent'}
+                    >
+                      <strong>{s.vehicle_number}</strong>
+                      {' — '}{s.vehicle_brand} {s.vehicle_model}
+                      <span style={{ fontSize:10, color:C.muted, marginLeft:8 }}>{s.customer_name}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {[
-              ['vehicle_number','Vehicle Number *','KA 07 U 3915'],
               ['model','Model *','Splendor Plus'],
               ['odometer_km','Odometer (km)','12500'],
               ['technician','Technician','Suresh'],
@@ -421,13 +568,14 @@ export function ServiceBillModal({ job, onClose }) {
 
   const jobId = job._id || job.id;
 
+  // FIX #1: getBillByJobId → billsApi.list({ job_id })
   const { data:billData, isLoading:loadingBill } = useQuery({
     queryKey: ['service-bill', jobId],
-    queryFn: () => serviceApi.getBillByJobId(jobId),
+    queryFn: () => billsApi.list({ job_id: jobId }),
     retry: false,
   });
 
-  // getBillByJobId returns list — grab first item
+  // billsApi.list returns array — grab first item
   const rawBill = billData?.data;
   const existingBill = Array.isArray(rawBill) ? rawBill[0] : rawBill || null;
 
@@ -463,8 +611,9 @@ export function ServiceBillModal({ job, onClose }) {
   const removeRow   = key => {
     setRows(p => {
       const row = p.find(r => r._key===key);
+      // FIX #1: adjustStockByNumber with correct payload
       if (row?._partNumber && row?._savedQty)
-        partsApi.adjustStock(row._partNumber, row._savedQty, 'add').catch(()=>{});
+        partsApi.adjustStockByNumber(row._partNumber, { qty: row._savedQty, action: 'add' }).catch(()=>{});
       return p.filter(r => r._key!==key);
     });
   };
@@ -488,16 +637,20 @@ export function ServiceBillModal({ job, onClose }) {
           gst_rate: Number(r.gst_rate), part_number: r._partNumber||'',
         })),
       };
+      // FIX #1: adjustStockByNumber with correct payload shape
       for (const row of validRows) {
         if (row._partNumber) {
           const diff = Number(row.qty) - (row._savedQty||0);
-          if (diff>0) await partsApi.adjustStock(row._partNumber, diff, 'subtract').catch(()=>{});
-          else if (diff<0) await partsApi.adjustStock(row._partNumber, Math.abs(diff), 'add').catch(()=>{});
+          if (diff>0)
+            await partsApi.adjustStockByNumber(row._partNumber, { qty: diff, action: 'subtract' }).catch(()=>{});
+          else if (diff<0)
+            await partsApi.adjustStockByNumber(row._partNumber, { qty: Math.abs(diff), action: 'add' }).catch(()=>{});
         }
       }
+      // FIX #1: createBill/updateBill → billsApi
       return existingBill?._id
-        ? serviceApi.updateBill(existingBill._id, payload)
-        : serviceApi.createBill(payload);
+        ? billsApi.update(existingBill._id, payload)
+        : billsApi.create(payload);
     },
     onSuccess: () => {
       toast.success('Bill saved!');
@@ -647,7 +800,7 @@ function BillRow({ row, idx, allParts, onChange, onRemove, onSelectPart }) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  PARTS BILL MODAL  (named export)
+//  PARTS BILL MODAL  (named export — used by PartsPage)
 // ═══════════════════════════════════════════════════════════════════════════════
 export function PartsBillModal({ onClose }) {
   const qc = useQueryClient();
