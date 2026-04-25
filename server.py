@@ -1785,12 +1785,63 @@ def result_summary(inserted, skipped, errors):
     return {"inserted":inserted,"skipped_count":len(skipped),"error_count":len(errors),"skipped":skipped[:50],"errors":errors[:50]}
 
 TEMPLATES = {
-    "customers": {"cols":["name","mobile","email","address","gstin","tags"],"rows":[["Ravi Kumar","9876543210","ravi@example.com","12 MG Road, Bengaluru","","VIP"],["Meena S","9845123456","","45 Koramangala","","Regular"]]},
-    "vehicles":  {"cols":["brand","model","variant","color","chassis_number","engine_number","vehicle_number","type"],"rows":[["HONDA","Activa 6G","STD","Pearl Black","ME4JF502RH7000001","JF50E7000001","KA01HH1234","new"],["HERO","Splendor+","Self","Heavy Grey","MBLHA10EVHM000002","HA10EAHM00002","KA03AB5678","new"]]},
-    "sales":     {"cols":["customer_name","customer_mobile","vehicle_brand","vehicle_model","chassis_number","engine_number","vehicle_number","vehicle_color","sale_price","discount","insurance","rto","payment_mode","nominee_name","nominee_relation","nominee_age","sale_date"],"rows":[["Ravi Kumar","9876543210","HONDA","Activa 6G","ME4JF502RH7000001","JF50E7000001","KA01HH1234","Pearl Black","80500","0","4500","8000","Cash","Balakrishna","Father","54 years","08/04/2026"]]},
-    "service":   {"cols":["customer_name","customer_mobile","vehicle_number","brand","model","odometer_km","complaint","technician","check_in_date","status"],"rows":[["Ravi Kumar","9876543210","KA01HH1234","HONDA","Activa 6G","8420","Engine noise","Suresh","07/04/2026","in_progress"]]},
-    "parts":     {"cols":["part_number","name","category","brand","compatible_with","stock","reorder_level","purchase_price","selling_price","gst_rate","hsn_code","location"],"rows":[["30050-KWB-901","Spark Plug (Iridium)","Engine","NGK","HONDA,TVS","24","10","180","280","18","8511","A1-R2"],["15400-PLM-A01","Oil Filter","Filters","Honda","HONDA","18","15","120","195","18","8421","A2-R1"]]},
-    "staff":     {"cols":["name","mobile","email","username","role","salary","join_date"],"rows":[["Rajesh Kumar","9845001122","rajesh@mmmotors.com","rajesh","sales","18000","01/03/2023"],["Arun Shetty","9566001122","arun@mmmotors.com","arun","service_advisor","20000","01/04/2023"]]},
+    "customers": {
+        "cols":["name","mobile","email","address","gstin","tags"],
+        "rows":[
+            ["Ravi Kumar","9876543210","ravi@example.com","12 MG Road, Bengaluru","","VIP"],
+            ["Meena Shetty","9845123456","","45 Koramangala, Bengaluru","","Loyal"],
+            ["ABC Infra Ltd","9900112233","accounts@abc.com","HSR Layout, Bengaluru","29ABCDE1234F1Z5","Corporate"],
+        ]
+    },
+    "vehicles": {
+        "cols":["brand","model","variant","color","chassis_number","engine_number","vehicle_number","key_number","type"],
+        "rows":[
+            ["HONDA","Activa 6G","STD","Pearl Black","ME4JF502RH7000001","JF50E7000001","KA01HH1234","K001","new"],
+            ["HERO","Splendor+","Self Start","Heavy Grey","MBLHA10EVHM000002","HA10EAHM00002","KA03AB5678","K002","new"],
+            ["BAJAJ","Pulsar 150","Drum","Black Red","MD2DHDZZXRCB12345","DHZDRCB12345","","","new"],
+        ]
+    },
+    "sales": {
+        "cols":["customer_name","customer_mobile","vehicle_brand","vehicle_model","chassis_number",
+                "engine_number","vehicle_number","vehicle_color","vehicle_variant","sale_price",
+                "discount","insurance","rto","payment_mode","nominee_name","nominee_relation",
+                "nominee_age","sale_date","customer_address"],
+        "rows":[
+            ["Ravi Kumar","9876543210","HONDA","Activa 6G","ME4JF502RH7000001","JF50E7000001",
+             "KA01HH1234","Pearl Black","STD","80500","0","4500","8000","Cash",
+             "Balakrishna","Father","54","08/04/2026","12 MG Road, Bengaluru"],
+            ["Priya Nair","9845001122","HERO","Splendor+","MBLHA10EVHM000002","HA10EAHM00002",
+             "","Heavy Grey","Self Start","73200","2000","3800","7500","Finance",
+             "Suresh Nair","Husband","42","15/04/2026",""],
+        ]
+    },
+    "service": {
+        "cols":["customer_name","customer_mobile","vehicle_number","brand","model",
+                "odometer_km","complaint","technician","check_in_date","status","notes"],
+        "rows":[
+            ["Ravi Kumar","9876543210","KA01HH1234","HONDA","Activa 6G",
+             "8420","Engine noise, oil change","Suresh","07/04/2026","delivered",""],
+            ["Meena Shetty","9845123456","KA03AB5678","HERO","Splendor+",
+             "12500","Routine service, brake pad","Arun","10/04/2026","delivered","Chain also tightened"],
+        ]
+    },
+    "parts": {
+        "cols":["part_number","name","category","brand","compatible_with","stock",
+                "reorder_level","purchase_price","selling_price","gst_rate","hsn_code","location"],
+        "rows":[
+            ["30050-KWB-901","Spark Plug (Iridium)","Engine","NGK","HONDA,TVS","24","10","180","280","18","8511","A1-R2"],
+            ["15400-PLM-A01","Oil Filter","Filters","Honda","HONDA","18","15","120","195","18","8421","A2-R1"],
+            ["06435-KZR-305","Brake Pad Set (Front)","Brakes","Honda","HONDA","12","8","250","390","18","8708","B1-R3"],
+        ]
+    },
+    "staff": {
+        "cols":["name","mobile","email","username","role","salary","join_date"],
+        "rows":[
+            ["Rajesh Kumar","9845001122","rajesh@mmmotors.com","rajesh_k","sales","18000","01/03/2023"],
+            ["Arun Shetty","9566001122","arun@mmmotors.com","arun_s","service_advisor","20000","01/04/2023"],
+            ["Suresh B","9900334455","","suresh_b","technician","16000","15/06/2023"],
+        ]
+    },
 }
 
 @import_router.get("/template/{entity}")
