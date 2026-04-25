@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { salesApi, customersApi, vehiclesApi } from '../api/client';
+import { salesApi, customersApi, vehiclesApi, errMsg} from '../api/client';
 import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError } from '../components/ui';
 import toast from 'react-hot-toast';
 import { useConfirm } from '../components/ConfirmModal';
@@ -529,7 +529,7 @@ const createMut = useMutation({
       const errorMsg = typeof e?.response?.data?.detail === 'string' 
         ? e.response.data.detail 
         : JSON.stringify(e?.response?.data) || e.message || 'Failed';
-      toast.error(`Error: ${errorMsg}`);
+      toast.error(errorMsg);
     }
   });
 
@@ -545,14 +545,14 @@ const createMut = useMutation({
       const errorMsg = typeof e?.response?.data?.detail === 'string' 
         ? e.response.data.detail 
         : JSON.stringify(e?.response?.data) || e.message || 'Failed';
-      toast.error(`Error: ${errorMsg}`);
+      toast.error(errorMsg);
     }
   });
 
   const deleteMut = useMutation({
     mutationFn: id => salesApi.delete(id),
     onSuccess: () => { qc.invalidateQueries(['sales']); qc.invalidateQueries(['sales-stats']); toast.success('Deleted'); },
-    onError:   e => toast.error(e?.response?.data?.detail||'Cannot delete'),
+    onError:   e => toast.error(errMsg(e, 'Cannot delete')),
   });
 
   const sales = Array.isArray(data) ? data : [];
