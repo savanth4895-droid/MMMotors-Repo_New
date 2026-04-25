@@ -76,6 +76,7 @@ function DetailPanel({ item, type, onClose }) {
                 ['Sales Person', item.salesperson    || '—'],
                 ['Total Amount', item.total_amount ? '₹'+Number(item.total_amount).toLocaleString('en-IN') : '—'],
                 ['Status',       item.status         || '—'],
+                ['Notes',        item.notes          || '—'],
               ].map(([l,v]) => (
                 <div key={l} style={{ display:'flex', padding:'10px 0', borderBottom:'1px solid var(--border)' }}>
                   <div style={{ width:140, fontSize:11, color:'var(--muted)', flexShrink:0 }}>{l}</div>
