@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { salesApi, customersApi, vehiclesApi, errMsg} from '../api/client';
-import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError } from '../components/ui';
+import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError, useSortable } from '../components/ui';
 import toast from 'react-hot-toast';
 import { useConfirm } from '../components/ConfirmModal';
 import FileUpload from '../components/FileUpload';
@@ -556,6 +556,7 @@ const createMut = useMutation({
   });
 
   const sales = Array.isArray(data) ? data : [];
+  const { sorted: sortedSales, Th: SalesTh } = useSortable(sales, 'sale_date', 'desc');
   const st = stats || {};
 
   return (
@@ -612,13 +613,13 @@ const createMut = useMutation({
           <table style={{ width:'100%', borderCollapse:'collapse' }}>
             <thead>
               <tr style={{ borderBottom:'1px solid var(--border)' }}>
-                {['Invoice #','Date','Customer','Vehicle','Amount','Payment','Status',''].map(h=>(
-                  <th key={h} style={{ padding:'9px 16px', textAlign:'left', fontSize:9, letterSpacing:'.07em', color:'var(--dim)', fontWeight:500, textTransform:'uppercase' }}>{h}</th>
+                {[['Invoice #','invoice_number'],['Date','sale_date'],['Customer','customer_name'],['Vehicle','vehicle_model'],['Amount','total_amount'],['Payment','payment_mode'],['Status','status'],['','']].map(([h,f])=>(
+                  <SalesTh key={h} field={f||null} style={{ padding:'9px 16px', textAlign:'left', fontSize:9, letterSpacing:'.07em', color:'var(--dim)', fontWeight:500, textTransform:'uppercase' }}>{h}</SalesTh>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {sales.map(s => (
+              {sortedSales.map(s => (
                 <tr key={s.id} style={{ borderBottom:'1px solid var(--border)' }}>
                   <td className="mono" style={{ padding:'12px 16px', fontSize:11, color:'var(--blue)' }}>{s.invoice_number}</td>
                   <td style={{ padding:'12px 16px', fontSize:11, color:'var(--muted)' }}>{s.sale_date?.slice(0,11)}</td>
