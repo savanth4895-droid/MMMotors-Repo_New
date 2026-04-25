@@ -168,7 +168,8 @@ export default function VehiclesPage() {
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['vehicles', search, brand, typeF],
-    queryFn: () => vehiclesApi.list({ search: search || undefined, brand: brand || undefined, type: typeF !== 'all' ? typeF : undefined, limit: 300 }).then(r => r.data),
+    queryFn: () => vehiclesApi.list({ search: search || undefined, brand: brand || undefined, type: typeF !== 'all' ? typeF : undefined, limit: 500 }).then(r => r.data),
+    refetchInterval: 30_000,
   });
 
   const createMut = useMutation({
@@ -178,7 +179,7 @@ export default function VehiclesPage() {
   });
   
   const updateMut = useMutation({
-    mutationFn: ({ id, d }) => vehiclesApi.update(id, d),
+    mutationFn: ({ id, d, data }) => vehiclesApi.update(id, d || data),
     onSuccess: () => { qc.invalidateQueries(['vehicles']); qc.invalidateQueries(['vehicle-stats']); setEditVeh(null); toast.success('Updated'); },
     onError:   e => toast.error(e?.response?.data?.detail || 'Failed'),
   });
@@ -259,15 +260,25 @@ export default function VehiclesPage() {
             </thead>
             <tbody>
               {vehicles.map(v => {
-                let sColor = '#4ade80', sBg = 'rgba(74,222,128,.1)', sBorder = 'rgba(74,222,128,.25)', sLabel = v.status || 'Instock';
-                
-                if (v.status === 'Sold' || v.status === 'sold') { 
-                  sColor = 'var(--dim)'; sBg = 'rgba(107,100,120,.1)'; sBorder = 'rgba(107,100,120,.25)'; sLabel = 'Sold'; 
-                } else if (v.status === 'Returned') { 
-                  sColor = 'var(--red)'; sBg = 'rgba(220,38,38,.1)'; sBorder = 'rgba(220,38,38,.25)'; sLabel = 'Returned'; 
-                } else if (v.status === 'in_service') { 
-                  sColor = '#f0c040'; sBg = 'rgba(240,192,64,.1)'; sBorder = 'rgba(240,192,64,.25)'; sLabel = 'In service'; 
+                // Fix 1: compute days in stock from inbound_date
+                let daysInStock = null;
+                if (v.inbound_date) {
+                  const inbound = new Date(v.inbound_date);
+                  if (!isNaN(inbound)) {
+                    daysInStock = Math.floor((Date.now() - inbound.getTime()) / 86400000);
+                  }
                 }
+                const overdueStock = daysInStock !== null && daysInStock > 100;
+
+                // Status badge config
+                const STATUS_CFG = {
+                  in_stock:   { color:'#4ade80', bg:'rgba(74,222,128,.1)',   border:'rgba(74,222,128,.25)',   label:'In stock' },
+                  sold:       { color:'var(--dim)', bg:'rgba(107,100,120,.1)', border:'rgba(107,100,120,.25)', label:'Sold' },
+                  returned:   { color:'var(--red)', bg:'rgba(220,38,38,.1)',   border:'rgba(220,38,38,.25)',   label:'Returned' },
+                  in_service: { color:'#f0c040',  bg:'rgba(240,192,64,.1)',   border:'rgba(240,192,64,.25)',  label:'In service' },
+                };
+                const normalizedStatus = (v.status||'in_stock').toLowerCase().replace(' ','_');
+                const scfg = STATUS_CFG[normalizedStatus] || STATUS_CFG.in_stock;
 
                 return (
                   <tr key={v.id} style={{ borderBottom: '1px solid var(--border)' }}>
@@ -297,13 +308,35 @@ export default function VehiclesPage() {
                       ₹{v.purchase_price?.toLocaleString('en-IN') || '0'}
                     </td>
                     <td style={{ padding: '10px 16px' }}>
-                      <div style={{ fontSize: 11, color: 'var(--text)' }}>{v.inbound_date || '—'}</div>
-                      <div style={{ fontSize: 10, color: 'var(--dim)', marginTop: 2 }}>{v.location || '—'}</div>
+                      {/* Inbound date + days in stock */}
+                      <div style={{ fontSize: 11, color: overdueStock ? 'var(--red)' : 'var(--text)', fontWeight: overdueStock ? 700 : 400 }}>
+                        {v.inbound_date || '—'}
+                      </div>
+                      {daysInStock !== null && (
+                        <div style={{ fontSize: 10, marginTop: 2, fontWeight: 600,
+                          color: overdueStock ? 'var(--red)' : daysInStock > 60 ? '#fbbf24' : 'var(--dim)' }}>
+                          {daysInStock}d in stock{overdueStock ? ' ⚠' : ''}
+                        </div>
+                      )}
+                      <div style={{ fontSize: 10, color: 'var(--dim)', marginTop: 2 }}>{v.location || v.inbound_location || '—'}</div>
                     </td>
-                    <td style={{ padding: '10px 16px' }}>
-                      <span style={{ fontSize: 9, padding: '3px 8px', borderRadius: 2, fontWeight: 500, color: sColor, background: sBg, border: `1px solid ${sBorder}` }}>
-                        {sLabel}
-                      </span>
+                    {/* Fix 2: inline status dropdown */}
+                    <td style={{ padding: '10px 16px' }} onClick={e => e.stopPropagation()}>
+                      <select
+                        value={normalizedStatus}
+                        onChange={e => updateMut.mutate({ id: v.id, data: { status: e.target.value } })}
+                        style={{
+                          background: scfg.bg, color: scfg.color, border: `1px solid ${scfg.border}`,
+                          borderRadius: 3, padding: '3px 6px', fontSize: 10, fontWeight: 700,
+                          cursor: 'pointer', outline: 'none', fontFamily: 'IBM Plex Sans, sans-serif',
+                          letterSpacing: '.05em', textTransform: 'uppercase',
+                        }}
+                      >
+                        <option value="in_stock"   style={{ background:'#141414', color:'#4ade80'  }}>In stock</option>
+                        <option value="sold"        style={{ background:'#141414', color:'#888'     }}>Sold</option>
+                        <option value="returned"    style={{ background:'#141414', color:'#f87171'  }}>Returned</option>
+                        <option value="in_service"  style={{ background:'#141414', color:'#f0c040'  }}>In service</option>
+                      </select>
                     </td>
                     <td style={{ padding: '10px 16px' }}>
                       <div style={{ display: 'flex', gap: 6 }}>
