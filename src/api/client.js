@@ -103,7 +103,9 @@ export const partsApi = {
   adjustStock: (id, d)  => api.post(`/parts/${id}/adjust-stock`, d),
   stats:       ()       => api.get('/parts/stats/summary'),
   lowStock:    ()       => api.get('/parts/low-stock'),
-  outOfStock:  ()       => api.get('/parts/out-of-stock'),
+  outOfStock:           ()           => api.get('/parts/out-of-stock'),
+  adjustStockByNumber:  (partNum, d) => api.post(`/parts/${partNum}/adjust-stock-by-number`, d),
+  createBill:           (data)       => api.post('/parts-bills', data),
 };
 
 // ── Parts Sales ─────────────────────────────────────────────────────
@@ -112,7 +114,6 @@ export const partsSalesApi = {
   get:    (id)     => api.get(`/parts-sales/${id}`),
   create: (data)   => api.post('/parts-sales', data),
   delete: (id)     => api.delete(`/parts-sales/${id}`),
-  adjustStockByNumber: (partNum, d) => api.post(`/parts/${partNum}/adjust-stock-by-number`, d),
 };
 
 // ── Dashboard & Reports ─────────────────────────────────────────────
