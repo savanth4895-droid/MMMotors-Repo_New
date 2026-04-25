@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { vehiclesApi } from '../api/client';
-import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError } from '../components/ui';
+import { vehiclesApi, errMsg} from '../api/client';
+import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError, useSortable } from '../components/ui';
 import toast from 'react-hot-toast';
 import { useConfirm } from '../components/ConfirmModal';
 
@@ -175,22 +175,23 @@ export default function VehiclesPage() {
   const createMut = useMutation({
     mutationFn: d => vehiclesApi.create(d),
     onSuccess: () => { qc.invalidateQueries(['vehicles']); qc.invalidateQueries(['vehicle-stats']); setShowAdd(false); toast.success('Vehicle added'); },
-    onError:   e => toast.error(e?.response?.data?.detail || 'Failed'),
+    onError:   e => toast.error(errMsg(e, 'Failed')),
   });
   
   const updateMut = useMutation({
     mutationFn: ({ id, d, data }) => vehiclesApi.update(id, d || data),
     onSuccess: () => { qc.invalidateQueries(['vehicles']); qc.invalidateQueries(['vehicle-stats']); setEditVeh(null); toast.success('Updated'); },
-    onError:   e => toast.error(e?.response?.data?.detail || 'Failed'),
+    onError:   e => toast.error(errMsg(e, 'Failed')),
   });
   
   const deleteMut = useMutation({
     mutationFn: id => vehiclesApi.delete(id),
     onSuccess: () => { qc.invalidateQueries(['vehicles']); qc.invalidateQueries(['vehicle-stats']); toast.success('Deleted'); },
-    onError:   e => toast.error(e?.response?.data?.detail || 'Cannot delete'),
+    onError:   e => toast.error(errMsg(e, 'Cannot delete')),
   });
 
   const vehicles = Array.isArray(data) ? data : [];
+  const { sorted: sortedVehicles, Th: VehTh } = useSortable(vehicles, 'brand', 'asc');
   const st = stats || {};
 
   return (
@@ -253,13 +254,13 @@ export default function VehiclesPage() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                {['Brand', 'Model / Type', 'Chassis / Engine', 'Color / Key', 'Purchase (₹)', 'Logistics', 'Status', ''].map(h => (
-                  <th key={h} style={{ padding: '9px 16px', textAlign: 'left', fontSize: 9, letterSpacing: '.07em', color: 'var(--dim)', fontWeight: 500, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
+                {[['Brand','brand'],['Model / Type','model'],['Chassis / Engine','chassis_number'],['Color / Key','color'],['Purchase (₹)','purchase_price'],['Logistics','inbound_date'],['Status','status'],['','']].map(([h,f]) => (
+                  <VehTh key={h} field={f||null} style={{ padding: '9px 16px', textAlign: 'left', fontSize: 9, letterSpacing: '.07em', color: 'var(--dim)', fontWeight: 500, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</VehTh>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {vehicles.map(v => {
+              {sortedVehicles.map(v => {
                 // Fix 1: compute days in stock from inbound_date
                 let daysInStock = null;
                 if (v.inbound_date) {
@@ -308,11 +309,11 @@ export default function VehiclesPage() {
                       ₹{v.purchase_price?.toLocaleString('en-IN') || '0'}
                     </td>
                     <td style={{ padding: '10px 16px' }}>
-                      {/* Inbound date + days in stock */}
+                      {/* Inbound date + days in stock — only for in_stock vehicles */}
                       <div style={{ fontSize: 11, color: overdueStock ? 'var(--red)' : 'var(--text)', fontWeight: overdueStock ? 700 : 400 }}>
                         {v.inbound_date || '—'}
                       </div>
-                      {daysInStock !== null && (
+                      {daysInStock !== null && normalizedStatus === 'in_stock' && (
                         <div style={{ fontSize: 10, marginTop: 2, fontWeight: 600,
                           color: overdueStock ? 'var(--red)' : daysInStock > 60 ? '#fbbf24' : 'var(--dim)' }}>
                           {daysInStock}d in stock{overdueStock ? ' ⚠' : ''}
