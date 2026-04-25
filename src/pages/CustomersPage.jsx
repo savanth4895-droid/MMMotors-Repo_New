@@ -474,7 +474,7 @@ function EditSaleForm({ sale, inp, lb, onSave, onCancel, saving }) {
       <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop:8 }}>
         <button onClick={onCancel} style={{ padding:'8px 16px', background:'transparent', border:'1px solid var(--border)', borderRadius:4, color:'var(--muted)', cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif', fontSize:12 }}>Cancel</button>
         <button onClick={() => onSave(f)} disabled={saving}
-          style={{ padding:'8px 16px', background:'var(--accent)', border:'none', borderRadius:4, color:'#000', cursor:'pointer', fontWeight:700, fontFamily:'IBM Plex Sans,sans-serif', fontSize:12, opacity:saving?.5:1 }}>
+          style={{ padding:'8px 16px', background:'var(--accent)', border:'none', borderRadius:4, color:'#000', cursor:'pointer', fontWeight:700, fontFamily:'IBM Plex Sans,sans-serif', fontSize:12, opacity:saving ? .5 : 1 }}>
           {saving ? 'Saving…' : 'Save Changes'}
         </button>
       </div>
@@ -515,7 +515,7 @@ function EditJobForm({ job, inp, lb, onSave, onCancel, saving }) {
       <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop:8 }}>
         <button onClick={onCancel} style={{ padding:'8px 16px', background:'transparent', border:'1px solid var(--border)', borderRadius:4, color:'var(--muted)', cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif', fontSize:12 }}>Cancel</button>
         <button onClick={() => onSave(f)} disabled={saving}
-          style={{ padding:'8px 16px', background:'var(--accent)', border:'none', borderRadius:4, color:'#000', cursor:'pointer', fontWeight:700, fontFamily:'IBM Plex Sans,sans-serif', fontSize:12, opacity:saving?.5:1 }}>
+          style={{ padding:'8px 16px', background:'var(--accent)', border:'none', borderRadius:4, color:'#000', cursor:'pointer', fontWeight:700, fontFamily:'IBM Plex Sans,sans-serif', fontSize:12, opacity:saving ? .5 : 1 }}>
           {saving ? 'Saving…' : 'Save Changes'}
         </button>
       </div>
