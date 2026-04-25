@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { customersApi } from '../api/client';
+import { customersApi, salesApi, serviceApi } from '../api/client';
 import { Btn, GhostBtn, Field, Avatar, Skeleton, Empty, ApiError } from '../components/ui';
 import toast from 'react-hot-toast';
 import { useConfirm } from '../components/ConfirmModal';
@@ -47,16 +47,63 @@ function CustomerForm({ initial = {}, onSave, onCancel, saving }) {
   );
 }
 
+// ── Inline action buttons ────────────────────────────────────────────
+const actBtn = (label, color, onClick) => (
+  <button onClick={e => { e.stopPropagation(); onClick(); }} style={{
+    padding:'4px 10px', background:'transparent', borderRadius:3, cursor:'pointer',
+    fontSize:10, fontFamily:'IBM Plex Sans,sans-serif', fontWeight:600,
+    border: color === 'red'
+      ? '1px solid rgba(220,38,38,.35)'
+      : color === 'blue'
+      ? '1px solid rgba(59,130,246,.35)'
+      : '1px solid var(--border)',
+    color: color === 'red' ? 'var(--red)'
+      : color === 'blue' ? 'var(--blue)'
+      : 'var(--muted)',
+  }}>{label}</button>
+);
+
 // ── Customer detail ──────────────────────────────────────────────────
 function CustomerDetail({ cust, onBack }) {
   const [tab, setTab] = useState('overview');
+  const qc = useQueryClient();
 
   const { data: tl, isLoading } = useQuery({
     queryKey: ['customer-timeline', cust.id],
     queryFn: () => customersApi.timeline(cust.id).then(r => r.data),
   });
 
+  // ── Edit modals state ──
+  const [editSale, setEditSale]       = useState(null);
+  const [editJob,  setEditJob]        = useState(null);
+
+  // ── Delete mutations ──
+  const delSale = useMutation({
+    mutationFn: id => salesApi.delete(id),
+    onSuccess: () => { qc.invalidateQueries(['customer-timeline', cust.id]); toast.success('Sale deleted'); },
+    onError: () => toast.error('Delete failed'),
+  });
+  const delJob = useMutation({
+    mutationFn: id => serviceApi.delete(id),
+    onSuccess: () => { qc.invalidateQueries(['customer-timeline', cust.id]); toast.success('Job deleted'); },
+    onError: () => toast.error('Delete failed'),
+  });
+
+  // ── Edit mutations ──
+  const updSale = useMutation({
+    mutationFn: ({ id, data }) => salesApi.update(id, data),
+    onSuccess: () => { qc.invalidateQueries(['customer-timeline', cust.id]); setEditSale(null); toast.success('Sale updated'); },
+    onError: e => toast.error(e?.response?.data?.detail || 'Update failed'),
+  });
+  const updJob = useMutation({
+    mutationFn: ({ id, data }) => serviceApi.update(id, data),
+    onSuccess: () => { qc.invalidateQueries(['customer-timeline', cust.id]); setEditJob(null); toast.success('Job updated'); },
+    onError: e => toast.error(e?.response?.data?.detail || 'Update failed'),
+  });
+
   const TABS = ['overview','vehicles','service','sales'];
+  const inp  = { padding:'8px 10px', border:'1px solid var(--border)', borderRadius:4, background:'var(--surface2)', color:'var(--text)', fontSize:12, width:'100%', fontFamily:'IBM Plex Sans,sans-serif', boxSizing:'border-box' };
+  const lb   = { fontSize:10, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--muted)', fontWeight:600, marginBottom:4, display:'block' };
 
   return (
     <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
@@ -129,41 +176,182 @@ function CustomerDetail({ cust, onBack }) {
                 </div>
               </div>
             )}
+
+            {/* ── VEHICLES TAB ── */}
             {tab === 'vehicles' && (
               tl?.sales?.length ? tl.sales.map((s,i) => (
-                <div key={i} style={{ padding:'12px 0', borderBottom:'1px solid var(--border)' }}>
-                  <div style={{ fontWeight:600, fontSize:13 }}>{s.vehicle_brand} {s.vehicle_model}</div>
-                  <div className="mono" style={{ fontSize:10, color:'var(--dim)', marginTop:3 }}>{s.invoice_number} · {s.sale_date}</div>
-                  <div className="display" style={{ fontSize:16, color:'var(--accent)', marginTop:4 }}>₹{s.total_amount?.toLocaleString('en-IN')}</div>
+                <div key={i} style={{ display:'flex', alignItems:'center', gap:12, padding:'14px 0', borderBottom:'1px solid var(--border)' }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontWeight:600, fontSize:13 }}>{s.vehicle_brand} {s.vehicle_model}</div>
+                    <div style={{ fontSize:11, color:'var(--muted)', marginTop:2 }}>{s.vehicle_number || '—'}</div>
+                    <div className="mono" style={{ fontSize:10, color:'var(--dim)', marginTop:3 }}>{s.invoice_number} · {s.sale_date}</div>
+                    <div className="display" style={{ fontSize:16, color:'var(--accent)', marginTop:4 }}>₹{s.total_amount?.toLocaleString('en-IN')}</div>
+                  </div>
+                  <div style={{ display:'flex', gap:6, flexShrink:0 }}>
+                    {actBtn('View →', 'muted', () => window.open(`/sales?invoice=${s.invoice_number}`, '_blank'))}
+                    {actBtn('Edit', 'blue', () => setEditSale(s))}
+                    {actBtn('✕ Delete', 'red', () => window.confirm(`Delete ${s.invoice_number}?`) && delSale.mutate(s.id||s._id))}
+                  </div>
                 </div>
               )) : <Empty message="No vehicles purchased" />
             )}
+
+            {/* ── SERVICE TAB ── */}
             {tab === 'service' && (
               tl?.service?.length ? tl.service.map((j,i) => (
-                <div key={i} style={{ display:'flex', gap:12, padding:'12px 0', borderBottom:'1px solid var(--border)', alignItems:'center' }}>
+                <div key={i} style={{ display:'flex', gap:12, padding:'14px 0', borderBottom:'1px solid var(--border)', alignItems:'center' }}>
                   <div style={{ flex:1 }}>
                     <div className="mono" style={{ fontSize:10, color:'var(--blue)' }}>{j.job_number}</div>
-                    <div style={{ fontSize:12, marginTop:2 }}>{j.complaint}</div>
-                    <div style={{ fontSize:11, color:'var(--muted)', marginTop:1 }}>{j.check_in_date} · {j.technician||'—'}</div>
+                    <div style={{ fontSize:12, marginTop:2, fontWeight:500 }}>{j.complaint}</div>
+                    <div style={{ fontSize:11, color:'var(--muted)', marginTop:1 }}>
+                      {j.vehicle_number} · {j.check_in_date} · {j.technician||'—'}
+                    </div>
+                    {j.grand_total > 0 && (
+                      <div className="display" style={{ fontSize:14, color:'var(--accent)', marginTop:3 }}>
+                        ₹{j.grand_total?.toLocaleString('en-IN')}
+                      </div>
+                    )}
                   </div>
-                  <span className="pill pill-dim">{j.status}</span>
+                  <span className="pill pill-dim" style={{ flexShrink:0 }}>{j.status}</span>
+                  <div style={{ display:'flex', gap:6, flexShrink:0 }}>
+                    {actBtn('View →', 'muted', () => window.open(`/service?job=${j.job_number}`, '_blank'))}
+                    {actBtn('Edit', 'blue', () => setEditJob(j))}
+                    {actBtn('✕ Delete', 'red', () => window.confirm(`Delete job ${j.job_number}?`) && delJob.mutate(j.id||j._id))}
+                  </div>
                 </div>
               )) : <Empty message="No service records" />
             )}
+
+            {/* ── SALES TAB ── */}
             {tab === 'sales' && (
               tl?.sales?.length ? tl.sales.map((s,i) => (
-                <div key={i} style={{ display:'flex', gap:12, padding:'12px 0', borderBottom:'1px solid var(--border)', alignItems:'center' }}>
+                <div key={i} style={{ display:'flex', gap:12, padding:'14px 0', borderBottom:'1px solid var(--border)', alignItems:'center' }}>
                   <div className="mono" style={{ fontSize:10, color:'var(--blue)', marginTop:2 }}>{s.invoice_number}</div>
                   <div style={{ flex:1 }}>
                     <div style={{ fontSize:12, fontWeight:500 }}>{s.vehicle_brand} {s.vehicle_model}</div>
                     <div style={{ fontSize:11, color:'var(--muted)' }}>{s.sale_date} · {s.payment_mode}</div>
                   </div>
-                  <div className="display" style={{ fontSize:14, color:'var(--accent)' }}>₹{s.total_amount?.toLocaleString('en-IN')}</div>
+                  <div className="display" style={{ fontSize:14, color:'var(--accent)', flexShrink:0 }}>₹{s.total_amount?.toLocaleString('en-IN')}</div>
+                  <div style={{ display:'flex', gap:6, flexShrink:0 }}>
+                    {actBtn('View →', 'muted', () => window.open(`/sales?invoice=${s.invoice_number}`, '_blank'))}
+                    {actBtn('Edit', 'blue', () => setEditSale(s))}
+                    {actBtn('✕ Delete', 'red', () => window.confirm(`Delete ${s.invoice_number}?`) && delSale.mutate(s.id||s._id))}
+                  </div>
                 </div>
               )) : <Empty message="No purchases" />
             )}
           </>
         )}
+      </div>
+
+      {/* ── EDIT SALE MODAL ── */}
+      {editSale && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.6)', zIndex:200, display:'flex', alignItems:'center', justifyContent:'center' }}
+          onClick={() => setEditSale(null)}>
+          <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:8, padding:28, width:440, maxWidth:'94vw' }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ fontWeight:700, fontSize:15, marginBottom:4 }}>Edit Sale</div>
+            <div style={{ fontSize:11, color:'var(--muted)', marginBottom:20 }}>{editSale.invoice_number}</div>
+            <EditSaleForm sale={editSale} inp={inp} lb={lb}
+              onSave={data => updSale.mutate({ id: editSale.id||editSale._id, data })}
+              onCancel={() => setEditSale(null)}
+              saving={updSale.isPending} />
+          </div>
+        </div>
+      )}
+
+      {/* ── EDIT JOB MODAL ── */}
+      {editJob && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.6)', zIndex:200, display:'flex', alignItems:'center', justifyContent:'center' }}
+          onClick={() => setEditJob(null)}>
+          <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:8, padding:28, width:480, maxWidth:'94vw' }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ fontWeight:700, fontSize:15, marginBottom:4 }}>Edit Service Job</div>
+            <div style={{ fontSize:11, color:'var(--muted)', marginBottom:20 }}>{editJob.job_number}</div>
+            <EditJobForm job={editJob} inp={inp} lb={lb}
+              onSave={data => updJob.mutate({ id: editJob.id||editJob._id, data })}
+              onCancel={() => setEditJob(null)}
+              saving={updJob.isPending} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Edit Sale Form ───────────────────────────────────────────────────
+function EditSaleForm({ sale, inp, lb, onSave, onCancel, saving }) {
+  const [f, setF] = useState({
+    vehicle_brand:  sale.vehicle_brand  || '',
+    vehicle_model:  sale.vehicle_model  || '',
+    vehicle_number: sale.vehicle_number || '',
+    sale_date:      sale.sale_date      || '',
+    payment_mode:   sale.payment_mode   || 'Cash',
+    total_amount:   sale.total_amount   || 0,
+  });
+  const s = k => e => setF(p => ({ ...p, [k]: e.target.value }));
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+        <div><label style={lb}>Brand</label><input value={f.vehicle_brand} onChange={s('vehicle_brand')} style={inp} /></div>
+        <div><label style={lb}>Model</label><input value={f.vehicle_model} onChange={s('vehicle_model')} style={inp} /></div>
+        <div><label style={lb}>Vehicle Number</label><input value={f.vehicle_number} onChange={s('vehicle_number')} style={inp} /></div>
+        <div><label style={lb}>Sale Date</label><input type="date" value={f.sale_date} onChange={s('sale_date')} style={inp} /></div>
+        <div>
+          <label style={lb}>Payment Mode</label>
+          <select value={f.payment_mode} onChange={s('payment_mode')} style={inp}>
+            {['Cash','UPI','Card','Bank Transfer','Finance'].map(m=><option key={m}>{m}</option>)}
+          </select>
+        </div>
+        <div><label style={lb}>Total Amount</label><input type="number" value={f.total_amount} onChange={s('total_amount')} style={inp} /></div>
+      </div>
+      <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop:8 }}>
+        <button onClick={onCancel} style={{ padding:'8px 16px', background:'transparent', border:'1px solid var(--border)', borderRadius:4, color:'var(--muted)', cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif', fontSize:12 }}>Cancel</button>
+        <button onClick={() => onSave(f)} disabled={saving}
+          style={{ padding:'8px 16px', background:'var(--accent)', border:'none', borderRadius:4, color:'#000', cursor:'pointer', fontWeight:700, fontFamily:'IBM Plex Sans,sans-serif', fontSize:12, opacity:saving?.5:1 }}>
+          {saving ? 'Saving…' : 'Save Changes'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Edit Job Form ────────────────────────────────────────────────────
+function EditJobForm({ job, inp, lb, onSave, onCancel, saving }) {
+  const [f, setF] = useState({
+    vehicle_number:     job.vehicle_number     || '',
+    technician:         job.technician         || '',
+    complaint:          job.complaint          || '',
+    status:             job.status             || 'pending',
+    estimated_delivery: job.estimated_delivery || '',
+    notes:              job.notes              || '',
+  });
+  const s = k => e => setF(p => ({ ...p, [k]: e.target.value }));
+  const STATUSES = ['pending','in_progress','ready','delivered'];
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+        <div><label style={lb}>Vehicle Number</label><input value={f.vehicle_number} onChange={s('vehicle_number')} style={inp} /></div>
+        <div><label style={lb}>Technician</label><input value={f.technician} onChange={s('technician')} style={inp} /></div>
+        <div>
+          <label style={lb}>Status</label>
+          <select value={f.status} onChange={s('status')} style={inp}>
+            {STATUSES.map(st => <option key={st} value={st}>{st.replace('_',' ').replace(/\b\w/g,c=>c.toUpperCase())}</option>)}
+          </select>
+        </div>
+        <div><label style={lb}>Est. Delivery</label><input type="date" value={f.estimated_delivery} onChange={s('estimated_delivery')} style={inp} /></div>
+      </div>
+      <div>
+        <label style={lb}>Complaint / Work Required</label>
+        <textarea value={f.complaint} onChange={s('complaint')} rows={3} style={{ ...inp, resize:'vertical' }} />
+      </div>
+      <div><label style={lb}>Notes</label><input value={f.notes} onChange={s('notes')} placeholder="Additional notes" style={inp} /></div>
+      <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop:8 }}>
+        <button onClick={onCancel} style={{ padding:'8px 16px', background:'transparent', border:'1px solid var(--border)', borderRadius:4, color:'var(--muted)', cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif', fontSize:12 }}>Cancel</button>
+        <button onClick={() => onSave(f)} disabled={saving}
+          style={{ padding:'8px 16px', background:'var(--accent)', border:'none', borderRadius:4, color:'#000', cursor:'pointer', fontWeight:700, fontFamily:'IBM Plex Sans,sans-serif', fontSize:12, opacity:saving?.5:1 }}>
+          {saving ? 'Saving…' : 'Save Changes'}
+        </button>
       </div>
     </div>
   );
