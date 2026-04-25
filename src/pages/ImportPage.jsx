@@ -14,20 +14,20 @@ const ENTITIES = [
   {
     id:'vehicles', label:'Vehicles / Stock', icon:'⬡', color:'#16a34a',
     required:['brand','model','chassis_number'],
-    optional:['variant','color','engine_number','vehicle_number','key_number','type'],
-    note:'Deduplicated by chassis_number. Brand auto-uppercased. type: new or used.',
+    optional:['variant','color','engine_number','vehicle_number','key_number','type','status','return_date','returned_location'],
+    note:'Deduplicated by chassis_number. type: new/used. status: in_stock/sold/returned.',
   },
   {
     id:'sales', label:'Sales Records', icon:'◈', color:'#b8860b',
     required:['customer_name','customer_mobile','vehicle_brand','vehicle_model','sale_price'],
-    optional:['chassis_number','engine_number','vehicle_number','vehicle_color','vehicle_variant','discount','insurance','rto','payment_mode','nominee_name','nominee_relation','nominee_age','sale_date','customer_address'],
-    note:'Customer auto-created if mobile not found. Dedup by chassis_number. Amounts: numbers only, no ₹.',
+    optional:['chassis_number','engine_number','vehicle_number','vehicle_color','vehicle_variant','payment_mode','nominee_name','nominee_relation','nominee_age','sale_date','customer_address'],
+    note:'Customer auto-created if mobile not found. Dedup by chassis_number.',
   },
   {
     id:'service', label:'Service History', icon:'◎', color:'#7c3aed',
-    required:['vehicle_number','complaint'],
-    optional:['customer_name','customer_mobile','brand','model','odometer_km','technician','check_in_date','status','notes'],
-    note:'Dedup by vehicle_number + check_in_date. status: pending/in_progress/ready/delivered.',
+    required:[],
+    optional:['customer_name','customer_mobile','vehicle_number','brand','model','odometer_km','complaint','technician','check_in_date','status','amount','notes'],
+    note:'All fields optional. Dedup by vehicle_number + check_in_date. status: pending/in_progress/ready/delivered.',
   },
   {
     id:'parts', label:'Spare Parts', icon:'◆', color:'#ea580c',
