@@ -242,9 +242,10 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
   const dropItemStyle = (hover) => ({ padding:'8px 12px', fontSize:12, cursor:'pointer', background: hover ? 'var(--surface2)' : 'transparent', borderBottom:'1px solid var(--border)' });
 
   const handleSave = () => {
-    // Check for name/mobile instead of strictly requiring a customer_id
     if (!f.customer_name || !f.customer_mobile) return toast.error('Please provide Customer Name and Mobile in Step 1');
-    if (!f.vehicle_id) return toast.error('Please select a vehicle in Step 2');
+    // In edit mode, vehicle details (brand/model/chassis) are already on the record — no need to re-select
+    const hasVehicleDetails = f.vehicle_brand && f.vehicle_model;
+    if (!f.vehicle_id && !hasVehicleDetails) return toast.error('Please select a vehicle in Step 2');
 
     const payload = {
       ...f,
@@ -491,7 +492,7 @@ export default function SalesPage() {
 
   const { data, isLoading, error } = useQuery({
     queryKey:['sales', search],
-    queryFn: () => salesApi.list({ search: search||undefined, limit:200 }).then(r=>r.data),
+    queryFn: () => salesApi.list({ search: search||undefined, limit:1000 }).then(r=>r.data),
   });
 
 const createMut = useMutation({
