@@ -12,7 +12,7 @@ from typing import Optional
 
 from bson import ObjectId
 from bson.errors import InvalidId
-from fastapi import Depends, HTTPException, Query, Cookie
+from fastapi import Depends, HTTPException, Query, Cookie, Request
 from jose import JWTError, jwt
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 from passlib.context import CryptContext
@@ -53,11 +53,19 @@ def create_token(data: dict, expires_delta: timedelta = None) -> str:
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
-async def verify_token(mm_token: Optional[str] = Cookie(default=None)) -> dict:
-    if not mm_token:
+async def verify_token(
+    request: Request,
+    mm_token: Optional[str] = Cookie(default=None),
+) -> dict:
+    # Accept Bearer token from Authorization header (localStorage) or httpOnly cookie
+    token = mm_token
+    auth_header = request.headers.get("Authorization", "")
+    if not token and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+    if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
-        payload = jwt.decode(mm_token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
         uid = payload.get("sub")
         if uid is None:
             raise HTTPException(status_code=401, detail="Invalid token")
