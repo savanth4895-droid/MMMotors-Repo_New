@@ -449,10 +449,12 @@ function NewJobModal({ onClose }) {
   // Auto-fetch this customer's vehicles from sales when customer selected
   const { data:custSalesData } = useQuery({
     queryKey: ['cust-sales-vehicles', selCust?._id || selCust?.id],
-    queryFn: () => salesApi.list({ search: selCust?.mobile || selCust?.name, limit:10 }),
+    queryFn: () => salesApi.list({ search: selCust?.mobile || selCust?.name, limit:20 }),
     enabled: !!selCust,
   });
-  const custVehicles = custSalesData?.data?.items || custSalesData?.data || [];
+  const custVehicles = (custSalesData?.data?.items || custSalesData?.data || []).filter(
+    s => s.customer_mobile === selCust?.mobile || s.customer_name === selCust?.name
+  );
 
   // Also search by vehicle_number while typing
   const { data:salesData } = useQuery({
@@ -460,9 +462,9 @@ function NewJobModal({ onClose }) {
     queryFn: () => salesApi.list({ search: vehicleSearch, limit:5 }),
     enabled: vehicleSearch.length > 3,
   });
-  const salesVehicles = vehicleSearch.length > 3
+  const searchVehicles = vehicleSearch.length > 3
     ? (salesData?.data?.items || salesData?.data || [])
-    : custVehicles;
+    : [];
 
   // FIX #5: createJob → create
   const createMut = useMutation({
@@ -521,49 +523,106 @@ function NewJobModal({ onClose }) {
               style={{ background:'transparent', border:'none', color:C.muted, cursor:'pointer', fontSize:14 }}>×</button>
           </div>
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }}>
-            {/* FIX #4: vehicle_number has its own block with sales lookup dropdown */}
-            <div style={{ position:'relative' }}>
-              <label style={labelSt}>Vehicle Number *</label>
-              <input
-                value={form.vehicle_number}
-                onChange={e => {
-                  upd('vehicle_number')(e);
-                  setVehicleSearch(e.target.value);
-                }}
-                placeholder="KA 07 U 3915"
-                style={inp}
-              />
-              {salesVehicles.length > 0 && !form.model && (
-                <div style={{ position:'absolute', top:'100%', left:0, right:0, zIndex:300,
-                  background:C.surface, border:'1px solid var(--border2,#2a2a2a)',
-                  borderRadius:4, boxShadow:'0 8px 24px rgba(0,0,0,.5)', overflow:'hidden' }}>
-                  {salesVehicles.map(s => (
-                    <div key={s._id}
-                      onClick={() => {
-                        setForm(p => ({
+            {/* Vehicle picker — shows customer's bikes from sales, or manual entry */}
+            <div style={{ gridColumn:'1 / -1' }}>
+              <label style={labelSt}>Select Vehicle *</label>
+
+              {/* Customer bikes from sales */}
+              {custVehicles.length > 0 && (
+                <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:10 }}>
+                  {custVehicles.map((s, i) => {
+                    const isSelected = form.chassis_number && form.chassis_number === s.chassis_number;
+                    return (
+                      <div key={i}
+                        onClick={() => setForm(p => ({
                           ...p,
-                          vehicle_number: s.vehicle_number || p.vehicle_number,
-                          chassis_number: s.chassis_number || p.chassis_number,
+                          vehicle_number: s.vehicle_number || '',
+                          chassis_number: s.chassis_number || '',
                           brand:          s.vehicle_brand  || p.brand,
-                          model:          s.vehicle_model  || p.model,
-                        }));
-                        setVehicleSearch('');
-                      }}
-                      style={{ padding:'8px 12px', cursor:'pointer',
-                        borderBottom:'1px solid var(--border,#222)', fontSize:12 }}
-                      onMouseEnter={e => e.currentTarget.style.background=C.s2}
-                      onMouseLeave={e => e.currentTarget.style.background='transparent'}
-                    >
-                      <strong>{s.vehicle_number}</strong>
-                      {' — '}{s.vehicle_brand} {s.vehicle_model}
-                      <span style={{ fontSize:10, color:C.muted, marginLeft:8 }}>{s.customer_name}</span>
-                    </div>
-                  ))}
+                          model:          s.vehicle_model  || '',
+                        }))}
+                        style={{
+                          display:'flex', alignItems:'center', gap:12, padding:'10px 14px',
+                          border:`1.5px solid ${isSelected ? C.gold : 'var(--border,#222)'}`,
+                          borderRadius:6, cursor:'pointer', background: isSelected ? 'rgba(184,134,11,.08)' : C.surface,
+                          transition:'all .15s',
+                        }}
+                        onMouseEnter={e => { if(!isSelected) e.currentTarget.style.background=C.s2; }}
+                        onMouseLeave={e => { if(!isSelected) e.currentTarget.style.background=C.surface; }}
+                      >
+                        <div style={{ width:36, height:36, borderRadius:'50%', background:'rgba(184,134,11,.12)',
+                          display:'flex', alignItems:'center', justifyContent:'center', fontSize:16, flexShrink:0 }}>🏍</div>
+                        <div style={{ flex:1 }}>
+                          <div style={{ fontWeight:700, fontSize:13 }}>
+                            {s.vehicle_brand} {s.vehicle_model}
+                            {s.vehicle_variant ? <span style={{ fontSize:10, color:C.muted, marginLeft:6 }}>{s.vehicle_variant}</span> : null}
+                          </div>
+                          <div style={{ fontSize:11, color:C.muted, marginTop:2, display:'flex', gap:10 }}>
+                            {s.vehicle_number && <span className="mono">{s.vehicle_number}</span>}
+                            {s.chassis_number && <span>Chassis: <span className="mono">{s.chassis_number}</span></span>}
+                          </div>
+                          <div style={{ fontSize:10, color:C.dim, marginTop:1 }}>{s.sale_date}</div>
+                        </div>
+                        {isSelected && (
+                          <div style={{ width:22, height:22, borderRadius:'50%', background:C.gold,
+                            display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                            <span style={{ color:'#000', fontSize:12, fontWeight:900 }}>✓</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
+
+              {custVehicles.length === 0 && selCust && (
+                <div style={{ fontSize:11, color:C.muted, marginBottom:8, fontStyle:'italic' }}>
+                  No sales records found for this customer — enter vehicle details below.
+                </div>
+              )}
+
+              {/* Manual vehicle search */}
+              <div style={{ position:'relative' }}>
+                <input
+                  value={vehicleSearch}
+                  onChange={e => { setVehicleSearch(e.target.value); }}
+                  placeholder="Or search by vehicle number / chassis…"
+                  style={{ ...inp, fontSize:11 }}
+                />
+                {searchVehicles.length > 0 && (
+                  <div style={{ position:'absolute', top:'100%', left:0, right:0, zIndex:300,
+                    background:C.surface, border:'1px solid var(--border2,#2a2a2a)',
+                    borderRadius:4, boxShadow:'0 8px 24px rgba(0,0,0,.5)', overflow:'hidden' }}>
+                    {searchVehicles.map(s => (
+                      <div key={s._id || s.id}
+                        onClick={() => {
+                          setForm(p => ({
+                            ...p,
+                            vehicle_number: s.vehicle_number || p.vehicle_number,
+                            chassis_number: s.chassis_number || p.chassis_number,
+                            brand:          s.vehicle_brand  || p.brand,
+                            model:          s.vehicle_model  || p.model,
+                          }));
+                          setVehicleSearch('');
+                        }}
+                        style={{ padding:'8px 12px', cursor:'pointer',
+                          borderBottom:'1px solid var(--border,#222)', fontSize:12 }}
+                        onMouseEnter={e => e.currentTarget.style.background=C.s2}
+                        onMouseLeave={e => e.currentTarget.style.background='transparent'}
+                      >
+                        <strong>{s.vehicle_number}</strong>
+                        {' — '}{s.vehicle_brand} {s.vehicle_model}
+                        <span style={{ fontSize:10, color:C.muted, marginLeft:8 }}>{s.customer_name}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
+            {/* Manual override fields */}
             {[
+              ['vehicle_number','Vehicle Number *','KA 07 U 3915'],
               ['model','Model *','Splendor Plus'],
               ['chassis_number','Chassis Number','MBLHA10AT8HF12345'],
               ['odometer_km','Odometer (km)','12500'],
