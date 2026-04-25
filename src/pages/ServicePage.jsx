@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { serviceApi, partsApi, customersApi, billsApi, salesApi } from '../api/client';
+import { serviceApi, partsApi, customersApi, billsApi, salesApi, errMsg} from '../api/client';
 import toast from 'react-hot-toast';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -343,7 +343,7 @@ function EditJobModal({ job, onClose }) {
       qc.invalidateQueries(['service-stats']);
       onClose();
     },
-    onError: e => toast.error(e?.response?.data?.detail || 'Failed to update job'),
+    onError: e => toast.error(errMsg(e, 'Failed to update job')),
   });
 
   const STATUSES = ['pending','in_progress','ready','delivered'];
@@ -475,7 +475,7 @@ function NewJobModal({ onClose }) {
       qc.invalidateQueries(['service-stats']);
       onClose();
     },
-    onError: e => toast.error(e?.response?.data?.detail || 'Failed to create job'),
+    onError: e => toast.error(errMsg(e, 'Failed to create job')),
   });
 
   const BRANDS = ['HERO','HONDA','BAJAJ','TVS','YAMAHA','SUZUKI','ROYAL ENFIELD','KTM'];
@@ -828,7 +828,7 @@ export function ServiceBillModal({ job, onClose }) {
       qc.invalidateQueries(['parts-list']);
       onClose();
     },
-    onError: e => toast.error(e?.response?.data?.detail || 'Failed to save bill'),
+    onError: e => toast.error(errMsg(e, 'Failed to save bill')),
   });
 
   return (
@@ -1033,7 +1033,7 @@ export function PartsBillModal({ onClose }) {
       qc.invalidateQueries(['parts-list']);
       toast.success('Parts bill generated!');
     },
-    onError: e => toast.error(e?.message||e?.response?.data?.detail||'Failed'),
+    onError: e => toast.error(errMsg(e, 'Failed')),
   });
 
   return (
