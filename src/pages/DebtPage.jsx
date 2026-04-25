@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { debtApi, customersApi } from '../api/client';
+import { debtApi, customersApi, errMsg} from '../api/client';
 import toast from 'react-hot-toast';
 
 // ── Style tokens ──────────────────────────────────────────────────────────────
@@ -83,7 +83,7 @@ function AddDebtModal({ onClose }) {
       qc.invalidateQueries(['debt-summary']);
       onClose();
     },
-    onError: e => toast.error(e?.response?.data?.detail || 'Failed'),
+    onError: e => toast.error(errMsg(e, 'Failed')),
   });
 
   return (
@@ -178,7 +178,7 @@ function PaymentModal({ debt, onClose }) {
       qc.invalidateQueries(['debt-summary']);
       onClose();
     },
-    onError: e => toast.error(e?.response?.data?.detail || 'Failed'),
+    onError: e => toast.error(errMsg(e, 'Failed')),
   });
 
   return (
