@@ -1904,32 +1904,74 @@ async def import_customers(request: Request, file: UploadFile = File(...), mode:
     content = await file.read(); rows = read_file(content, file.filename or "")
     if not rows: raise HTTPException(status_code=400, detail="File is empty or could not be parsed")
     inserted, skipped, errors = 0, [], []
+
+    # Fetch all existing mobiles in one query for fast dedup
+    existing_mobiles = set()
+    async for doc in db.customers.find({}, {"mobile": 1}):
+        if doc.get("mobile"): existing_mobiles.add(str(doc["mobile"]))
+
+    to_insert = []
+    to_update = []
     for i, row in enumerate(rows):
-        rn = i+2
-        if i % 50 == 0: await asyncio.sleep(0)  # yield to event loop every 50 rows
+        if i % 200 == 0: await asyncio.sleep(0)
+        rn = i + 2
         try:
-            name, mobile = safe(row.get("name")), safe(row.get("mobile"))
-            if not name:   skipped.append({"row":rn,"reason":"Missing name"});   continue
-            if not mobile: skipped.append({"row":rn,"reason":"Missing mobile"}); continue
-            existing = await db.customers.find_one({"mobile":mobile})
-            if existing:
-                if mode=="overwrite":
-                    await db.customers.update_one({"mobile":mobile},{"$set":{"name":name,"care_of":safe(row.get("care_of","")),"email":safe(row.get("email")),"address":safe(row.get("address")),"tags":[t.strip() for t in safe(row.get("tags","")).split(",") if t.strip()]}})
-                    inserted += 1
-                else: skipped.append({"row":rn,"reason":f"Mobile {mobile} already exists"})
-                continue
-            await db.customers.insert_one({"name":name,"mobile":mobile,"care_of":safe(row.get("care_of","")),"email":safe(row.get("email")),"address":safe(row.get("address")),"tags":[t.strip() for t in safe(row.get("tags","")).split(",") if t.strip()],"created_at":datetime.utcnow().isoformat()})
+            name   = safe(row.get("name"))
+            mobile = safe(row.get("mobile"))
+            if not name:   skipped.append({"row": rn, "reason": "Missing name"});   continue
+            if not mobile: skipped.append({"row": rn, "reason": "Missing mobile"}); continue
+            doc = {
+                "name":       name,
+                "mobile":     mobile,
+                "care_of":    safe(row.get("care_of", "")),
+                "email":      safe(row.get("email")),
+                "address":    safe(row.get("address")),
+                "tags":       [t.strip() for t in safe(row.get("tags","")).split(",") if t.strip()],
+                "created_at": datetime.utcnow().isoformat(),
+            }
+            if mobile in existing_mobiles:
+                if mode == "overwrite":
+                    to_update.append(doc)
+                else:
+                    skipped.append({"row": rn, "reason": f"Mobile {mobile} already exists"})
+            else:
+                to_insert.append(doc)
+                existing_mobiles.add(mobile)  # prevent intra-file dupes
+        except Exception as e:
+            errors.append({"row": rn, "error": str(e)})
+
+    # Bulk insert
+    if to_insert:
+        try:
+            result = await db.customers.insert_many(to_insert, ordered=False)
+            inserted += len(result.inserted_ids)
+        except Exception as e:
+            errors.append({"row": "bulk", "error": str(e)})
+
+    # Updates (sequential — need to match by mobile)
+    for doc in to_update:
+        try:
+            await db.customers.update_one(
+                {"mobile": doc["mobile"]},
+                {"$set": {k: v for k, v in doc.items() if k != "created_at"}}
+            )
             inserted += 1
         except Exception as e:
-            traceback.print_exc(); errors.append({"row":rn,"error":str(e)})
+            errors.append({"row": "update", "error": str(e)})
+
     return result_summary(inserted, skipped, errors)
 
 @import_router.post("/vehicles")
 async def import_vehicles(request: Request, file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
     content = await file.read(); rows = read_file(content, file.filename or "")
     inserted, skipped, errors = 0, [], []
+    existing_chassis = set()
+    async for doc in db.vehicles.find({}, {"chassis_number": 1}):
+        if doc.get("chassis_number"): existing_chassis.add(str(doc["chassis_number"]))
+    to_insert, to_update = [], []
     for i, row in enumerate(rows):
-        rn = i+2
+        if i % 200 == 0: await asyncio.sleep(0)
+        rn = i + 2
         try:
             chassis = safe(row.get("chassis_number","")).upper().replace(" ","")
             brand   = safe(row.get("brand","")).upper()
@@ -1937,49 +1979,79 @@ async def import_vehicles(request: Request, file: UploadFile = File(...), mode: 
             if not chassis: skipped.append({"row":rn,"reason":"Missing chassis_number"}); continue
             if not brand:   skipped.append({"row":rn,"reason":"Missing brand"});          continue
             if not model:   skipped.append({"row":rn,"reason":"Missing model"});          continue
-            existing = await db.vehicles.find_one({"chassis_number":chassis})
-            if existing:
-                if mode=="overwrite":
-                    await db.vehicles.update_one({"chassis_number":chassis},{"$set":{"brand":brand,"model":model,"color":safe(row.get("color")),"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"inbound_date":safe(row.get("inbound_date","")),"inbound_location":safe(row.get("inbound_location","")),"return_date":safe(row.get("return_date","")),"returned_location":safe(row.get("returned_location",""))}})
-                    inserted += 1
+            doc = {"brand":brand,"model":model,"variant":safe(row.get("variant")),"color":safe(row.get("color")),"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"key_number":safe(row.get("key_number")),"type":safe(row.get("type","new")).lower() or "new","status":safe(row.get("status","in_stock")).lower() or "in_stock","inbound_date":safe(row.get("inbound_date","")),"inbound_location":safe(row.get("inbound_location","")),"return_date":safe(row.get("return_date","")),"returned_location":safe(row.get("returned_location","")),"created_at":datetime.utcnow().isoformat()}
+            if chassis in existing_chassis:
+                if mode=="overwrite": to_update.append(doc)
                 else: skipped.append({"row":rn,"reason":f"Chassis {chassis} already exists"})
-                continue
-            await db.vehicles.insert_one({"brand":brand,"model":model,"variant":safe(row.get("variant")),"color":safe(row.get("color")),"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"key_number":safe(row.get("key_number")),"type":safe(row.get("type","new")).lower() or "new","status":safe(row.get("status","in_stock")).lower() or "in_stock","inbound_date":safe(row.get("inbound_date","")),"inbound_location":safe(row.get("inbound_location","")),"return_date":safe(row.get("return_date","")),"returned_location":safe(row.get("returned_location","")),"created_at":datetime.utcnow().isoformat()})
-            inserted += 1
+            else:
+                to_insert.append(doc); existing_chassis.add(chassis)
         except Exception as e:
-            traceback.print_exc(); errors.append({"row":rn,"error":str(e)})
+            errors.append({"row":rn,"error":str(e)})
+    if to_insert:
+        try:
+            r = await db.vehicles.insert_many(to_insert, ordered=False); inserted += len(r.inserted_ids)
+        except Exception as e: errors.append({"row":"bulk","error":str(e)})
+    for doc in to_update:
+        try:
+            await db.vehicles.update_one({"chassis_number":doc["chassis_number"]},{"$set":{k:v for k,v in doc.items() if k!="created_at"}}); inserted += 1
+        except Exception as e: errors.append({"row":"update","error":str(e)})
     return result_summary(inserted, skipped, errors)
 
 @import_router.post("/sales")
 async def import_sales(request: Request, file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
     content = await file.read(); rows = read_file(content, file.filename or "")
     inserted, skipped, errors = 0, [], []
+    existing_chassis = set()
+    async for doc in db.sales.find({}, {"chassis_number": 1}):
+        if doc.get("chassis_number"): existing_chassis.add(str(doc["chassis_number"]))
+    customer_cache = {}
+    async for doc in db.customers.find({}, {"_id":1,"mobile":1}):
+        if doc.get("mobile"): customer_cache[str(doc["mobile"])] = str(doc["_id"])
+    to_insert = []
     for i, row in enumerate(rows):
-        rn = i+2
-        if i % 20 == 0: await asyncio.sleep(0)  # yield — sales rows are heavier
+        if i % 50 == 0: await asyncio.sleep(0)
+        rn = i + 2
         try:
             name=safe(row.get("customer_name")); mobile=safe(row.get("customer_mobile")); brand=safe(row.get("vehicle_brand","")).upper(); model=safe(row.get("vehicle_model","")); price=safe_float(row.get("sale_price",0)); chassis=safe(row.get("chassis_number","")).upper().replace(" ","")
-            if not name or not mobile or not brand or not model or not price: skipped.append({"row":rn,"reason":"Missing required fields"}); continue
-            if chassis and await db.sales.find_one({"chassis_number":chassis}): skipped.append({"row":rn,"reason":f"Sale for chassis {chassis} already exists"}); continue
-            cust = await db.customers.find_one({"mobile":mobile})
-            if not cust:
-                r = await db.customers.insert_one({"name":name,"mobile":mobile,"email":"","address":safe(row.get("customer_address","")),"tags":[],"created_at":datetime.utcnow().isoformat()})
-                cust_id = str(r.inserted_id)
-            else: cust_id = str(cust["_id"])
-            discount=safe_float(row.get("discount",0)); insurance=safe_float(row.get("insurance",0)); rto=safe_float(row.get("rto",0)); total=price-discount+insurance+rto
+            if not name or not mobile or not brand or not model or not price:
+                missing = [f for f,v in [("customer_name",name),("customer_mobile",mobile),("vehicle_brand",brand),("vehicle_model",model),("sale_price",price)] if not v]
+                skipped.append({"row":rn,"reason":f"Missing: {', '.join(missing)}"}); continue
+            if chassis and chassis in existing_chassis: skipped.append({"row":rn,"reason":f"Sale for chassis {chassis} already exists"}); continue
+            if mobile in customer_cache:
+                cust_id = customer_cache[mobile]
+            else:
+                r = await db.customers.insert_one({"name":name,"mobile":mobile,"care_of":safe(row.get("care_of","")),"email":"","address":safe(row.get("customer_address","")),"tags":[],"created_at":datetime.utcnow().isoformat()})
+                cust_id = str(r.inserted_id); customer_cache[mobile] = cust_id
+            discount=safe_float(row.get("discount",0)); insurance=safe_float(row.get("insurance",0)); rto=safe_float(row.get("rto",0)); total=round(price-discount+insurance+rto,2)
             inv_no = await next_sequence("invoice")
-            await db.sales.insert_one({"invoice_number":inv_no,"customer_id":cust_id,"customer_name":name,"customer_mobile":mobile,"care_of":safe(row.get("care_of","")),"vehicle_brand":brand,"vehicle_model":model,"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"vehicle_color":safe(row.get("vehicle_color")),"vehicle_variant":safe(row.get("vehicle_variant")),"sale_price":price,"discount":discount,"insurance":insurance,"rto":rto,"total_amount":round(total,2),"amount_in_words":amount_in_words(total),"payment_mode":safe(row.get("payment_mode","Cash")),"nominee":{"name":safe(row.get("nominee_name")),"relation":safe(row.get("nominee_relation")),"age":safe(row.get("nominee_age"))},"sale_date":safe(row.get("sale_date","")) or datetime.utcnow().strftime("%d %b %Y"),"status":"delivered","created_at":datetime.utcnow().isoformat(),"_imported":True})
-            inserted += 1
+            doc = {"invoice_number":inv_no,"customer_id":cust_id,"customer_name":name,"customer_mobile":mobile,"care_of":safe(row.get("care_of","")),"vehicle_brand":brand,"vehicle_model":model,"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"vehicle_color":safe(row.get("vehicle_color")),"vehicle_variant":safe(row.get("vehicle_variant")),"sale_price":price,"discount":discount,"insurance":insurance,"rto":rto,"total_amount":total,"amount_in_words":amount_in_words(total),"payment_mode":safe(row.get("payment_mode","Cash")),"nominee":{"name":safe(row.get("nominee_name")),"relation":safe(row.get("nominee_relation")),"age":safe(row.get("nominee_age"))},"sale_date":safe(row.get("sale_date","")) or datetime.utcnow().strftime("%d %b %Y"),"status":"delivered","created_at":datetime.utcnow().isoformat(),"_imported":True}
+            to_insert.append(doc)
+            if chassis: existing_chassis.add(chassis)
         except Exception as e:
-            traceback.print_exc(); errors.append({"row":rn,"error":str(e)})
+            errors.append({"row":rn,"error":str(e)})
+    if to_insert:
+        try:
+            r = await db.sales.insert_many(to_insert, ordered=False); inserted += len(r.inserted_ids)
+        except Exception as e: errors.append({"row":"bulk","error":str(e)})
     return result_summary(inserted, skipped, errors)
 
 @import_router.post("/service")
 async def import_service(request: Request, file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
     content = await file.read(); rows = read_file(content, file.filename or "")
     inserted, skipped, errors = 0, [], []
+    # Build dedup set: vehicle_number+check_in_date
+    existing_keys = set()
+    async for doc in db.service_jobs.find({}, {"vehicle_number":1,"check_in_date":1}):
+        if doc.get("vehicle_number") and doc.get("check_in_date"):
+            existing_keys.add(f"{doc['vehicle_number']}|{doc['check_in_date']}")
+    # Build customer cache
+    customer_cache = {}
+    async for doc in db.customers.find({}, {"_id":1,"mobile":1}):
+        if doc.get("mobile"): customer_cache[str(doc["mobile"])] = str(doc["_id"])
+    to_insert = []
     for i, row in enumerate(rows):
-        rn = i+2
+        if i % 100 == 0: await asyncio.sleep(0)
+        rn = i + 2
         try:
             name     = safe(row.get("customer_name",""))
             mobile   = safe(row.get("customer_mobile",""))
@@ -1987,45 +2059,61 @@ async def import_service(request: Request, file: UploadFile = File(...), mode: s
             complaint= safe(row.get("complaint","")) or "Service"
             check_in = safe(row.get("check_in_date","")) or datetime.utcnow().strftime("%d %b %Y")
             amount   = safe_float(row.get("amount",0))
-            # All fields optional — skip only true duplicates
-            if veh_no and await db.service_jobs.find_one({"vehicle_number":veh_no,"check_in_date":check_in}):
+            dedup_key = f"{veh_no}|{check_in}"
+            if veh_no and check_in and dedup_key in existing_keys:
                 skipped.append({"row":rn,"reason":f"Job for {veh_no} on {check_in} exists"}); continue
-            cust = await db.customers.find_one({"mobile":mobile}) if mobile else None
-            if not cust and name:
+            if mobile in customer_cache:
+                cust_id = customer_cache[mobile]
+            elif name:
                 r = await db.customers.insert_one({"name":name,"mobile":mobile,"email":"","address":"","tags":[],"created_at":datetime.utcnow().isoformat()})
-                cust_id = str(r.inserted_id)
-            else: cust_id = str(cust["_id"]) if cust else ""
+                cust_id = str(r.inserted_id); customer_cache[mobile] = cust_id
+            else: cust_id = ""
             status = safe(row.get("status","delivered")).lower()
             if status not in ("pending","in_progress","ready","delivered"): status = "delivered"
             job_no = await next_sequence("job")
-            await db.service_jobs.insert_one({"job_number":job_no,"customer_id":cust_id,"customer_name":name or "","customer_mobile":mobile or "","vehicle_number":veh_no or "","brand":safe(row.get("brand","")).upper(),"model":safe(row.get("model","")),"odometer_km":safe_int(row.get("odometer_km",0)),"complaint":complaint,"technician":safe(row.get("technician","")),"check_in_date":check_in,"status":status,"grand_total":amount,"notes":safe(row.get("notes","")),"created_at":datetime.utcnow().isoformat(),"_imported":True})
-            inserted += 1
+            to_insert.append({"job_number":job_no,"customer_id":cust_id,"customer_name":name or "","customer_mobile":mobile or "","vehicle_number":veh_no or "","brand":safe(row.get("brand","")).upper(),"model":safe(row.get("model","")),"odometer_km":safe_int(row.get("odometer_km",0)),"complaint":complaint,"technician":safe(row.get("technician","")),"check_in_date":check_in,"status":status,"grand_total":amount,"notes":safe(row.get("notes","")),"created_at":datetime.utcnow().isoformat(),"_imported":True})
+            if veh_no: existing_keys.add(dedup_key)
         except Exception as e:
-            traceback.print_exc(); errors.append({"row":rn,"error":str(e)})
+            errors.append({"row":rn,"error":str(e)})
+    if to_insert:
+        try:
+            r = await db.service_jobs.insert_many(to_insert, ordered=False); inserted += len(r.inserted_ids)
+        except Exception as e: errors.append({"row":"bulk","error":str(e)})
     return result_summary(inserted, skipped, errors)
 
 @import_router.post("/parts")
 async def import_parts(request: Request, file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
     content = await file.read(); rows = read_file(content, file.filename or "")
     inserted, skipped, errors = 0, [], []
+    existing_parts = {}
+    async for doc in db.spare_parts.find({}, {"part_number":1,"stock":1,"selling_price":1,"purchase_price":1}):
+        if doc.get("part_number"): existing_parts[str(doc["part_number"])] = doc
+    to_insert, to_update = [], []
     for i, row in enumerate(rows):
-        rn = i+2
+        if i % 200 == 0: await asyncio.sleep(0)
+        rn = i + 2
         try:
-            part_no=safe(row.get("part_number","")).strip(); name=safe(row.get("name",""))
+            part_no = safe(row.get("part_number","")).strip()
+            name    = safe(row.get("name",""))
             if not part_no: skipped.append({"row":rn,"reason":"Missing part_number"}); continue
             if not name:    skipped.append({"row":rn,"reason":"Missing name"});        continue
-            existing = await db.spare_parts.find_one({"part_number":part_no})
-            if existing:
-                if mode=="overwrite":
-                    await db.spare_parts.update_one({"part_number":part_no},{"$set":{"name":name,"stock":safe_int(row.get("stock",existing["stock"])),"selling_price":safe_float(row.get("selling_price",existing["selling_price"])),"purchase_price":safe_float(row.get("purchase_price",existing["purchase_price"]))}})
-                    inserted += 1
-                else: skipped.append({"row":rn,"reason":f"Part {part_no} already exists"})
-                continue
             compat_raw = safe(row.get("compatible_with",""))
-            await db.spare_parts.insert_one({"part_number":part_no,"name":name,"category":safe(row.get("category","")),"brand":safe(row.get("brand","")),"compatible_with":[c.strip().upper() for c in compat_raw.split(",") if c.strip()],"stock":safe_int(row.get("stock",0)),"reorder_level":safe_int(row.get("reorder_level",5)),"purchase_price":safe_float(row.get("purchase_price",0)),"selling_price":safe_float(row.get("selling_price",0)),"gst_rate":safe_float(row.get("gst_rate",18)),"hsn_code":safe(row.get("hsn_code","")),"location":safe(row.get("location","")),"created_at":datetime.utcnow().isoformat()})
-            inserted += 1
+            doc = {"part_number":part_no,"name":name,"category":safe(row.get("category","")),"brand":safe(row.get("brand","")),"compatible_with":[c.strip().upper() for c in compat_raw.split(",") if c.strip()],"stock":safe_int(row.get("stock",0)),"reorder_level":safe_int(row.get("reorder_level",5)),"purchase_price":safe_float(row.get("purchase_price",0)),"selling_price":safe_float(row.get("selling_price",0)),"gst_rate":safe_float(row.get("gst_rate",18)),"hsn_code":safe(row.get("hsn_code","")),"location":safe(row.get("location","")),"created_at":datetime.utcnow().isoformat()}
+            if part_no in existing_parts:
+                if mode=="overwrite": to_update.append(doc)
+                else: skipped.append({"row":rn,"reason":f"Part {part_no} already exists"})
+            else:
+                to_insert.append(doc); existing_parts[part_no] = doc
         except Exception as e:
-            traceback.print_exc(); errors.append({"row":rn,"error":str(e)})
+            errors.append({"row":rn,"error":str(e)})
+    if to_insert:
+        try:
+            r = await db.spare_parts.insert_many(to_insert, ordered=False); inserted += len(r.inserted_ids)
+        except Exception as e: errors.append({"row":"bulk","error":str(e)})
+    for doc in to_update:
+        try:
+            await db.spare_parts.update_one({"part_number":doc["part_number"]},{"$set":{k:v for k,v in doc.items() if k!="created_at"}}); inserted += 1
+        except Exception as e: errors.append({"row":"update","error":str(e)})
     return result_summary(inserted, skipped, errors)
 
 @import_router.post("/staff")
