@@ -678,6 +678,7 @@ function printBill(job, bill, rows, total, taxable, cgst, sgst) {
         <h4>Customer</h4>
         <p><strong>${job.customer_name||''}</strong></p>
         <p>${job.customer_mobile||''}</p>
+        ${job.customer_address ? `<p>${job.customer_address}</p>` : ''}
       </div>
       <div class="info-box">
         <h4>Vehicle</h4>
