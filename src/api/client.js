@@ -101,15 +101,18 @@ export const salesApi = {
 
 // ── Service ─────────────────────────────────────────────────────────
 export const serviceApi = {
-  list:   (params) => api.get('/service', { params }),
-  get:    (id)     => api.get(`/service/${id}`),
-  create: (data)   => api.post('/service', data),
-  update: (id, d)  => api.put(`/service/${id}`, d),
-  delete: (id)     => api.delete(`/service/${id}`),
-  stats:  ()       => api.get('/service/stats/summary'),
-  getBillByJobId: (jobId) => api.get('/service-bills', { params: { job_id: jobId } }),
-  createBill: (data)      => api.post('/service-bills', data),
-  updateBill: (id, d)     => api.put(`/service-bills/${id}`, d),
+  list:           (params) => api.get('/service', { params }),
+  get:            (id)     => api.get(`/service/${id}`),
+  create:         (data)   => api.post('/service', data),
+  update:         (id, d)  => api.put(`/service/${id}`, d),
+  delete:         (id)     => api.delete(`/service/${id}`),
+  stats:          ()       => api.get('/service/stats/summary'),
+  due:            (days)   => api.get('/service/due', { params: { days } }),
+  markNotified:   (veh)    => api.post(`/service/due/${encodeURIComponent(veh)}/notified`),
+  notifications:  ()       => api.get('/service/due/notifications'),
+  getBillByJobId: (jobId)  => api.get('/service-bills', { params: { job_id: jobId } }),
+  createBill:     (data)   => api.post('/service-bills', data),
+  updateBill:     (id, d)  => api.put(`/service-bills/${id}`, d),
 };
 
 // ── Service Bills ───────────────────────────────────────────────────
