@@ -13,6 +13,100 @@ function sendWA(mobile, msg) {
   window.open(`https://wa.me/91${mobile}?text=${encodeURIComponent(msg)}`, '_blank');
 }
 
+const ALL_TAGS = ['VIP', 'Corporate', 'Loyal'];
+const TAG_COLOR = {
+  VIP:       { bg:'rgba(184,134,11,.15)', color:'#B8860B', border:'rgba(184,134,11,.4)' },
+  Corporate: { bg:'rgba(59,130,246,.12)', color:'#3b82f6', border:'rgba(59,130,246,.35)' },
+  Loyal:     { bg:'rgba(34,197,94,.12)',  color:'#16a34a', border:'rgba(34,197,94,.35)' },
+};
+
+function TagDropdown({ customer, onUpdate }) {
+  const [open, setOpen]   = useState(false);
+  const [saving, setSaving] = useState(false);
+  const tags = customer.tags || [];
+
+  const toggle = async (tag) => {
+    setSaving(true);
+    const next = tags.includes(tag) ? tags.filter(t=>t!==tag) : [...tags, tag];
+    try {
+      await customersApi.update(customer.id, { tags: next });
+      onUpdate();
+    } catch { toast.error('Failed to update tag'); }
+    setSaving(false);
+  };
+
+  return (
+    <div style={{ position:'relative' }} onClick={e=>e.stopPropagation()}>
+      {/* Current tags + add button */}
+      <div style={{ display:'flex', gap:4, flexWrap:'wrap', alignItems:'center', cursor:'pointer' }}
+        onClick={() => setOpen(o=>!o)}>
+        {tags.length ? tags.map(t => {
+          const c = TAG_COLOR[t] || { bg:'rgba(136,136,136,.12)', color:'#888', border:'rgba(136,136,136,.3)' };
+          return (
+            <span key={t} style={{
+              padding:'2px 8px', borderRadius:3, fontSize:10, fontWeight:700,
+              background:c.bg, color:c.color, border:`1px solid ${c.border}`,
+              fontFamily:'IBM Plex Sans,sans-serif', letterSpacing:'.04em',
+            }}>{t}</span>
+          );
+        }) : <span style={{ fontSize:11, color:'var(--dim)' }}>—</span>}
+        <span style={{
+          padding:'2px 6px', borderRadius:3, fontSize:10, border:'1px dashed var(--border)',
+          color:'var(--muted)', cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif',
+          marginLeft:2,
+        }}>⌄</span>
+      </div>
+
+      {/* Dropdown */}
+      {open && (
+        <>
+          {/* backdrop */}
+          <div style={{ position:'fixed', inset:0, zIndex:99 }} onClick={() => setOpen(false)} />
+          <div style={{
+            position:'absolute', top:'calc(100% + 6px)', left:0, zIndex:100,
+            background:'var(--surface)', border:'1px solid var(--border)', borderRadius:6,
+            padding:'6px', minWidth:140, boxShadow:'0 8px 24px rgba(0,0,0,.3)',
+          }}>
+            <div style={{ fontSize:9, letterSpacing:'.08em', textTransform:'uppercase', color:'var(--muted)', padding:'4px 8px 6px', fontWeight:700 }}>
+              Assign Tags
+            </div>
+            {ALL_TAGS.map(tag => {
+              const active = tags.includes(tag);
+              const c = TAG_COLOR[tag];
+              return (
+                <div key={tag}
+                  onClick={() => !saving && toggle(tag)}
+                  style={{
+                    display:'flex', alignItems:'center', gap:8, padding:'7px 10px',
+                    borderRadius:4, cursor:saving?'wait':'pointer',
+                    background: active ? (c?.bg||'rgba(136,136,136,.1)') : 'transparent',
+                    transition:'background .12s',
+                  }}
+                  onMouseEnter={e=>{ if(!active) e.currentTarget.style.background='var(--surface2)'; }}
+                  onMouseLeave={e=>{ e.currentTarget.style.background=active?(c?.bg||'rgba(136,136,136,.1)'):'transparent'; }}
+                >
+                  <div style={{
+                    width:14, height:14, borderRadius:3, border:`1.5px solid ${active?(c?.color||'#888'):'var(--border)'}`,
+                    background: active ? (c?.color||'#888') : 'transparent', flexShrink:0,
+                    display:'flex', alignItems:'center', justifyContent:'center',
+                  }}>
+                    {active && <span style={{ color:'#fff', fontSize:9, fontWeight:900, lineHeight:1 }}>✓</span>}
+                  </div>
+                  <span style={{
+                    fontSize:11, fontWeight:600,
+                    color: active ? (c?.color||'#888') : 'var(--text)',
+                    fontFamily:'IBM Plex Sans,sans-serif',
+                  }}>{tag}</span>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Add customer form ────────────────────────────────────────────────
 function CustomerForm({ initial = {}, onSave, onCancel, saving }) {
   const [f, setF] = useState({ name:'', mobile:'', email:'', address:'', ...initial });
@@ -541,10 +635,8 @@ export default function CustomersPage() {
                   <td style={{ padding:'12px 20px', fontSize:11, color:'var(--muted)', maxWidth:180 }}>
                     <div style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.address||'—'}</div>
                   </td>
-                  <td style={{ padding:'12px 20px' }}>
-                    <div style={{ display:'flex', gap:4 }}>
-                      {c.tags?.length ? c.tags.map(t=><span key={t} className={`pill ${TAG_PILL[t]||'pill-dim'}`}>{t}</span>) : <span style={{ fontSize:11, color:'var(--dim)' }}>—</span>}
-                    </div>
+                  <td style={{ padding:'12px 20px' }} onClick={e=>e.stopPropagation()}>
+                    <TagDropdown customer={c} onUpdate={() => qc.invalidateQueries(['customers'])} />
                   </td>
                   <td style={{ padding:'12px 20px' }} onClick={e=>e.stopPropagation()}>
                     <div style={{ display:'flex', gap:6 }}>
