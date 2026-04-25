@@ -162,6 +162,7 @@ export default function VehiclesPage() {
 
   const { data: stats } = useQuery({
     queryKey: ['vehicle-stats'],
+    refetchInterval: 30_000,
     queryFn: () => vehiclesApi.stats().then(r => r.data),
   });
 
