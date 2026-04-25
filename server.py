@@ -514,7 +514,7 @@ async def login(body: LoginIn):
         "role":     user["role"],
         "mobile":   user.get("mobile", ""),
     }
-    response = JSONResponse(content={"user": user_data})
+    response = JSONResponse(content={"access_token": token, "token_type": "bearer", "user": user_data})
     response.set_cookie(
         key="mm_token", value=token, httponly=True, secure=True,
         samesite="none", max_age=60 * JWT_EXPIRE_MIN, path="/",
