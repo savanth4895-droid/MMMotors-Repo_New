@@ -1769,20 +1769,56 @@ def read_file(content: bytes, filename: str) -> list:
             rows.append({k.strip().lower().replace(" ","_").replace("/","_"): safe(v) for k,v in row.items()})
     else:
         wb   = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
-        ws   = wb.active
+        # Find the data sheet — prefer "Data" sheet, skip "Instructions"
+        ws = None
+        for sheet_name in wb.sheetnames:
+            sn = sheet_name.lower()
+            if "data" in sn or "📥" in sn:
+                ws = wb[sheet_name]; break
+        # Fallback: pick the last sheet (Instructions is first in our templates)
+        if ws is None:
+            ws = wb[wb.sheetnames[-1]] if len(wb.sheetnames) > 1 else wb.active
         data = list(ws.values)
         wb.close()
         if len(data) < 2:
             return []
-        headers = [str(h).strip().lower().replace(" ","_").replace("/","_") if h else f"col{i}" for i,h in enumerate(data[0])]
-        for row in data[1:]:
-            if all(v is None or str(v).strip()=="" for v in row):
+        # Find header row (first row with actual column names, skip banner rows)
+        header_row_idx = 0
+        for idx, row in enumerate(data):
+            non_empty = [c for c in row if c is not None and str(c).strip()]
+            if len(non_empty) >= 2:
+                header_row_idx = idx
+                break
+        headers_raw = data[header_row_idx]
+        headers = [
+            str(h).strip().lower()
+              .replace(" ","_").replace("/","_")
+              .replace("*","").replace("📥","").strip()
+            if h else f"col{i}"
+            for i,h in enumerate(headers_raw)
+        ]
+        for row in data[header_row_idx + 1:]:
+            if all(v is None or str(v).strip() == "" for v in row):
                 continue
-            rows.append({headers[i]: safe(row[i]) for i in range(min(len(headers),len(row)))})
+            row_dict = {}
+            for i in range(min(len(headers), len(row))):
+                cell_val = row[i]
+                # Handle Excel datetime objects
+                if hasattr(cell_val, 'strftime'):
+                    cell_val = cell_val.strftime("%d/%m/%Y")
+                row_dict[headers[i]] = safe(cell_val)
+            rows.append(row_dict)
     return rows
 
 def result_summary(inserted, skipped, errors):
-    return {"inserted":inserted,"skipped_count":len(skipped),"error_count":len(errors),"skipped":skipped[:50],"errors":errors[:50]}
+    return {
+        "inserted":      inserted,
+        "skipped_count": len(skipped),
+        "error_count":   len(errors),
+        "skipped":       skipped[:100],
+        "errors":        errors[:100],
+        "summary":       f"✅ {inserted} imported, ⏭ {len(skipped)} skipped, ❌ {len(errors)} errors",
+    }
 
 TEMPLATES = {
     "customers": {
