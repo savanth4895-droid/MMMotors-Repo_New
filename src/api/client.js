@@ -79,6 +79,9 @@ export const serviceApi = {
   update: (id, d)  => api.put(`/service/${id}`, d),
   delete: (id)     => api.delete(`/service/${id}`),
   stats:  ()       => api.get('/service/stats/summary'),
+  getBillByJobId: (jobId) => api.get('/service-bills', { params: { job_id: jobId } }),
+  createBill: (data)      => api.post('/service-bills', data),
+  updateBill: (id, d)     => api.put(`/service-bills/${id}`, d),
 };
 
 // ── Service Bills ───────────────────────────────────────────────────
@@ -109,6 +112,7 @@ export const partsSalesApi = {
   get:    (id)     => api.get(`/parts-sales/${id}`),
   create: (data)   => api.post('/parts-sales', data),
   delete: (id)     => api.delete(`/parts-sales/${id}`),
+  adjustStockByNumber: (partNum, d) => api.post(`/parts/${partNum}/adjust-stock-by-number`, d),
 };
 
 // ── Dashboard & Reports ─────────────────────────────────────────────
