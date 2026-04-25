@@ -65,11 +65,30 @@ function ImportCard({ cfg, onRefreshCounts }) {
     setStatus('importing');
     try {
       const res = await importApi.import(cfg.id, file, mode);
-      setResult(res.data);
-      setTab(res.data.error_count>0?'errors':res.data.skipped_count>0?'skipped':'preview');
-      toast.success(`Imported ${res.data.inserted} records`);
+      const r = res.data;
+      setResult(r);
+      // Show errors tab first if any
+      if (r.error_count > 0) {
+        setTab('errors');
+        toast.error(`${r.error_count} rows failed — see Errors tab`);
+      } else if (r.skipped_count > 0) {
+        setTab('skipped');
+        toast.success(`${r.inserted} imported, ${r.skipped_count} skipped`);
+      } else {
+        setTab('preview');
+        toast.success(`${r.inserted} records imported successfully`);
+      }
       onRefreshCounts();
-    } catch(e) { toast.error(e?.response?.data?.detail||'Import failed'); }
+    } catch(e) {
+      const detail = e?.response?.data?.detail;
+      const msg    = typeof detail === 'string' ? detail : JSON.stringify(detail) || 'Import failed';
+      toast.error(msg, { duration: 8000 });
+      // Also set a synthetic result so user can see
+      setResult({ inserted:0, skipped_count:0, error_count:1,
+        skipped:[], errors:[{ row:'—', error: msg }],
+        summary: `❌ ${msg}` });
+      setTab('errors');
+    }
     finally { setStatus(''); }
   };
 
@@ -146,7 +165,11 @@ function ImportCard({ cfg, onRefreshCounts }) {
 
       {/* result summary */}
       {result && (
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8, padding:'14px 18px', borderBottom:'1px solid var(--border)' }}>
+        <div style={{ padding:'12px 18px', background: result.error_count>0 ? 'rgba(220,38,38,.06)' : 'rgba(74,222,128,.06)', borderBottom:'1px solid var(--border)' }}>
+          <div style={{ fontSize:12, fontWeight:700, marginBottom:8, color: result.error_count>0 ? '#f87171' : '#4ade80' }}>
+            {result.summary || `✅ ${result.inserted} imported  ⏭ ${result.skipped_count} skipped  ❌ ${result.error_count} errors`}
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8 }}>
           {[
             { l:'Inserted', v:result.inserted,      c:'#4ade80' },
             { l:'Skipped',  v:result.skipped_count, c:'#fbbf24' },
@@ -157,6 +180,7 @@ function ImportCard({ cfg, onRefreshCounts }) {
               <div className="display" style={{ fontSize:22, fontWeight:800, color:s.c, marginTop:4 }}>{s.v}</div>
             </div>
           ))}
+          </div>
         </div>
       )}
 
