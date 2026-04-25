@@ -15,6 +15,7 @@ import ServicePage   from './pages/ServicePage';
 import SalesPage     from './pages/SalesPage';
 import VehiclesPage  from './pages/VehiclesPage';
 import CustomersPage from './pages/CustomersPage';
+import DebtPage      from './pages/DebtPage';
 import Sidebar from './components/Sidebar';
 import Topbar  from './components/Topbar';
 
@@ -60,6 +61,7 @@ function AppLayout() {
               <Route path="/service"   element={<ServicePage user={user} />} />
               <Route path="/vehicles"  element={<VehiclesPage />} />
               <Route path="/customers" element={<CustomersPage />} />
+              <Route path="/debt"      element={<DebtPage />} />
               <Route path="/parts"     element={<PartsPage />} />
               <Route path="/reports"   element={<ReportsPage />} />
               <Route path="/staff"     element={<StaffPage />} />
