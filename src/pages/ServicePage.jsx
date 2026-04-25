@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { serviceApi, partsApi, customerApi } from '../api/client';
+import { serviceApi, partsApi, customersApi } from '../api/client';
 import toast from 'react-hot-toast';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -301,7 +301,7 @@ function NewJobModal({ onClose }) {
 
   const { data:custData } = useQuery({
     queryKey: ['cust-search', custSearch],
-    queryFn: () => customerApi.list({ search:custSearch, limit:10 }),
+    queryFn: () => customersApi.list({ search:custSearch, limit:10 }),
     enabled: custSearch.length > 1,
   });
   const custs = custData?.data?.items || custData?.data || [];
