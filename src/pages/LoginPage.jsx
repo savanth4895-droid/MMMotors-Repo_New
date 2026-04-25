@@ -33,7 +33,10 @@ export default function LoginPage() {
       await login(form.username.trim().toLowerCase(), form.password);
       toast.success('Welcome back!');
     } catch (err) {
-      const msg = err?.response?.data?.detail || 'Invalid credentials';
+      const detail = err?.response?.data?.detail;
+      const msg = typeof detail === 'string' ? detail
+        : Array.isArray(detail) ? detail.map(d => d.msg || d).join(', ')
+        : err?.message || 'Invalid credentials';
       setError(msg);
     } finally {
       setLoading(false);
