@@ -47,6 +47,71 @@ function CustomerForm({ initial = {}, onSave, onCancel, saving }) {
   );
 }
 
+// ── Inline detail panel ──────────────────────────────────────────────
+function DetailPanel({ item, type, onClose }) {
+  const isSale = type === 'sale';
+  const isJob  = type === 'job';
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.55)', zIndex:200, display:'flex', alignItems:'center', justifyContent:'center' }}
+      onClick={onClose}>
+      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:8, padding:0, width:520, maxWidth:'94vw', maxHeight:'88vh', overflowY:'auto' }}
+        onClick={e => e.stopPropagation()}>
+        {/* header */}
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'16px 20px', borderBottom:'1px solid var(--border)', background:'#141414', borderRadius:'8px 8px 0 0' }}>
+          <div>
+            <div style={{ fontSize:11, color:'var(--muted)', letterSpacing:'.07em', textTransform:'uppercase' }}>{isSale ? 'Sale' : 'Service Job'}</div>
+            <div style={{ fontSize:15, fontWeight:700, marginTop:2 }}>{isSale ? item.invoice_number : item.job_number}</div>
+          </div>
+          <button onClick={onClose} style={{ background:'transparent', border:'none', color:'var(--muted)', fontSize:18, cursor:'pointer', padding:'4px 8px' }}>×</button>
+        </div>
+        <div style={{ padding:'20px' }}>
+          {isSale && (
+            <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
+              {[
+                ['Vehicle',      `${item.vehicle_brand||''} ${item.vehicle_model||''}`.trim() || '—'],
+                ['Vehicle No.',  item.vehicle_number || '—'],
+                ['Chassis No.',  item.chassis_number || '—'],
+                ['Sale Date',    item.sale_date      || '—'],
+                ['Payment Mode', item.payment_mode   || '—'],
+                ['Sales Person', item.salesperson    || '—'],
+                ['Total Amount', item.total_amount ? '₹'+Number(item.total_amount).toLocaleString('en-IN') : '—'],
+                ['Status',       item.status         || '—'],
+              ].map(([l,v]) => (
+                <div key={l} style={{ display:'flex', padding:'10px 0', borderBottom:'1px solid var(--border)' }}>
+                  <div style={{ width:140, fontSize:11, color:'var(--muted)', flexShrink:0 }}>{l}</div>
+                  <div style={{ fontSize:12, fontWeight:500 }}>{v}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          {isJob && (
+            <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
+              {[
+                ['Vehicle No.',   item.vehicle_number || '—'],
+                ['Brand / Model', `${item.brand||''} ${item.model||''}`.trim() || '—'],
+                ['Chassis No.',   item.chassis_number || '—'],
+                ['Odometer',      item.odometer_km ? `${item.odometer_km} km` : '—'],
+                ['Complaint',     item.complaint      || '—'],
+                ['Technician',    item.technician     || '—'],
+                ['Check-in Date', item.check_in_date  || '—'],
+                ['Est. Delivery', item.estimated_delivery || '—'],
+                ['Status',        item.status         || '—'],
+                ['Bill Amount',   item.grand_total ? '₹'+Number(item.grand_total).toLocaleString('en-IN') : '—'],
+                ['Notes',         item.notes          || '—'],
+              ].map(([l,v]) => (
+                <div key={l} style={{ display:'flex', padding:'10px 0', borderBottom:'1px solid var(--border)' }}>
+                  <div style={{ width:140, fontSize:11, color:'var(--muted)', flexShrink:0 }}>{l}</div>
+                  <div style={{ fontSize:12, fontWeight:500 }}>{v}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Inline action buttons ────────────────────────────────────────────
 const actBtn = (label, color, onClick) => (
   <button onClick={e => { e.stopPropagation(); onClick(); }} style={{
@@ -76,6 +141,7 @@ function CustomerDetail({ cust, onBack }) {
   // ── Edit modals state ──
   const [editSale, setEditSale]       = useState(null);
   const [editJob,  setEditJob]        = useState(null);
+  const [viewDetail, setViewDetail]   = useState(null); // { item, type }
 
   // ── Delete mutations ──
   const delSale = useMutation({
@@ -188,7 +254,7 @@ function CustomerDetail({ cust, onBack }) {
                     <div className="display" style={{ fontSize:16, color:'var(--accent)', marginTop:4 }}>₹{s.total_amount?.toLocaleString('en-IN')}</div>
                   </div>
                   <div style={{ display:'flex', gap:6, flexShrink:0 }}>
-                    {actBtn('View →', 'muted', () => window.open(`/sales?invoice=${s.invoice_number}`, '_blank'))}
+                    {actBtn('View →', 'muted', () => setViewDetail({ item: s, type: 'sale' }))}
                     {actBtn('Edit', 'blue', () => setEditSale(s))}
                     {actBtn('✕ Delete', 'red', () => window.confirm(`Delete ${s.invoice_number}?`) && delSale.mutate(s.id||s._id))}
                   </div>
@@ -214,7 +280,7 @@ function CustomerDetail({ cust, onBack }) {
                   </div>
                   <span className="pill pill-dim" style={{ flexShrink:0 }}>{j.status}</span>
                   <div style={{ display:'flex', gap:6, flexShrink:0 }}>
-                    {actBtn('View →', 'muted', () => window.open(`/service?job=${j.job_number}`, '_blank'))}
+                    {actBtn('View →', 'muted', () => setViewDetail({ item: j, type: 'job' }))}
                     {actBtn('Edit', 'blue', () => setEditJob(j))}
                     {actBtn('✕ Delete', 'red', () => window.confirm(`Delete job ${j.job_number}?`) && delJob.mutate(j.id||j._id))}
                   </div>
@@ -233,7 +299,7 @@ function CustomerDetail({ cust, onBack }) {
                   </div>
                   <div className="display" style={{ fontSize:14, color:'var(--accent)', flexShrink:0 }}>₹{s.total_amount?.toLocaleString('en-IN')}</div>
                   <div style={{ display:'flex', gap:6, flexShrink:0 }}>
-                    {actBtn('View →', 'muted', () => window.open(`/sales?invoice=${s.invoice_number}`, '_blank'))}
+                    {actBtn('View →', 'muted', () => setViewDetail({ item: s, type: 'sale' }))}
                     {actBtn('Edit', 'blue', () => setEditSale(s))}
                     {actBtn('✕ Delete', 'red', () => window.confirm(`Delete ${s.invoice_number}?`) && delSale.mutate(s.id||s._id))}
                   </div>
@@ -243,6 +309,11 @@ function CustomerDetail({ cust, onBack }) {
           </>
         )}
       </div>
+
+      {/* ── VIEW DETAIL PANEL ── */}
+      {viewDetail && (
+        <DetailPanel item={viewDetail.item} type={viewDetail.type} onClose={() => setViewDetail(null)} />
+      )}
 
       {/* ── EDIT SALE MODAL ── */}
       {editSale && (
