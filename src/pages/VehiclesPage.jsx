@@ -168,7 +168,7 @@ export default function VehiclesPage() {
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['vehicles', search, brand, typeF],
-    queryFn: () => vehiclesApi.list({ search: search || undefined, brand: brand || undefined, type: typeF !== 'all' ? typeF : undefined, limit: 500 }).then(r => r.data),
+    queryFn: () => vehiclesApi.list({ search: search || undefined, brand: brand || undefined, type: typeF !== 'all' ? typeF : undefined, limit: 2000 }).then(r => r.data),
     refetchInterval: 30_000,
   });
 
