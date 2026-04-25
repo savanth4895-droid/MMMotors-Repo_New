@@ -267,7 +267,8 @@ export default function ServicePage() {
                     <div style={{ display:'flex', gap:5, alignItems:'center', flexWrap:'wrap' }}>
                       {job.status === 'ready' && (
                         <button onClick={() => {
-                            const msg = `Hello ${job.customer_name}, your vehicle ${job.vehicle_number} is ready for pickup at MM Motors!`;
+                            const amt = job.grand_total ? ` Bill amount: ₹${Number(job.grand_total).toLocaleString('en-IN')}.` : '';
+                            const msg = `Hello ${job.customer_name}, your vehicle ${job.vehicle_number} (${job.brand} ${job.model}) service is complete.${amt} Ready for pickup at MM Motors!`;
                             window.open(`https://wa.me/91${job.customer_mobile}?text=${encodeURIComponent(msg)}`,'_blank');
                           }}
                           style={{ ...btnGhost, padding:'5px 9px', fontSize:10,
@@ -321,6 +322,11 @@ export default function ServicePage() {
 function EditJobModal({ job, onClose }) {
   const qc = useQueryClient();
   const [form, setForm] = useState({
+    vehicle_number:     job.vehicle_number     || '',
+    chassis_number:     job.chassis_number     || '',
+    brand:              job.brand              || '',
+    model:              job.model              || '',
+    odometer_km:        job.odometer_km        || '',
     technician:         job.technician         || '',
     status:             job.status             || 'pending',
     complaint:          job.complaint          || '',
@@ -341,12 +347,41 @@ function EditJobModal({ job, onClose }) {
   });
 
   const STATUSES = ['pending','in_progress','ready','delivered'];
+  const BRANDS   = ['HERO','HONDA','BAJAJ','TVS','YAMAHA','SUZUKI','ROYAL ENFIELD','KTM'];
 
   return (
     <ModalShell onClose={onClose}
       title={`Edit — ${job.job_number || (job._id||'').slice(-6)}`}
       sub={`${job.customer_name} · ${job.vehicle_number}`}>
       <div style={{ padding:'20px 20px 0' }}>
+        {/* Vehicle section */}
+        <div style={{ fontSize:10, letterSpacing:'.08em', fontWeight:700, color:C.muted, marginBottom:10, textTransform:'uppercase' }}>Vehicle Details</div>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:16 }}>
+          <div>
+            <label style={labelSt}>Vehicle Number</label>
+            <input value={form.vehicle_number} onChange={upd('vehicle_number')} placeholder="KA 07 U 3915" style={inp} />
+          </div>
+          <div>
+            <label style={labelSt}>Chassis Number</label>
+            <input value={form.chassis_number} onChange={upd('chassis_number')} placeholder="MBLHA10AT8HF12345" style={inp} />
+          </div>
+          <div>
+            <label style={labelSt}>Brand</label>
+            <select value={form.brand} onChange={upd('brand')} style={inp}>
+              {BRANDS.map(b => <option key={b}>{b}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={labelSt}>Model</label>
+            <input value={form.model} onChange={upd('model')} placeholder="Splendor Plus" style={inp} />
+          </div>
+          <div>
+            <label style={labelSt}>Odometer (km)</label>
+            <input type="number" value={form.odometer_km} onChange={upd('odometer_km')} placeholder="12500" style={inp} />
+          </div>
+        </div>
+        {/* Service section */}
+        <div style={{ fontSize:10, letterSpacing:'.08em', fontWeight:700, color:C.muted, marginBottom:10, textTransform:'uppercase' }}>Service Details</div>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }}>
           <div>
             <label style={labelSt}>Technician</label>
@@ -409,13 +444,23 @@ function NewJobModal({ onClose }) {
   });
   const custs = custData?.data?.items || custData?.data || [];
 
-  // FIX #4: lookup vehicle from sales records
+  // Auto-fetch this customer's vehicles from sales when customer selected
+  const { data:custSalesData } = useQuery({
+    queryKey: ['cust-sales-vehicles', selCust?._id || selCust?.id],
+    queryFn: () => salesApi.list({ search: selCust?.mobile || selCust?.name, limit:10 }),
+    enabled: !!selCust,
+  });
+  const custVehicles = custSalesData?.data?.items || custSalesData?.data || [];
+
+  // Also search by vehicle_number while typing
   const { data:salesData } = useQuery({
     queryKey: ['sales-vehicle-lookup', vehicleSearch],
     queryFn: () => salesApi.list({ search: vehicleSearch, limit:5 }),
     enabled: vehicleSearch.length > 3,
   });
-  const salesVehicles = salesData?.data?.items || salesData?.data || [];
+  const salesVehicles = vehicleSearch.length > 3
+    ? (salesData?.data?.items || salesData?.data || [])
+    : custVehicles;
 
   // FIX #5: createJob → create
   const createMut = useMutation({
@@ -486,7 +531,7 @@ function NewJobModal({ onClose }) {
                 placeholder="KA 07 U 3915"
                 style={inp}
               />
-              {salesVehicles.length > 0 && form.vehicle_number && !form.model && (
+              {salesVehicles.length > 0 && !form.model && (
                 <div style={{ position:'absolute', top:'100%', left:0, right:0, zIndex:300,
                   background:C.surface, border:'1px solid var(--border2,#2a2a2a)',
                   borderRadius:4, boxShadow:'0 8px 24px rgba(0,0,0,.5)', overflow:'hidden' }}>
@@ -570,6 +615,117 @@ function NewJobModal({ onClose }) {
 // ═══════════════════════════════════════════════════════════════════════════════
 //  SERVICE BILL MODAL  (named export — also used from other pages)
 // ═══════════════════════════════════════════════════════════════════════════════
+// ─── Print Bill ───────────────────────────────────────────────────────────────
+function printBill(job, bill, rows, total, taxable, cgst, sgst) {
+  const RS = '₹';
+  const fmt2 = n => Number(n||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const fmtI = n => Number(n||0).toLocaleString('en-IN');
+
+  const rows_html = rows.map(r => `
+    <tr>
+      <td>${r.description}</td>
+      <td style="text-align:center">${r.hsn||'9987'}</td>
+      <td style="text-align:center">${r.qty}</td>
+      <td style="text-align:right">${RS}${fmt2(r.unit_price)}</td>
+      <td style="text-align:center">${r.gst_rate}%</td>
+      <td style="text-align:right">${RS}${fmtI(Math.round(r.unit_price*r.qty))}</td>
+    </tr>`).join('');
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
+  <title>Bill — ${bill.bill_number||''}</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#111;padding:24px}
+    .header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;padding-bottom:14px;border-bottom:2px solid #B8860B}
+    .brand{font-size:22px;font-weight:800;color:#B8860B;letter-spacing:-.5px}
+    .brand-sub{font-size:10px;color:#666;margin-top:2px}
+    .bill-meta{text-align:right}
+    .bill-meta .bill-no{font-size:16px;font-weight:700}
+    .bill-meta .bill-date{font-size:10px;color:#666;margin-top:4px}
+    .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
+    .info-box{background:#f9f9f9;border:1px solid #e0e0e0;border-radius:4px;padding:12px}
+    .info-box h4{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:#888;margin-bottom:8px}
+    .info-box p{font-size:12px;margin-bottom:3px}
+    table{width:100%;border-collapse:collapse;margin-bottom:16px}
+    thead tr{background:#B8860B;color:#fff}
+    th{padding:8px 10px;font-size:10px;letter-spacing:.05em;text-transform:uppercase;text-align:left}
+    td{padding:7px 10px;border-bottom:1px solid #eee}
+    tbody tr:nth-child(even){background:#f9f9f9}
+    .totals{display:flex;justify-content:flex-end;margin-bottom:16px}
+    .totals-box{min-width:260px}
+    .tot-row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #eee;font-size:12px}
+    .tot-row.grand{font-size:15px;font-weight:800;color:#B8860B;border-top:2px solid #B8860B;border-bottom:none;padding-top:8px}
+    .words{text-align:right;font-size:10px;color:#888;font-style:italic;margin-bottom:20px}
+    .payment{font-size:11px;color:#444;margin-bottom:24px}
+    .footer{border-top:1px solid #ddd;padding-top:12px;font-size:10px;color:#888;display:flex;justify-content:space-between}
+    @media print{body{padding:10px}.no-print{display:none}}
+  </style></head><body>
+  <div style="max-width:720px;margin:0 auto">
+    <div class="header">
+      <div>
+        <div class="brand">MM MOTORS</div>
+        <div class="brand-sub">Authorised Multi-Brand Service Centre</div>
+      </div>
+      <div class="bill-meta">
+        <div class="bill-no">TAX INVOICE</div>
+        <div class="bill-no" style="font-size:13px;color:#B8860B">${bill.bill_number||''}</div>
+        <div class="bill-date">Date: ${bill.created_at?.slice(0,10) || new Date().toLocaleDateString('en-IN')}</div>
+      </div>
+    </div>
+
+    <div class="info-grid">
+      <div class="info-box">
+        <h4>Customer</h4>
+        <p><strong>${job.customer_name||''}</strong></p>
+        <p>${job.customer_mobile||''}</p>
+      </div>
+      <div class="info-box">
+        <h4>Vehicle</h4>
+        <p><strong>${job.vehicle_number||''}</strong></p>
+        <p>${job.brand||''} ${job.model||''}</p>
+        <p style="font-size:10px;color:#888">Job: ${job.job_number||''} &nbsp;|&nbsp; ${job.check_in_date||''}</p>
+        ${job.chassis_number ? `<p style="font-size:10px;color:#888">Chassis: ${job.chassis_number}</p>` : ''}
+      </div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Description</th>
+          <th style="text-align:center">HSN</th>
+          <th style="text-align:center">Qty</th>
+          <th style="text-align:right">Unit Price</th>
+          <th style="text-align:center">GST%</th>
+          <th style="text-align:right">Amount</th>
+        </tr>
+      </thead>
+      <tbody>${rows_html}</tbody>
+    </table>
+
+    <div class="totals">
+      <div class="totals-box">
+        <div class="tot-row"><span>Taxable Amount</span><span>${RS}${fmt2(taxable)}</span></div>
+        <div class="tot-row"><span>CGST</span><span>${RS}${fmt2(cgst)}</span></div>
+        <div class="tot-row"><span>SGST</span><span>${RS}${fmt2(sgst)}</span></div>
+        <div class="tot-row grand"><span>Total</span><span>${RS}${fmtI(total)}</span></div>
+      </div>
+    </div>
+    <div class="words">${bill.amount_in_words || ''}</div>
+    <div class="payment">Payment Mode: <strong>${bill.payment_mode||'Cash'}</strong></div>
+
+    <div class="footer">
+      <span>Thank you for choosing MM Motors!</span>
+      <span>Authorised Signature</span>
+    </div>
+  </div>
+  <script>window.onload=()=>{window.print();}</script>
+  </body></html>`;
+
+  const w = window.open('','_blank');
+  w.document.write(html);
+  w.document.close();
+}
+
 export function ServiceBillModal({ job, onClose }) {
   const qc = useQueryClient();
 
@@ -657,9 +813,10 @@ export function ServiceBillModal({ job, onClose }) {
             await partsApi.adjustStockByNumber(row._partNumber, { qty: Math.abs(diff), action: 'add' }).catch(()=>{});
         }
       }
-      // FIX #1: createBill/updateBill → billsApi
-      return existingBill?._id
-        ? billsApi.update(existingBill._id, payload)
+      // createBill/updateBill → billsApi
+      const billId = existingBill?.id || existingBill?._id;
+      return billId
+        ? billsApi.update(billId, payload)
         : billsApi.create(payload);
     },
     onSuccess: () => {
@@ -730,6 +887,12 @@ export function ServiceBillModal({ job, onClose }) {
       )}
       <ModalFoot>
         <button onClick={onClose} style={btnGhost}>Cancel</button>
+        {existingBill && (
+          <button onClick={() => printBill(job, existingBill, validRows, grandTotal, taxable, cgst, sgst)}
+            style={{ ...btnGhost, color:C.gold, borderColor:'rgba(184,134,11,.4)' }}>
+            🖨 Print Bill
+          </button>
+        )}
         <button onClick={() => saveMut.mutate()}
           disabled={saveMut.isPending || validRows.length===0}
           style={{ ...btnPrimary, opacity:saveMut.isPending||validRows.length===0?.5:1 }}>
