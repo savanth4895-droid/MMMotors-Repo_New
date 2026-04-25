@@ -335,13 +335,19 @@ class ServiceJobCreate(BaseModel):
     vehicle_photo_id: Optional[str] = ""
 
 class ServiceJobUpdate(BaseModel):
-    status:         Optional[str] = None
-    technician:     Optional[str] = None
+    status:             Optional[str] = None
+    technician:         Optional[str] = None
     estimated_delivery: Optional[str] = None
-    delivery_date:  Optional[str] = None
-    notes:          Optional[str] = None
-    odometer_out:   Optional[int] = None
-    vehicle_photo_id: Optional[str] = None
+    delivery_date:      Optional[str] = None
+    notes:              Optional[str] = None
+    complaint:          Optional[str] = None
+    vehicle_number:     Optional[str] = None
+    chassis_number:     Optional[str] = None
+    brand:              Optional[str] = None
+    model:              Optional[str] = None
+    odometer_km:        Optional[int] = None
+    odometer_out:       Optional[int] = None
+    vehicle_photo_id:   Optional[str] = None
 
 # ── Service Bills ─────────────────────────────────────────────────────────────
 class BillLineItem(BaseModel):
