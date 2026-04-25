@@ -54,15 +54,17 @@ def create_token(data: dict, expires_delta: timedelta = None) -> str:
     return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
 async def verify_token(
-    request: Request = None,
+    request: Request,
     mm_token: Optional[str] = Cookie(default=None),
 ) -> dict:
-    # Accept Bearer token from Authorization header (localStorage) or httpOnly cookie
+    # Accept Bearer token from Authorization header (from localStorage) or httpOnly cookie
     token = mm_token
-    if request:
+    try:
         auth_header = request.headers.get("Authorization", "")
         if not token and auth_header.startswith("Bearer "):
             token = auth_header.split(" ", 1)[1].strip()
+    except Exception:
+        pass
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
