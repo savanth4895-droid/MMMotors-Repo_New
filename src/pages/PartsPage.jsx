@@ -334,7 +334,7 @@ export default function PartsPage() {
   });
   const { data, isLoading, error } = useQuery({
     queryKey:['parts', search, cat, filter],
-    queryFn: ()=>partsApi.list({ search:search||undefined, category:cat||undefined, limit:300 }).then(r=>r.data),
+    queryFn: ()=>partsApi.list({ search:search||undefined, category:cat||undefined, limit:2000 }).then(r=>r.data),
   });
   // 1. Bills History now shows parts-bills (from service PartsBillModal)
   const { data:billsData, isLoading:billsLoading } = useQuery({
