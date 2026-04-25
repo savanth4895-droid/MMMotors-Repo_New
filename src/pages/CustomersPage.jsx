@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { customersApi, salesApi, serviceApi } from '../api/client';
+import { customersApi, salesApi, serviceApi, errMsg} from '../api/client';
 import { Btn, GhostBtn, Field, Avatar, Skeleton, Empty, ApiError } from '../components/ui';
 import toast from 'react-hot-toast';
 import { useConfirm } from '../components/ConfirmModal';
@@ -254,12 +254,12 @@ function CustomerDetail({ cust, onBack }) {
   const updSale = useMutation({
     mutationFn: ({ id, data }) => salesApi.update(id, data),
     onSuccess: () => { qc.invalidateQueries(['customer-timeline', cust.id]); setEditSale(null); toast.success('Sale updated'); },
-    onError: e => toast.error(e?.response?.data?.detail || 'Update failed'),
+    onError: e => toast.error(errMsg(e, 'Update failed')),
   });
   const updJob = useMutation({
     mutationFn: ({ id, data }) => serviceApi.update(id, data),
     onSuccess: () => { qc.invalidateQueries(['customer-timeline', cust.id]); setEditJob(null); toast.success('Job updated'); },
-    onError: e => toast.error(e?.response?.data?.detail || 'Update failed'),
+    onError: e => toast.error(errMsg(e, 'Update failed')),
   });
 
   const TABS = ['overview','vehicles','service','sales'];
@@ -541,7 +541,7 @@ export default function CustomersPage() {
   const createMut = useMutation({
     mutationFn: d => customersApi.create(d),
     onSuccess: () => { qc.invalidateQueries(['customers']); setView('list'); toast.success('Customer added'); },
-    onError:   e => toast.error(e?.response?.data?.detail || 'Failed'),
+    onError:   e => toast.error(errMsg(e, 'Failed')),
   });
 
   const deleteMut = useMutation({
