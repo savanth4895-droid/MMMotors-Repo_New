@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { customersApi, salesApi, serviceApi, errMsg} from '../api/client';
-import { Btn, GhostBtn, Field, Avatar, Skeleton, Empty, ApiError } from '../components/ui';
+import { Btn, GhostBtn, Field, Avatar, Skeleton, Empty, ApiError, useSortable } from '../components/ui';
 import toast from 'react-hot-toast';
 import { useConfirm } from '../components/ConfirmModal';
 import FileUpload from '../components/FileUpload';
@@ -534,7 +534,7 @@ export default function CustomersPage() {
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['customers', search, tag],
-    queryFn: () => customersApi.list({ search: search||undefined, tag: tag!=='all'?tag:undefined, limit:200 }).then(r => r.data),
+    queryFn: () => customersApi.list({ search: search||undefined, tag: tag!=='all'?tag:undefined, limit:2000 }).then(r => r.data),
     keepPreviousData: true,
   });
 
@@ -551,6 +551,7 @@ export default function CustomersPage() {
   });
 
   const customers = Array.isArray(data) ? data : [];
+  const { sorted: sortedCustomers, Th: CustTh } = useSortable(customers, 'name', 'asc');
 
   if (view === 'detail' && selected) {
     return <CustomerDetail cust={selected} onBack={() => { setView('list'); setSelected(null); }} />;
@@ -612,13 +613,13 @@ export default function CustomersPage() {
           <table style={{ width:'100%', borderCollapse:'collapse' }}>
             <thead>
               <tr style={{ borderBottom:'1px solid var(--border)' }}>
-                {['Customer','Mobile','Email','Address','Tags',''].map(h => (
-                  <th key={h} style={{ padding:'9px 20px', textAlign:'left', fontSize:10, letterSpacing:'.07em', color:'var(--dim)', fontWeight:500, textTransform:'uppercase' }}>{h}</th>
+                {[['Customer','name'],['Mobile','mobile'],['Email','email'],['Address','address'],['Tags',''],['','']].map(([h,f]) => (
+                  <CustTh key={h} field={f||null} style={{ padding:'9px 20px', textAlign:'left', fontSize:10, letterSpacing:'.07em', color:'var(--dim)', fontWeight:500, textTransform:'uppercase' }}>{h}</CustTh>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {customers.map(c => (
+              {sortedCustomers.map(c => (
                 <tr key={c.id} style={{ borderBottom:'1px solid var(--border)', cursor:'pointer' }}
                     onClick={() => { setSelected(c); setView('detail'); }}>
                   <td style={{ padding:'12px 20px' }}>
