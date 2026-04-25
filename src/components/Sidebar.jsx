@@ -7,7 +7,8 @@ const LOGO_PNG = `data:image/png;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gHYSUNDX1BS
 const NAV = [
   { id: 'dashboard', label: 'Dashboard',   roles: ['owner','sales','service_advisor','parts_counter'] },
   { id: 'sales',     label: 'Sales',        roles: ['owner','sales'] },
-  { id: 'service',   label: 'Service',      roles: ['owner','service_advisor'] },
+  { id: 'service',     label: 'Service',       roles: ['owner','service_advisor'] },
+  { id: 'service-due', label: '🔔 Service Due', roles: ['owner','service_advisor'] },
   { id: 'vehicles',  label: 'Vehicles',     roles: ['owner','sales'] },
   { id: 'parts',     label: 'Parts',        roles: ['owner','parts_counter'] },
   { id: 'customers', label: 'Customers',    roles: ['owner','sales','service_advisor'] },
