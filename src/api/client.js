@@ -36,6 +36,22 @@ api.interceptors.response.use(
 
 export default api;
 
+// ── Safe error message extractor ───────────────────────────────────────────────
+// FastAPI validation errors return detail as array [{type,loc,msg,input,ctx}]
+// React can't render objects/arrays — always extract a string
+export function errMsg(e, fallback = 'Something went wrong') {
+  const detail = e?.response?.data?.detail;
+  if (!detail) return e?.message || fallback;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail.map(d => {
+      const loc = d.loc?.slice(1).join(' → ') || '';
+      return loc ? `${loc}: ${d.msg}` : d.msg;
+    }).join(' | ');
+  }
+  try { return JSON.stringify(detail); } catch { return fallback; }
+}
+
 // ── Auth ────────────────────────────────────────────────────────────
 export const authApi = {
   login:  (data) => api.post('/auth/login', data),
