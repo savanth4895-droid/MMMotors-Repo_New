@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { serviceApi, partsApi, customersApi, billsApi, salesApi, errMsg} from '../api/client';
+import { useSortable } from '../components/ui';
 import toast from 'react-hot-toast';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -100,6 +101,7 @@ export default function ServicePage() {
     keepPreviousData: true,
   });
   const jobs = data?.data?.items || data?.data || [];
+  const { sorted: sortedJobs, Th: JobTh } = useSortable(jobs, 'check_in_date', 'desc');
 
   // ── Stats ────────────────────────────────────────────────────────────────────
   const { data: statsData } = useQuery({
@@ -207,14 +209,14 @@ export default function ServicePage() {
           <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12, marginTop:8 }}>
             <thead>
               <tr style={{ borderBottom:'1px solid var(--border,#222)' }}>
-                {['Job #','Customer','Vehicle','Complaint','Tech','Status','Actions'].map((h,i) => (
-                  <th key={i} style={{ padding:'10px 12px', textAlign:'left',
-                    fontSize:10, letterSpacing:'.07em', color:C.muted, fontWeight:700 }}>{h}</th>
+                {[['Job #','job_number'],['Customer','customer_name'],['Vehicle','vehicle_number'],['Complaint','complaint'],['Tech','technician'],['Status','status'],['Actions','']].map(([h,f],i) => (
+                  <JobTh key={i} field={f||null} style={{ padding:'10px 12px', textAlign:'left',
+                    fontSize:10, letterSpacing:'.07em', color:C.muted, fontWeight:700 }}>{h}</JobTh>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {jobs.map((job, idx) => (
+              {sortedJobs.map((job, idx) => (
                 <tr key={job._id||job.id}
                   style={{ borderBottom:'1px solid var(--border,#222)',
                     background:idx%2===0?'transparent':C.s2, transition:'background .1s' }}
