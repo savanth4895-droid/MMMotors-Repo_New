@@ -15,33 +15,122 @@ function sendWA(mobile, msg) {
 
 // ── Invoice modal ────────────────────────────────────────────────────
 function InvoiceModal({ sale, onClose }) {
+  const [notes, setNotes] = useState(sale.notes || '');
+
   const print = () => {
-    const w = window.open('','_blank');
-    w.document.write(`<html><head><title>${sale.invoice_number}</title>
-    <style>body{font-family:sans-serif;padding:24px;max-width:700px;margin:0 auto;}h2{margin-bottom:16px;text-align:center;}table{width:100%;border-collapse:collapse;margin-bottom:16px}td{padding:8px;border-bottom:1px solid #eee;font-size:14px}td:first-child{font-weight:bold;width:35%;color:#555;}@media print{button{display:none}}</style></head><body>
-    <h2>MM Motors — Sale Record (${sale.invoice_number})</h2>
-    <table>
-      <tr><td>Sales Date</td><td>${sale.sale_date || '—'}</td></tr>
-      <tr><td>Name</td><td>${sale.customer_name || '—'}</td></tr>
-      <tr><td>C/O</td><td>${sale.care_of || sale.customer_care_of || '—'}</td></tr>
-      <tr><td>Mobile Number</td><td>${sale.customer_mobile || '—'}</td></tr>
-      <tr><td>Address</td><td>${sale.customer_address || '—'}</td></tr>
-      <tr><td>Brand</td><td>${sale.vehicle_brand || '—'}</td></tr>
-      <tr><td>Model</td><td>${sale.vehicle_model || '—'}</td></tr>
-      <tr><td>Variant</td><td>${sale.vehicle_variant || '—'}</td></tr>
-      <tr><td>Colour</td><td>${sale.vehicle_color || '—'}</td></tr>
-      <tr><td>Vehicle No</td><td>${sale.vehicle_number || '—'}</td></tr>
-      <tr><td>Chassis No</td><td>${sale.chassis_number || '—'}</td></tr>
-      <tr><td>Engine No</td><td>${sale.engine_number || '—'}</td></tr>
-      <tr><td>RTO</td><td>${sale.rto ? '₹' + sale.rto.toLocaleString('en-IN') : '—'}</td></tr>
-      <tr><td>HP (Financier)</td><td>${sale.financier || '—'}</td></tr>
-      <tr><td>Insurance Nominee Name</td><td>${sale.nominee?.name || '—'}</td></tr>
-      <tr><td>Relation</td><td>${sale.nominee?.relation || '—'}</td></tr>
-      <tr><td>Age</td><td>${sale.nominee?.age || '—'}</td></tr>
-      <tr><td>Number</td><td>${sale.nominee?.number || '—'}</td></tr>
-    </table>
-    <div style="text-align:center;margin-top:20px;"><button onclick="window.print()" style="padding:10px 20px;font-size:16px;cursor:pointer;">Print Document</button></div>
-    </body></html>`);
+    const RS = '₹';
+    const fmt = n => Number(n||0).toLocaleString('en-IN');
+
+    // build amount breakdown rows
+    const exShowroom  = sale.ex_showroom_price || sale.total_amount || 0;
+    const rto         = sale.rto               || 0;
+    const insurance   = sale.insurance         || 0;
+    const accessories = sale.accessories       || 0;
+    const discount    = sale.discount          || 0;
+    const totalAmount = sale.total_amount      || 0;
+
+    const amountRows = [
+      ['Ex-Showroom Price', exShowroom],
+      rto         ? ['RTO',           rto]         : null,
+      insurance   ? ['Insurance',     insurance]   : null,
+      accessories ? ['Accessories',   accessories] : null,
+      discount    ? ['Discount',      -discount]   : null,
+    ].filter(Boolean).map(([l,v]) =>
+      `<tr><td style="padding:8px 12px;border-bottom:1px solid #eee;color:#555;font-size:12px">${l}</td>
+       <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;font-size:12px">${v<0?'− ':''}${RS}${fmt(Math.abs(v))}</td></tr>`
+    ).join('');
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
+    <title>Invoice — ${sale.invoice_number}</title>
+    <style>
+      *{margin:0;padding:0;box-sizing:border-box}
+      body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#111;padding:24px;background:#fff}
+      .wrap{max-width:680px;margin:0 auto}
+      .hdr{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:14px;border-bottom:2.5px solid #B8860B;margin-bottom:20px}
+      .brand{font-size:22px;font-weight:800;color:#B8860B;letter-spacing:-.5px}
+      .brand-sub{font-size:10px;color:#888;margin-top:3px}
+      .inv-meta{text-align:right}
+      .inv-meta .inv-no{font-size:16px;font-weight:700;color:#B8860B}
+      .inv-meta .inv-date{font-size:10px;color:#666;margin-top:4px}
+      .section-title{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:#888;margin-bottom:10px;font-weight:700}
+      .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
+      .box{background:#f9f9f9;border:1px solid #e5e5e5;border-radius:5px;padding:14px}
+      .row{display:flex;padding:7px 0;border-bottom:1px solid #eee}
+      .row:last-child{border-bottom:none}
+      .row .lbl{width:150px;color:#666;font-size:11px;flex-shrink:0}
+      .row .val{font-size:12px;font-weight:500;word-break:break-word}
+      .amt-table{width:100%;border-collapse:collapse;margin-bottom:16px}
+      .total-row td{font-size:14px;font-weight:800;color:#B8860B;padding:10px 12px;border-top:2px solid #B8860B}
+      .notes-box{background:#f9f9f9;border:1px solid #e5e5e5;border-radius:5px;padding:12px;font-size:12px;color:#444;min-height:40px;margin-bottom:20px}
+      .footer{display:flex;justify-content:space-between;border-top:1px solid #ddd;padding-top:12px;font-size:10px;color:#888}
+      @media print{body{padding:10px}}
+    </style></head><body>
+    <div class="wrap">
+      <div class="hdr">
+        <div>
+          <div class="brand">MM MOTORS</div>
+          <div class="brand-sub">Authorised Multi-Brand Dealership</div>
+        </div>
+        <div class="inv-meta">
+          <div style="font-size:11px;color:#888;font-weight:600;letter-spacing:.07em;text-transform:uppercase">Tax Invoice</div>
+          <div class="inv-no">${sale.invoice_number}</div>
+          <div class="inv-date">Date: ${sale.sale_date || new Date().toLocaleDateString('en-IN')}</div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="box">
+          <div class="section-title">Customer Details</div>
+          <div class="row"><div class="lbl">Name</div><div class="val">${sale.customer_name||'—'}</div></div>
+          <div class="row"><div class="lbl">C/O</div><div class="val">${sale.care_of||sale.customer_care_of||'—'}</div></div>
+          <div class="row"><div class="lbl">Mobile</div><div class="val">${sale.customer_mobile||'—'}</div></div>
+          <div class="row"><div class="lbl">Address</div><div class="val">${sale.customer_address||'—'}</div></div>
+        </div>
+        <div class="box">
+          <div class="section-title">Vehicle Details</div>
+          <div class="row"><div class="lbl">Brand / Model</div><div class="val">${sale.vehicle_brand||''} ${sale.vehicle_model||''}</div></div>
+          <div class="row"><div class="lbl">Variant</div><div class="val">${sale.vehicle_variant||'—'}</div></div>
+          <div class="row"><div class="lbl">Colour</div><div class="val">${sale.vehicle_color||'—'}</div></div>
+          <div class="row"><div class="lbl">Vehicle No.</div><div class="val">${sale.vehicle_number||'—'}</div></div>
+          <div class="row"><div class="lbl">Chassis No.</div><div class="val">${sale.chassis_number||'—'}</div></div>
+          <div class="row"><div class="lbl">Engine No.</div><div class="val">${sale.engine_number||'—'}</div></div>
+          <div class="row"><div class="lbl">HP (Financier)</div><div class="val">${sale.financier||'—'}</div></div>
+        </div>
+      </div>
+
+      <div class="section-title">Nominee Details</div>
+      <div class="box" style="margin-bottom:20px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0">
+        <div class="row" style="flex-direction:column;border-right:1px solid #eee;padding:10px"><div class="lbl" style="width:auto;margin-bottom:4px">Name</div><div class="val">${sale.nominee?.name||'—'}</div></div>
+        <div class="row" style="flex-direction:column;border-right:1px solid #eee;padding:10px"><div class="lbl" style="width:auto;margin-bottom:4px">Relation</div><div class="val">${sale.nominee?.relation||'—'}</div></div>
+        <div class="row" style="flex-direction:column;border-right:1px solid #eee;padding:10px"><div class="lbl" style="width:auto;margin-bottom:4px">Age</div><div class="val">${sale.nominee?.age||'—'}</div></div>
+        <div class="row" style="flex-direction:column;padding:10px"><div class="lbl" style="width:auto;margin-bottom:4px">Number</div><div class="val">${sale.nominee?.number||'—'}</div></div>
+      </div>
+
+      <div class="section-title">Amount Breakdown</div>
+      <table class="amt-table">
+        <tbody>
+          ${amountRows}
+        </tbody>
+        <tfoot>
+          <tr class="total-row"><td>Total Amount</td><td style="text-align:right">${RS}${fmt(totalAmount)}</td></tr>
+        </tfoot>
+      </table>
+      <div style="text-align:right;font-size:10px;color:#888;font-style:italic;margin-bottom:20px">
+        Payment Mode: ${sale.payment_mode||'Cash'}
+      </div>
+
+      ${notes ? `<div class="section-title">Notes</div><div class="notes-box">${notes}</div>` : ''}
+
+      <div class="footer">
+        <span>Thank you for choosing MM Motors!</span>
+        <span>Authorised Signatory</span>
+      </div>
+    </div>
+    <script>window.onload=()=>{window.print();}</script>
+    </body></html>`;
+
+    const w = window.open('', '_blank');
+    w.document.write(html);
     w.document.close();
   };
 
@@ -57,35 +146,48 @@ function InvoiceModal({ sale, onClose }) {
           </div>
           <button onClick={onClose} style={{ background:'transparent', border:'none', color:'#6b6460', cursor:'pointer', fontSize:20 }}>×</button>
         </div>
-        
-        <div style={{ padding:20, display:'flex', flexDirection:'column', gap:8, overflowY:'auto' }}>
+
+        <div style={{ padding:20, display:'flex', flexDirection:'column', gap:0, overflowY:'auto' }}>
           {[
-            ['Sales Date',    sale.sale_date || '—'],
-            ['Name',          sale.customer_name || '—'],
-            ['C/O',           sale.care_of || sale.customer_care_of || '—'],
-            ['Mobile Number', sale.customer_mobile || '—'],
-            ['Address',       sale.customer_address || '—'],
-            ['Brand',         sale.vehicle_brand || '—'],
-            ['Model',         sale.vehicle_model || '—'],
-            ['Variant',       sale.vehicle_variant || '—'],
-            ['Colour',        sale.vehicle_color || '—'],
-            ['Vehicle No',    sale.vehicle_number || '—'],
-            ['Chassis No',    sale.chassis_number || '—'],
-            ['Engine No',     sale.engine_number || '—'],
-            ['RTO',           sale.rto ? `₹${sale.rto.toLocaleString('en-IN')}` : '—'],
-            ['HP (Financier)',sale.financier || '—'],
-            ['Nominee Name',  sale.nominee?.name || '—'],
-            ['Relation',      sale.nominee?.relation || '—'],
-            ['Age',           sale.nominee?.age || '—'],
-            ['Number',        sale.nominee?.number || '—'],
+            ['Sales Date',     sale.sale_date || '—'],
+            ['Name',           sale.customer_name || '—'],
+            ['C/O',            sale.care_of || sale.customer_care_of || '—'],
+            ['Mobile Number',  sale.customer_mobile || '—'],
+            ['Address',        sale.customer_address || '—'],
+            ['Brand',          sale.vehicle_brand || '—'],
+            ['Model',          sale.vehicle_model || '—'],
+            ['Variant',        sale.vehicle_variant || '—'],
+            ['Colour',         sale.vehicle_color || '—'],
+            ['Vehicle No',     sale.vehicle_number || '—'],
+            ['Chassis No',     sale.chassis_number || '—'],
+            ['Engine No',      sale.engine_number || '—'],
+            ['RTO',            sale.rto ? `₹${sale.rto.toLocaleString('en-IN')}` : '—'],
+            ['HP (Financier)', sale.financier || '—'],
+            ['Nominee Name',   sale.nominee?.name || '—'],
+            ['Relation',       sale.nominee?.relation || '—'],
+            ['Age',            sale.nominee?.age || '—'],
+            ['Number',         sale.nominee?.number || '—'],
+            ['Total Amount',   sale.total_amount ? `₹${sale.total_amount.toLocaleString('en-IN')}` : '—'],
+            ['Payment Mode',   sale.payment_mode || '—'],
           ].map(([l,v]) => (
-            <div key={l} style={{ display:'flex', fontSize:12, paddingBottom: 4, borderBottom: '1px solid var(--border)' }}>
+            <div key={l} style={{ display:'flex', fontSize:12, padding:'8px 0', borderBottom:'1px solid var(--border)' }}>
               <div style={{ width:140, color:'var(--muted)', flexShrink:0, fontWeight:500 }}>{l}</div>
               <div style={{ color:'var(--text)', wordBreak:'break-word' }}>{v}</div>
             </div>
           ))}
+          {/* Notes field */}
+          <div style={{ marginTop:14 }}>
+            <div style={{ fontSize:10, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--muted)', fontWeight:600, marginBottom:6 }}>Notes</div>
+            <textarea
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              rows={3}
+              placeholder="Additional notes for this sale…"
+              style={{ width:'100%', padding:'8px 10px', border:'1px solid var(--border)', borderRadius:4, background:'var(--surface2)', color:'var(--text)', fontSize:12, fontFamily:'IBM Plex Sans, sans-serif', resize:'vertical', boxSizing:'border-box' }}
+            />
+          </div>
         </div>
-        
+
         <div style={{ padding:'16px 20px', background:'var(--surface2)', borderTop:'1px solid var(--border)', display:'flex', gap:8, flexShrink:0 }}>
           <Btn onClick={print}>Print →</Btn>
           <GhostBtn onClick={()=>sendWA(sale.customer_mobile,`Dear ${sale.customer_name}, your vehicle documentation is ready. Thank you for choosing MM Motors!`)}>WhatsApp</GhostBtn>
