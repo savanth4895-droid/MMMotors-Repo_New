@@ -333,6 +333,7 @@ class ServiceJobCreate(BaseModel):
     estimated_delivery: Optional[str] = ""
     notes:          Optional[str] = ""
     vehicle_photo_id: Optional[str] = ""
+    save_vehicle:   Optional[bool] = False
 
 class ServiceJobUpdate(BaseModel):
     status:             Optional[str] = None
@@ -1092,14 +1093,16 @@ async def create_service_job(body: ServiceJobCreate, current_user=Depends(verify
         raise HTTPException(status_code=404, detail="Customer not found")
     job_no   = await next_sequence("job")
     check_in = body.check_in_date or datetime.utcnow().strftime("%d %b %Y")
+    veh_no   = body.vehicle_number.strip().upper() if body.vehicle_number else ""
+    chassis  = body.chassis_number.strip().upper() if body.chassis_number else ""
     doc = {
         "job_number":         job_no,
         "customer_id":        body.customer_id,
         "customer_name":      customer["name"],
         "customer_mobile":    customer.get("mobile",""),
         "customer_address":   customer.get("address",""),
-        "vehicle_number":     body.vehicle_number.strip().upper(),
-        "chassis_number":     body.chassis_number.strip().upper() if body.chassis_number else "",
+        "vehicle_number":     veh_no,
+        "chassis_number":     chassis,
         "brand":              body.brand.upper(),
         "model":              body.model,
         "variant":            body.variant or "",
@@ -1117,9 +1120,119 @@ async def create_service_job(body: ServiceJobCreate, current_user=Depends(verify
     }
     result = await db.service_jobs.insert_one(doc)
     doc["id"] = str(result.inserted_id); doc.pop("_id", None)
+
+    # Option B: save vehicle to records if requested (service-only customers)
+    if getattr(body, "save_vehicle", False):
+        # Only create if not already in vehicles collection
+        dedup_query = {"chassis_number": chassis} if chassis else {"vehicle_number": veh_no} if veh_no else None
+        existing_veh = await db.vehicles.find_one(dedup_query) if dedup_query else None
+        if not existing_veh:
+            await db.vehicles.insert_one({
+                "brand":            body.brand.upper(),
+                "model":            body.model,
+                "variant":          body.variant or "",
+                "chassis_number":   chassis,
+                "vehicle_number":   veh_no,
+                "engine_number":    "",
+                "color":            "",
+                "key_number":       "",
+                "type":             "used",
+                "status":           "in_service",
+                "customer_id":      body.customer_id,
+                "customer_name":    customer["name"],
+                "customer_mobile":  customer.get("mobile",""),
+                "inbound_date":     check_in,
+                "inbound_location": "Service",
+                "return_date":      "",
+                "returned_location":"",
+                "created_at":       datetime.utcnow().isoformat(),
+                "_source":          "service",
+            })
+
     return doc
 
-@api_router.get("/service/stats/summary")
+
+# ── Service Due ────────────────────────────────────────────────────────────────
+@api_router.get("/service/due")
+async def service_due(
+    days: int = Query(90, ge=1, le=365),
+    current_user=Depends(verify_token),
+):
+    """
+    Returns one record per vehicle (most recent job) where the last service
+    was >= `days` ago. Works for ALL customers — sales and service-only.
+    """
+    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+
+    # Aggregate: latest job per vehicle_number
+    pipeline = [
+        # Only delivered/completed jobs
+        {"$match": {"status": "delivered"}},
+        # Sort so $first picks the most recent per vehicle
+        {"$sort": {"created_at": -1}},
+        # Group by vehicle_number — keep latest job fields
+        {"$group": {
+            "_id": "$vehicle_number",
+            "job_id":          {"$first": "$_id"},
+            "job_number":      {"$first": "$job_number"},
+            "customer_name":   {"$first": "$customer_name"},
+            "customer_mobile": {"$first": "$customer_mobile"},
+            "vehicle_number":  {"$first": "$vehicle_number"},
+            "brand":           {"$first": "$brand"},
+            "model":           {"$first": "$model"},
+            "complaint":       {"$first": "$complaint"},
+            "check_in_date":   {"$first": "$check_in_date"},
+            "created_at":      {"$first": "$created_at"},
+        }},
+        # Filter: last service older than cutoff
+        {"$match": {"created_at": {"$lt": cutoff}}},
+        # Sort by most overdue first
+        {"$sort": {"created_at": 1}},
+        {"$limit": 500},
+    ]
+
+    docs = await db.service_jobs.aggregate(pipeline).to_list(500)
+
+    now = datetime.utcnow()
+    result = []
+    for d in docs:
+        d["id"] = str(d.pop("job_id", d.get("_id","")))
+        d.pop("_id", None)
+        # Compute days since last service
+        try:
+            last = datetime.fromisoformat(d["created_at"])
+            d["days_since"] = (now - last).days
+        except Exception:
+            d["days_since"] = None
+        # Urgency bucket
+        ds = d.get("days_since") or 0
+        d["urgency"] = "overdue" if ds >= days else "due_soon" if ds >= days - 30 else "ok"
+        result.append(d)
+
+    return result
+
+@api_router.post("/service/due/{vehicle_number}/notified")
+async def mark_notified(vehicle_number: str, current_user=Depends(verify_token)):
+    """Mark a vehicle as notified — stores timestamp so you know who was contacted."""
+    key = vehicle_number.upper().strip()
+    await db.service_notifications.update_one(
+        {"vehicle_number": key},
+        {"$set": {
+            "vehicle_number":  key,
+            "notified_at":     datetime.utcnow().isoformat(),
+            "notified_by":     current_user.get("name", ""),
+        }},
+        upsert=True,
+    )
+    return {"message": "Marked as notified"}
+
+@api_router.get("/service/due/notifications")
+async def get_notifications(current_user=Depends(verify_token)):
+    """Return vehicle_number → last notified_at map."""
+    docs = await db.service_notifications.find({}).to_list(2000)
+    return {d["vehicle_number"]: d["notified_at"] for d in docs if d.get("vehicle_number")}
+
+
 async def service_stats(current_user=Depends(verify_token)):
     pending, in_progress, ready, delivered = await asyncio.gather(
         db.service_jobs.count_documents({"status":"pending"}),
