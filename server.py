@@ -671,7 +671,7 @@ async def list_vehicles(
     status:  Optional[str] = Query(None),
     type:    Optional[str] = Query(None),
     search:  Optional[str] = Query(None),
-    p=Depends(paginate_params),
+    limit:   int           = Query(300, ge=1, le=5000),
     current_user=Depends(verify_token),
 ):
     query: dict = {}
@@ -685,7 +685,7 @@ async def list_vehicles(
             {"vehicle_number": {"$regex": search, "$options": "i"}},
             {"color":          {"$regex": search, "$options": "i"}},
         ]
-    docs  = await db.vehicles.find(query).skip(p["skip"]).limit(p["limit"]).sort("created_at", -1).to_list(p["limit"])
+    docs  = await db.vehicles.find(query).sort("created_at", -1).limit(limit).to_list(limit)
     total = await db.vehicles.count_documents(query)
     return JSONResponse(content=oids(docs), headers={"X-Total-Count": str(total)})
 
@@ -898,7 +898,7 @@ async def list_sales(
     from_date:   Optional[str] = Query(None),
     to_date:     Optional[str] = Query(None),
     search:      Optional[str] = Query(None),
-    p=Depends(paginate_params),
+    limit:       int           = Query(300, ge=1, le=5000),
     current_user=Depends(verify_token),
 ):
     query: dict = {}
@@ -911,7 +911,7 @@ async def list_sales(
             {"vehicle_model":  {"$regex": search, "$options": "i"}},
             {"vehicle_number": {"$regex": search, "$options": "i"}},
         ]
-    docs  = await db.sales.find(query).skip(p["skip"]).limit(p["limit"]).sort("created_at", -1).to_list(p["limit"])
+    docs  = await db.sales.find(query).sort("created_at", -1).limit(limit).to_list(limit)
     total = await db.sales.count_documents(query)
     return JSONResponse(content=oids(docs), headers={"X-Total-Count": str(total)})
 
@@ -1066,7 +1066,7 @@ async def list_service_jobs(
     customer_id: Optional[str] = Query(None),
     technician:  Optional[str] = Query(None),
     search:      Optional[str] = Query(None),
-    p=Depends(paginate_params),
+    limit:       int           = Query(200, ge=1, le=5000),
     current_user=Depends(verify_token),
 ):
     query: dict = {}
@@ -1081,7 +1081,7 @@ async def list_service_jobs(
             {"model":          {"$regex": search, "$options": "i"}},
             {"complaint":      {"$regex": search, "$options": "i"}},
         ]
-    docs  = await db.service_jobs.find(query).skip(p["skip"]).limit(p["limit"]).sort("created_at",-1).to_list(p["limit"])
+    docs  = await db.service_jobs.find(query).sort("created_at",-1).limit(limit).to_list(limit)
     total = await db.service_jobs.count_documents(query)
     return JSONResponse(content=oids(docs), headers={"X-Total-Count": str(total)})
 
