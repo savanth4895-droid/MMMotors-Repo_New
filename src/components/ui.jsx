@@ -120,7 +120,11 @@ export function Empty({ message = 'No data', sub }) {
 
 // Error display
 export function ApiError({ error }) {
-  const msg = error?.response?.data?.detail || error?.message || 'Something went wrong';
+  const detail = error?.response?.data?.detail;
+  const msg = typeof detail === 'string' ? detail
+    : Array.isArray(detail) ? detail.map(d => d.msg || JSON.stringify(d)).join(', ')
+    : detail ? JSON.stringify(detail)
+    : error?.message || 'Something went wrong';
   return (
     <div style={{
       padding: '10px 14px', background: 'rgba(220,38,38,.06)',
