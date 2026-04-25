@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { partsApi, partsSalesApi } from '../api/client';
+import { partsApi, partsSalesApi, errMsg} from '../api/client';
 import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError } from '../components/ui';
 import toast from 'react-hot-toast';
 import { PartsBillModal } from './ServicePage';
@@ -211,7 +211,7 @@ function NewBillForm({ parts, onCancel, onDone }) {
       toast.success('Bill created');
       onDone();
     } catch(e) {
-      toast.error(e?.response?.data?.detail||'Failed');
+      toast.error(errMsg(e, 'Failed'));
     } finally {
       setSaving(false);
     }
@@ -346,12 +346,12 @@ export default function PartsPage() {
   const createMut = useMutation({
     mutationFn: d=>partsApi.create(d),
     onSuccess: ()=>{ qc.invalidateQueries(['parts']); qc.invalidateQueries(['parts-stats']); setView('list'); toast.success('Part added'); },
-    onError:   e=>toast.error(e?.response?.data?.detail||'Failed'),
+    onError:   e=>toast.error(errMsg(e, 'Failed')),
   });
   const updateMut = useMutation({
     mutationFn: ({id,data})=>partsApi.update(id,data),
     onSuccess: ()=>{ qc.invalidateQueries(['parts']); qc.invalidateQueries(['parts-stats']); setEditPart(null); toast.success('Part updated'); },
-    onError:   e=>toast.error(e?.response?.data?.detail||'Update failed'),
+    onError:   e=>toast.error(errMsg(e, 'Update failed')),
   });
   const deleteMut = useMutation({
     mutationFn: id=>partsApi.delete(id),
