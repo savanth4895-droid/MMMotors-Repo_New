@@ -1794,35 +1794,34 @@ TEMPLATES = {
         ]
     },
     "vehicles": {
-        "cols":["brand","model","variant","color","chassis_number","engine_number","vehicle_number","key_number","type"],
+        "cols":["brand","model","variant","color","chassis_number","engine_number","vehicle_number","key_number","type","status","return_date","returned_location"],
         "rows":[
-            ["HONDA","Activa 6G","STD","Pearl Black","ME4JF502RH7000001","JF50E7000001","KA01HH1234","K001","new"],
-            ["HERO","Splendor+","Self Start","Heavy Grey","MBLHA10EVHM000002","HA10EAHM00002","KA03AB5678","K002","new"],
-            ["BAJAJ","Pulsar 150","Drum","Black Red","MD2DHDZZXRCB12345","DHZDRCB12345","","","new"],
+            ["HONDA","Activa 6G","STD","Pearl Black","ME4JF502RH7000001","JF50E7000001","KA01HH1234","K001","new","in_stock","",""],
+            ["HERO","Splendor+","Self Start","Heavy Grey","MBLHA10EVHM000002","HA10EAHM00002","KA03AB5678","K002","new","in_stock","",""],
+            ["BAJAJ","Pulsar 150","Drum","Black Red","MD2DHDZZXRCB12345","DHZDRCB12345","","","used","returned","01/04/2026","Showroom"],
         ]
     },
     "sales": {
         "cols":["customer_name","customer_mobile","vehicle_brand","vehicle_model","chassis_number",
                 "engine_number","vehicle_number","vehicle_color","vehicle_variant","sale_price",
-                "discount","insurance","rto","payment_mode","nominee_name","nominee_relation",
-                "nominee_age","sale_date","customer_address"],
+                "payment_mode","nominee_name","nominee_relation","nominee_age","sale_date","customer_address"],
         "rows":[
             ["Ravi Kumar","9876543210","HONDA","Activa 6G","ME4JF502RH7000001","JF50E7000001",
-             "KA01HH1234","Pearl Black","STD","80500","0","4500","8000","Cash",
+             "KA01HH1234","Pearl Black","STD","80500","Cash",
              "Balakrishna","Father","54","08/04/2026","12 MG Road, Bengaluru"],
             ["Priya Nair","9845001122","HERO","Splendor+","MBLHA10EVHM000002","HA10EAHM00002",
-             "","Heavy Grey","Self Start","73200","2000","3800","7500","Finance",
+             "","Heavy Grey","Self Start","73200","Finance",
              "Suresh Nair","Husband","42","15/04/2026",""],
         ]
     },
     "service": {
         "cols":["customer_name","customer_mobile","vehicle_number","brand","model",
-                "odometer_km","complaint","technician","check_in_date","status","notes"],
+                "odometer_km","complaint","technician","check_in_date","status","amount","notes"],
         "rows":[
             ["Ravi Kumar","9876543210","KA01HH1234","HONDA","Activa 6G",
-             "8420","Engine noise, oil change","Suresh","07/04/2026","delivered",""],
+             "8420","Engine noise, oil change","Suresh","07/04/2026","delivered","350",""],
             ["Meena Shetty","9845123456","KA03AB5678","HERO","Splendor+",
-             "12500","Routine service, brake pad","Arun","10/04/2026","delivered","Chain also tightened"],
+             "12500","Routine service, brake pad","Arun","10/04/2026","delivered","500","Chain also tightened"],
         ]
     },
     "parts": {
@@ -1908,7 +1907,7 @@ async def import_vehicles(file: UploadFile = File(...), mode: str = Form("skip")
                     inserted += 1
                 else: skipped.append({"row":rn,"reason":f"Chassis {chassis} already exists"})
                 continue
-            await db.vehicles.insert_one({"brand":brand,"model":model,"variant":safe(row.get("variant")),"color":safe(row.get("color")),"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"key_number":safe(row.get("key_number")),"type":safe(row.get("type","new")).lower() or "new","status":"in_stock","created_at":datetime.utcnow().isoformat()})
+            await db.vehicles.insert_one({"brand":brand,"model":model,"variant":safe(row.get("variant")),"color":safe(row.get("color")),"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"key_number":safe(row.get("key_number")),"type":safe(row.get("type","new")).lower() or "new","status":safe(row.get("status","in_stock")).lower() or "in_stock","return_date":safe(row.get("return_date","")),"returned_location":safe(row.get("returned_location","")),"created_at":datetime.utcnow().isoformat()})
             inserted += 1
         except Exception as e:
             traceback.print_exc(); errors.append({"row":rn,"error":str(e)})
@@ -1931,7 +1930,7 @@ async def import_sales(file: UploadFile = File(...), mode: str = Form("skip"), c
             else: cust_id = str(cust["_id"])
             discount=safe_float(row.get("discount",0)); insurance=safe_float(row.get("insurance",0)); rto=safe_float(row.get("rto",0)); total=price-discount+insurance+rto
             inv_no = await next_sequence("invoice")
-            await db.sales.insert_one({"invoice_number":inv_no,"customer_id":cust_id,"customer_name":name,"customer_mobile":mobile,"vehicle_brand":brand,"vehicle_model":model,"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"sale_price":price,"discount":discount,"insurance":insurance,"rto":rto,"total_amount":round(total,2),"amount_in_words":amount_in_words(total),"payment_mode":safe(row.get("payment_mode","Cash")),"nominee":{"name":safe(row.get("nominee_name")),"relation":safe(row.get("nominee_relation")),"age":safe(row.get("nominee_age"))},"sale_date":safe(row.get("sale_date","")) or datetime.utcnow().strftime("%d %b %Y"),"status":"delivered","created_at":datetime.utcnow().isoformat(),"_imported":True})
+            await db.sales.insert_one({"invoice_number":inv_no,"customer_id":cust_id,"customer_name":name,"customer_mobile":mobile,"vehicle_brand":brand,"vehicle_model":model,"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"vehicle_color":safe(row.get("vehicle_color")),"vehicle_variant":safe(row.get("vehicle_variant")),"sale_price":price,"discount":discount,"insurance":insurance,"rto":rto,"total_amount":round(total,2),"amount_in_words":amount_in_words(total),"payment_mode":safe(row.get("payment_mode","Cash")),"nominee":{"name":safe(row.get("nominee_name")),"relation":safe(row.get("nominee_relation")),"age":safe(row.get("nominee_age"))},"sale_date":safe(row.get("sale_date","")) or datetime.utcnow().strftime("%d %b %Y"),"status":"delivered","created_at":datetime.utcnow().isoformat(),"_imported":True})
             inserted += 1
         except Exception as e:
             traceback.print_exc(); errors.append({"row":rn,"error":str(e)})
@@ -1944,9 +1943,15 @@ async def import_service(file: UploadFile = File(...), mode: str = Form("skip"),
     for i, row in enumerate(rows):
         rn = i+2
         try:
-            name=safe(row.get("customer_name")); mobile=safe(row.get("customer_mobile")); veh_no=safe(row.get("vehicle_number","")).upper(); complaint=safe(row.get("complaint","")); check_in=safe(row.get("check_in_date","")) or datetime.utcnow().strftime("%d %b %Y")
-            if not veh_no or not complaint: skipped.append({"row":rn,"reason":"Missing vehicle_number or complaint"}); continue
-            if await db.service_jobs.find_one({"vehicle_number":veh_no,"check_in_date":check_in}): skipped.append({"row":rn,"reason":f"Job for {veh_no} on {check_in} exists"}); continue
+            name     = safe(row.get("customer_name",""))
+            mobile   = safe(row.get("customer_mobile",""))
+            veh_no   = safe(row.get("vehicle_number","")).upper()
+            complaint= safe(row.get("complaint","")) or "Service"
+            check_in = safe(row.get("check_in_date","")) or datetime.utcnow().strftime("%d %b %Y")
+            amount   = safe_float(row.get("amount",0))
+            # All fields optional — skip only true duplicates
+            if veh_no and await db.service_jobs.find_one({"vehicle_number":veh_no,"check_in_date":check_in}):
+                skipped.append({"row":rn,"reason":f"Job for {veh_no} on {check_in} exists"}); continue
             cust = await db.customers.find_one({"mobile":mobile}) if mobile else None
             if not cust and name:
                 r = await db.customers.insert_one({"name":name,"mobile":mobile,"email":"","address":"","tags":[],"created_at":datetime.utcnow().isoformat()})
@@ -1955,7 +1960,7 @@ async def import_service(file: UploadFile = File(...), mode: str = Form("skip"),
             status = safe(row.get("status","delivered")).lower()
             if status not in ("pending","in_progress","ready","delivered"): status = "delivered"
             job_no = await next_sequence("job")
-            await db.service_jobs.insert_one({"job_number":job_no,"customer_id":cust_id,"customer_name":name or "","customer_mobile":mobile or "","vehicle_number":veh_no,"brand":safe(row.get("brand","")).upper(),"model":safe(row.get("model","")),"odometer_km":safe_int(row.get("odometer_km",0)),"complaint":complaint,"technician":safe(row.get("technician","")),"check_in_date":check_in,"status":status,"created_at":datetime.utcnow().isoformat(),"_imported":True})
+            await db.service_jobs.insert_one({"job_number":job_no,"customer_id":cust_id,"customer_name":name or "","customer_mobile":mobile or "","vehicle_number":veh_no or "","brand":safe(row.get("brand","")).upper(),"model":safe(row.get("model","")),"odometer_km":safe_int(row.get("odometer_km",0)),"complaint":complaint,"technician":safe(row.get("technician","")),"check_in_date":check_in,"status":status,"grand_total":amount,"notes":safe(row.get("notes","")),"created_at":datetime.utcnow().isoformat(),"_imported":True})
             inserted += 1
         except Exception as e:
             traceback.print_exc(); errors.append({"row":rn,"error":str(e)})
