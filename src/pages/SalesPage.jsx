@@ -485,6 +485,7 @@ export default function SalesPage() {
 
   const { data:stats } = useQuery({
     queryKey:['sales-stats'],
+    refetchInterval: 30_000,
     queryFn: () => salesApi.stats().then(r=>r.data),
   });
 
