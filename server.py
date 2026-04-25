@@ -1097,6 +1097,7 @@ async def create_service_job(body: ServiceJobCreate, current_user=Depends(verify
         "customer_id":        body.customer_id,
         "customer_name":      customer["name"],
         "customer_mobile":    customer.get("mobile",""),
+        "customer_address":   customer.get("address",""),
         "vehicle_number":     body.vehicle_number.strip().upper(),
         "chassis_number":     body.chassis_number.strip().upper() if body.chassis_number else "",
         "brand":              body.brand.upper(),
