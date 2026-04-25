@@ -324,6 +324,7 @@ class ServiceJobCreate(BaseModel):
     brand:          str
     model:          str
     variant:        Optional[str] = ""
+    chassis_number: Optional[str] = ""
     odometer_km:    Optional[int] = 0
     complaint:      str
     advisor_id:     Optional[str] = ""
@@ -1091,6 +1092,7 @@ async def create_service_job(body: ServiceJobCreate, current_user=Depends(verify
         "customer_name":      customer["name"],
         "customer_mobile":    customer.get("mobile",""),
         "vehicle_number":     body.vehicle_number.strip().upper(),
+        "chassis_number":     body.chassis_number.strip().upper() if body.chassis_number else "",
         "brand":              body.brand.upper(),
         "model":              body.model,
         "variant":            body.variant or "",
@@ -1282,6 +1284,15 @@ async def delete_service_bill(bill_id: str, current_user=Depends(require_admin))
     bill = await db.service_bills.find_one({"_id": obj_id(bill_id)})
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
+    # Restore stock for all parts used in this bill
+    for item in bill.get("items", []):
+        part_number = item.get("part_number", "").strip()
+        qty = item.get("qty", 0)
+        if part_number and qty > 0:
+            await db.spare_parts.update_one(
+                {"part_number": part_number},
+                {"$inc": {"stock": qty}}
+            )
     await db.service_bills.delete_one({"_id": obj_id(bill_id)})
     await db.service_jobs.update_one(
         {"_id": obj_id(bill["job_id"])},
