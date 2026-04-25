@@ -7,25 +7,34 @@ export function AuthProvider({ children }) {
   const [user, setUser]       = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // On mount, verify session via cookie — no localStorage needed
+  // On mount, if we have a stored token try to restore session
   useEffect(() => {
+    const token = localStorage.getItem('mm_token');
+    if (!token) {
+      setLoading(false);
+      return;
+    }
     authApi.me()
       .then((res) => setUser(res.data))
-      .catch(() => setUser(null))
+      .catch(() => {
+        localStorage.removeItem('mm_token');
+        setUser(null);
+      })
       .finally(() => setLoading(false));
   }, []);
 
   const login = useCallback(async (username, password) => {
     const res = await authApi.login({ username, password });
-    // Cookie is set by server (httpOnly) — just store user in state
-    const u = res.data.user;
+    const { user: u, access_token } = res.data;
+    // Store token so it persists across tabs, devices and refreshes
+    if (access_token) localStorage.setItem('mm_token', access_token);
     setUser(u);
     return u;
   }, []);
 
   const logout = useCallback(async () => {
     await authApi.logout().catch(() => {});
-    // Server clears the cookie — just clear state
+    localStorage.removeItem('mm_token');
     setUser(null);
   }, []);
 
