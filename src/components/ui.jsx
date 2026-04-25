@@ -1,3 +1,4 @@
+import { useState, useMemo } from 'react';
 // ── Shared primitive components ────────────────────────────────────
 
 // Primary / accent button
@@ -132,4 +133,44 @@ export function ApiError({ error }) {
       fontSize: 12, color: 'var(--red)',
     }}>{msg}</div>
   );
+}
+
+// ── Sortable table hook ────────────────────────────────────────────────────────
+export function useSortable(data, defaultCol = null, defaultDir = 'asc') {
+  const [col, setCol]   = useState(defaultCol);
+  const [dir, setDir]   = useState(defaultDir);
+
+  const toggle = (c) => {
+    if (col === c) setDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setCol(c); setDir('asc'); }
+  };
+
+  const sorted = useMemo(() => {
+    if (!col || !Array.isArray(data)) return data || [];
+    return [...data].sort((a, b) => {
+      const av = a[col], bv = b[col];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      const cmp = typeof av === 'number' && typeof bv === 'number'
+        ? av - bv
+        : String(av).localeCompare(String(bv), undefined, { numeric: true });
+      return dir === 'asc' ? cmp : -cmp;
+    });
+  }, [data, col, dir]);
+
+  const Th = ({ children, field, style = {}, ...rest }) => (
+    <th onClick={() => field && toggle(field)}
+      style={{ cursor: field ? 'pointer' : 'default', userSelect: 'none', ...style }}
+      {...rest}>
+      {children}
+      {field && col === field && (
+        <span style={{ marginLeft: 4, fontSize: 9, opacity: .7 }}>
+          {dir === 'asc' ? '▲' : '▼'}
+        </span>
+      )}
+    </th>
+  );
+
+  return { sorted, col, dir, toggle, Th };
 }
