@@ -94,6 +94,7 @@ export const debtApi = {
   summary:    ()          => api.get('/debts/summary'),
 };
 
+export const billsApi = {
   list:   (params) => api.get('/service-bills', { params }),
   get:    (id)     => api.get(`/service-bills/${id}`),
   create: (data)   => api.post('/service-bills', data),
