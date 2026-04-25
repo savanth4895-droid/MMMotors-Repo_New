@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { usersApi } from '../api/client';
+import { usersApi, errMsg} from '../api/client';
 import { Btn, GhostBtn, Field, Avatar, Skeleton, Empty, ApiError } from '../components/ui';
 import toast from 'react-hot-toast';
 import { useConfirm } from '../components/ConfirmModal';
@@ -40,12 +40,12 @@ function StaffProfile({ staff, onBack }) {
   const updateMut = useMutation({
     mutationFn: d => usersApi.update(staff.id, d),
     onSuccess: () => { qc.invalidateQueries(['staff']); setSaved(true); setTimeout(()=>setSaved(false),2000); toast.success('Saved'); },
-    onError:   e => toast.error(e?.response?.data?.detail||'Failed'),
+    onError:   e => toast.error(errMsg(e, 'Failed')),
   });
   const pwMut = useMutation({
     mutationFn: d => usersApi.changePassword(staff.id, d),
     onSuccess: () => { setPw({new_password:'',confirm:''}); toast.success('Password updated'); },
-    onError:   e => toast.error(e?.response?.data?.detail||'Failed'),
+    onError:   e => toast.error(errMsg(e, 'Failed')),
   });
 
   const rc = ROLE_COLOR[form.role]||ROLE_COLOR.sales;
@@ -180,12 +180,12 @@ export default function StaffPage() {
   const createMut = useMutation({
     mutationFn: d=>usersApi.create(d),
     onSuccess: ()=>{ qc.invalidateQueries(['staff']); setView('list'); toast.success('Staff member added'); },
-    onError:   e=>toast.error(e?.response?.data?.detail||'Failed'),
+    onError:   e=>toast.error(errMsg(e, 'Failed')),
   });
   const deleteMut = useMutation({
     mutationFn: id=>usersApi.delete(id),
     onSuccess: ()=>{ qc.invalidateQueries(['staff']); toast.success('Deleted'); },
-    onError:   e=>toast.error(e?.response?.data?.detail||'Cannot delete'),
+    onError:   e=>toast.error(errMsg(e, 'Cannot delete')),
   });
 
   const staff = Array.isArray(data)?data:[];
