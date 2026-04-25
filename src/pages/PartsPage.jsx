@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { partsApi, partsSalesApi, errMsg} from '../api/client';
-import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError } from '../components/ui';
+import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError, useSortable } from '../components/ui';
 import toast from 'react-hot-toast';
 import { PartsBillModal } from './ServicePage';
 
@@ -378,6 +378,8 @@ export default function PartsPage() {
     return true;
   }).filter(p => !cat || p.category===cat);
 
+  const { sorted: sortedParts, Th: PartsTh } = useSortable(visibleParts, 'name', 'asc');
+
   const selStyle = { background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:3, padding:'8px 10px', color:'var(--text)', outline:'none', fontSize:13, fontFamily:'IBM Plex Sans,sans-serif' };
 
   if (view==='add') {
@@ -486,13 +488,13 @@ export default function PartsPage() {
               <table style={{ width:'100%', borderCollapse:'collapse' }}>
                 <thead>
                   <tr style={{ borderBottom:'1px solid var(--border)' }}>
-                    {['Part no.','Name','Category','Brand','Loc','Stock','Reorder','Purchase','Selling','GST','Margin','Status',''].map(h=>(
-                      <th key={h} style={{ padding:'8px 12px', textAlign:'left', fontSize:9, letterSpacing:'.06em', color:'var(--dim)', fontWeight:500, textTransform:'uppercase' }}>{h}</th>
+                    {[['Part no.','part_number'],['Name','name'],['Category','category'],['Brand','brand'],['Loc','location'],['Stock','stock'],['Reorder','reorder_level'],['Purchase','purchase_price'],['Selling','selling_price'],['GST','gst_rate'],['Margin',''],['Status',''],['','']].map(([h,f])=>(
+                      <PartsTh key={h} field={f||null} style={{ padding:'8px 12px', textAlign:'left', fontSize:9, letterSpacing:'.06em', color:'var(--dim)', fontWeight:500, textTransform:'uppercase' }}>{h}</PartsTh>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleParts.map(p=>{
+                  {sortedParts.map(p=>{
                     const sc     = stockStyle(p);
                     const margin = p.selling_price>0 ? Math.round((p.selling_price-p.purchase_price)/p.selling_price*100) : 0;
                     return (
