@@ -244,7 +244,24 @@ export default function ServicePage() {
                     {job.technician || '—'}
                   </td>
                   <td style={{ padding:'12px 12px' }}>
-                    <StatusBadge status={job.status} />
+                    <select
+                      value={job.status}
+                      onChange={e => updateMut.mutate({ jobId: job._id||job.id, status: e.target.value })}
+                      style={{
+                        background: STATUS_CFG[job.status]?.bg || 'rgba(136,136,136,.12)',
+                        color:      STATUS_CFG[job.status]?.color || '#888',
+                        border:     `1px solid ${STATUS_CFG[job.status]?.color || '#888'}`,
+                        borderRadius: 3, padding:'3px 6px', fontSize:10, fontWeight:700,
+                        letterSpacing:'.06em', textTransform:'uppercase', cursor:'pointer',
+                        outline:'none', fontFamily:'IBM Plex Sans, sans-serif',
+                      }}
+                    >
+                      {Object.entries(STATUS_CFG).map(([k,v]) => (
+                        <option key={k} value={k} style={{ background:'#141414', color:v.color }}>
+                          {v.label}
+                        </option>
+                      ))}
+                    </select>
                   </td>
                   <td style={{ padding:'12px 12px' }}>
                     <div style={{ display:'flex', gap:5, alignItems:'center', flexWrap:'wrap' }}>
@@ -256,18 +273,6 @@ export default function ServicePage() {
                           style={{ ...btnGhost, padding:'5px 9px', fontSize:10,
                             color:C.green, borderColor:'rgba(74,222,128,.3)' }}>
                           Notify
-                        </button>
-                      )}
-                      {job.status === 'ready' && (
-                        <button onClick={() => updateMut.mutate({ jobId:job._id||job.id, status:'delivered' })}
-                          style={{ ...btnGhost, padding:'5px 9px', fontSize:10 }}>
-                          Deliver
-                        </button>
-                      )}
-                      {job.status === 'pending' && (
-                        <button onClick={() => updateMut.mutate({ jobId:job._id||job.id, status:'in_progress' })}
-                          style={{ ...btnGhost, padding:'5px 9px', fontSize:10 }}>
-                          Start
                         </button>
                       )}
                       <button onClick={() => setBillJob(job)}
@@ -390,9 +395,9 @@ function NewJobModal({ onClose }) {
   const [step, setStep]             = useState(1);
   const [custSearch, setCustSearch] = useState('');
   const [selCust, setSelCust]       = useState(null);
-  const [vehicleSearch, setVehicleSearch] = useState(''); // FIX #4
+  const [vehicleSearch, setVehicleSearch] = useState('');
   const [form, setForm]             = useState({
-    vehicle_number:'', brand:'HERO', model:'', odometer_km:'',
+    vehicle_number:'', chassis_number:'', brand:'HERO', model:'', odometer_km:'',
     complaint:'', technician:'', estimated_delivery:'', notes:'',
   });
   const upd = k => e => setForm(p => ({ ...p, [k]:e.target.value }));
@@ -491,6 +496,7 @@ function NewJobModal({ onClose }) {
                         setForm(p => ({
                           ...p,
                           vehicle_number: s.vehicle_number || p.vehicle_number,
+                          chassis_number: s.chassis_number || p.chassis_number,
                           brand:          s.vehicle_brand  || p.brand,
                           model:          s.vehicle_model  || p.model,
                         }));
@@ -512,6 +518,7 @@ function NewJobModal({ onClose }) {
 
             {[
               ['model','Model *','Splendor Plus'],
+              ['chassis_number','Chassis Number','MBLHA10AT8HF12345'],
               ['odometer_km','Odometer (km)','12500'],
               ['technician','Technician','Suresh'],
             ].map(([k,l,ph]) => (
@@ -623,9 +630,12 @@ export function ServiceBillModal({ job, onClose }) {
   } : r));
 
   const validRows = rows.filter(r => r.description && r.unit_price > 0);
-  const subtotal  = validRows.reduce((s,r) => s + r.unit_price*r.qty, 0);
-  const gstTotal  = validRows.reduce((s,r) => s + r.unit_price*r.qty*r.gst_rate/100, 0);
-  const total     = Math.round(subtotal + gstTotal);
+  const total     = validRows.reduce((s,r) => s + r.unit_price*r.qty, 0);
+  const taxable   = validRows.reduce((s,r) => s + (r.unit_price*r.qty) / (1 + (r.gst_rate||0)/100), 0);
+  const gstTotal  = total - taxable;
+  const cgst      = gstTotal / 2;
+  const sgst      = gstTotal / 2;
+  const grandTotal = Math.round(total);
 
   const saveMut = useMutation({
     mutationFn: async () => {
@@ -700,12 +710,13 @@ export function ServiceBillModal({ job, onClose }) {
             + Add line item
           </button>
           <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:16 }}>
-            <div style={{ minWidth:230 }}>
-              <TotRow label="Subtotal" val={`${RS}${fmt(subtotal)}`} />
-              <TotRow label="GST"      val={`${RS}${fmt(gstTotal)}`} />
-              <TotRow label="Total"    val={`${RS}${fmtI(total)}`} bold gold />
+            <div style={{ minWidth:260 }}>
+              <TotRow label="Taxable Amount" val={`${RS}${fmt(taxable)}`} />
+              <TotRow label="CGST"           val={`${RS}${fmt(cgst)}`} />
+              <TotRow label="SGST"           val={`${RS}${fmt(sgst)}`} />
+              <TotRow label="Total"          val={`${RS}${fmtI(grandTotal)}`} bold gold />
               <div style={{ fontSize:10, color:C.muted, fontStyle:'italic', textAlign:'right', marginTop:4 }}>
-                {numWords(total)} Rupees Only
+                {numWords(grandTotal)} Rupees Only
               </div>
             </div>
           </div>
@@ -742,7 +753,7 @@ function BillRow({ row, idx, allParts, onChange, onRemove, onSelectPart }) {
       ).slice(0,8)
     : [];
 
-  const amount = row.unit_price * row.qty * (1 + row.gst_rate/100);
+  const amount = row.unit_price * row.qty; // price already includes GST
 
   return (
     <tr style={{ background:idx%2===0?'transparent':C.s2 }}>
@@ -838,9 +849,12 @@ export function PartsBillModal({ onClose }) {
     setCart(prev=>qty<=0?prev.filter(c=>c._id!==id):prev.map(c=>c._id===id?{...c,qty}:c));
   };
 
-  const subtotal = cart.reduce((s,c)=>s+(c.selling_price||0)*c.qty,0);
-  const gstTotal = cart.reduce((s,c)=>s+(c.selling_price||0)*c.qty*(c.gst_rate||18)/100,0);
-  const total    = Math.round(subtotal+gstTotal);
+  const pbTotal   = cart.reduce((s,c)=>s+(c.selling_price||0)*c.qty,0);
+  const pbTaxable = cart.reduce((s,c)=>s+(c.selling_price||0)*c.qty/(1+((c.gst_rate||18)/100)),0);
+  const pbGst     = pbTotal - pbTaxable;
+  const pbCgst    = pbGst / 2;
+  const pbSgst    = pbGst / 2;
+  const total     = Math.round(pbTotal);
 
   const genMut = useMutation({
     mutationFn: () => partsApi.createBill({
@@ -940,7 +954,7 @@ export function PartsBillModal({ onClose }) {
                 <tbody>
                   {cart.map((item,idx)=>{
                     const price=item.selling_price||0, gstR=item.gst_rate||18;
-                    const amount=price*item.qty*(1+gstR/100);
+                    const amount=price*item.qty; // price is GST-inclusive
                     return(
                       <tr key={item._id} style={{ background:idx%2===0?'transparent':C.s2, borderBottom:'1px solid var(--border,#222)' }}>
                         <td style={{ padding:'8px 10px', fontWeight:600 }}>{item.name}</td>
@@ -965,10 +979,11 @@ export function PartsBillModal({ onClose }) {
                 </tbody>
               </table>
               <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:12 }}>
-                <div style={{ minWidth:230 }}>
-                  <TotRow label="Subtotal" val={`${RS}${fmt(subtotal)}`}/>
-                  <TotRow label="GST"      val={`${RS}${fmt(gstTotal)}`}/>
-                  <TotRow label="Total"    val={`${RS}${fmtI(total)}`} bold gold/>
+                <div style={{ minWidth:260 }}>
+                  <TotRow label="Taxable Amount" val={`${RS}${fmt(pbTaxable)}`}/>
+                  <TotRow label="CGST"           val={`${RS}${fmt(pbCgst)}`}/>
+                  <TotRow label="SGST"           val={`${RS}${fmt(pbSgst)}`}/>
+                  <TotRow label="Total"          val={`${RS}${fmtI(total)}`} bold gold/>
                   <div style={{ fontSize:10, color:C.muted, fontStyle:'italic', textAlign:'right', marginTop:4 }}>
                     {numWords(total)} Rupees Only
                   </div>
