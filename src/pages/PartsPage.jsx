@@ -329,6 +329,7 @@ export default function PartsPage() {
 
   const { data:statsData } = useQuery({
     queryKey:['parts-stats'],
+    refetchInterval: 30_000,
     queryFn: ()=>partsApi.stats().then(r=>r.data),
   });
   const { data, isLoading, error } = useQuery({
