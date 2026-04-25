@@ -1864,12 +1864,13 @@ async def preview_import(entity: str, file: UploadFile = File(...), current_user
     return {"entity":entity,"total_rows":len(rows),"columns_found":list(rows[0].keys()) if rows else [],"preview":rows[:10],"template_cols":TEMPLATES[entity]["cols"]}
 
 @import_router.post("/customers")
-async def import_customers(file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
+async def import_customers(request: Request, file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
     content = await file.read(); rows = read_file(content, file.filename or "")
     if not rows: raise HTTPException(status_code=400, detail="File is empty or could not be parsed")
     inserted, skipped, errors = 0, [], []
     for i, row in enumerate(rows):
         rn = i+2
+        if i % 50 == 0: await asyncio.sleep(0)  # yield to event loop every 50 rows
         try:
             name, mobile = safe(row.get("name")), safe(row.get("mobile"))
             if not name:   skipped.append({"row":rn,"reason":"Missing name"});   continue
@@ -1888,7 +1889,7 @@ async def import_customers(file: UploadFile = File(...), mode: str = Form("skip"
     return result_summary(inserted, skipped, errors)
 
 @import_router.post("/vehicles")
-async def import_vehicles(file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
+async def import_vehicles(request: Request, file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
     content = await file.read(); rows = read_file(content, file.filename or "")
     inserted, skipped, errors = 0, [], []
     for i, row in enumerate(rows):
@@ -1914,11 +1915,12 @@ async def import_vehicles(file: UploadFile = File(...), mode: str = Form("skip")
     return result_summary(inserted, skipped, errors)
 
 @import_router.post("/sales")
-async def import_sales(file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
+async def import_sales(request: Request, file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
     content = await file.read(); rows = read_file(content, file.filename or "")
     inserted, skipped, errors = 0, [], []
     for i, row in enumerate(rows):
         rn = i+2
+        if i % 20 == 0: await asyncio.sleep(0)  # yield — sales rows are heavier
         try:
             name=safe(row.get("customer_name")); mobile=safe(row.get("customer_mobile")); brand=safe(row.get("vehicle_brand","")).upper(); model=safe(row.get("vehicle_model","")); price=safe_float(row.get("sale_price",0)); chassis=safe(row.get("chassis_number","")).upper().replace(" ","")
             if not name or not mobile or not brand or not model or not price: skipped.append({"row":rn,"reason":"Missing required fields"}); continue
@@ -1937,7 +1939,7 @@ async def import_sales(file: UploadFile = File(...), mode: str = Form("skip"), c
     return result_summary(inserted, skipped, errors)
 
 @import_router.post("/service")
-async def import_service(file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
+async def import_service(request: Request, file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
     content = await file.read(); rows = read_file(content, file.filename or "")
     inserted, skipped, errors = 0, [], []
     for i, row in enumerate(rows):
@@ -1967,7 +1969,7 @@ async def import_service(file: UploadFile = File(...), mode: str = Form("skip"),
     return result_summary(inserted, skipped, errors)
 
 @import_router.post("/parts")
-async def import_parts(file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
+async def import_parts(request: Request, file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
     content = await file.read(); rows = read_file(content, file.filename or "")
     inserted, skipped, errors = 0, [], []
     for i, row in enumerate(rows):
