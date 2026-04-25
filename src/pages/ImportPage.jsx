@@ -5,11 +5,42 @@ import { Btn, GhostBtn } from '../components/ui';
 import toast from 'react-hot-toast';
 
 const ENTITIES = [
-  { id:'customers', label:'Customers',       icon:'◉', color:'#60a5fa', required:['name','mobile'],              note:'Dedup by mobile number.' },
-  { id:'vehicles',  label:'Vehicles / Stock', icon:'⬡', color:'#4ade80', required:['brand','model','chassis_number'], note:'Dedup by chassis_number. Brand uppercased.' },
-  { id:'parts',     label:'Spare Parts',      icon:'◆', color:'#fb923c', required:['part_number','name','selling_price'], note:'Dedup by part_number. gst_rate: 5/12/18/28.' },
-  { id:'service',   label:'Service History',  icon:'◎', color:'#a78bfa', required:['vehicle_number','complaint'],   note:'Dedup by vehicle_number + check_in_date.' },
-  { id:'staff',     label:'Staff / Users',    icon:'◫', color:'#f9a8d4', required:['name','username','role'],       note:'Role: owner/sales/service_advisor/parts_counter/technician.' },
+  {
+    id:'customers', label:'Customers', icon:'◉', color:'#3b82f6',
+    required:['name','mobile'],
+    optional:['email','address','gstin','tags'],
+    note:'Deduplicated by mobile number. Tags: VIP, Corporate, Loyal.',
+  },
+  {
+    id:'vehicles', label:'Vehicles / Stock', icon:'⬡', color:'#16a34a',
+    required:['brand','model','chassis_number'],
+    optional:['variant','color','engine_number','vehicle_number','key_number','type'],
+    note:'Deduplicated by chassis_number. Brand auto-uppercased. type: new or used.',
+  },
+  {
+    id:'sales', label:'Sales Records', icon:'◈', color:'#b8860b',
+    required:['customer_name','customer_mobile','vehicle_brand','vehicle_model','sale_price'],
+    optional:['chassis_number','engine_number','vehicle_number','vehicle_color','vehicle_variant','discount','insurance','rto','payment_mode','nominee_name','nominee_relation','nominee_age','sale_date','customer_address'],
+    note:'Customer auto-created if mobile not found. Dedup by chassis_number. Amounts: numbers only, no ₹.',
+  },
+  {
+    id:'service', label:'Service History', icon:'◎', color:'#7c3aed',
+    required:['vehicle_number','complaint'],
+    optional:['customer_name','customer_mobile','brand','model','odometer_km','technician','check_in_date','status','notes'],
+    note:'Dedup by vehicle_number + check_in_date. status: pending/in_progress/ready/delivered.',
+  },
+  {
+    id:'parts', label:'Spare Parts', icon:'◆', color:'#ea580c',
+    required:['part_number','name','selling_price'],
+    optional:['category','brand','compatible_with','stock','reorder_level','purchase_price','gst_rate','hsn_code','location'],
+    note:'Dedup by part_number. selling_price is GST-inclusive. gst_rate: 0/5/12/18/28.',
+  },
+  {
+    id:'staff', label:'Staff / Users', icon:'◫', color:'#db2777',
+    required:['name','username','role'],
+    optional:['mobile','email','salary','join_date'],
+    note:'Dedup by username. Roles: owner/sales/service_advisor/parts_counter/technician. Default password = username.',
+  },
 ];
 
 function ImportCard({ cfg, onRefreshCounts }) {
@@ -79,12 +110,22 @@ function ImportCard({ cfg, onRefreshCounts }) {
         </button>
       </div>
 
-      {/* required columns */}
-      <div style={{ display:'flex', alignItems:'center', gap:6, padding:'10px 18px', borderBottom:'1px solid var(--border)', background:'rgba(0,0,0,.02)' }}>
-        <span className="label-xs" style={{ marginRight:4 }}>Required:</span>
-        {cfg.required.map(r=>(
-          <span key={r} style={{ fontSize:10, padding:'2px 8px', borderRadius:2, color:cfg.color, background:`${cfg.color}18`, border:`1px solid ${cfg.color}33`, fontFamily:'IBM Plex Mono,monospace' }}>{r}</span>
-        ))}
+      {/* required / optional columns */}
+      <div style={{ padding:'10px 18px', borderBottom:'1px solid var(--border)', background:'rgba(0,0,0,.02)' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap', marginBottom: cfg.optional?.length ? 6 : 0 }}>
+          <span className="label-xs" style={{ marginRight:4, flexShrink:0 }}>Required:</span>
+          {cfg.required.map(r=>(
+            <span key={r} style={{ fontSize:10, padding:'2px 8px', borderRadius:2, color:cfg.color, background:`${cfg.color}18`, border:`1px solid ${cfg.color}33`, fontFamily:'IBM Plex Mono,monospace' }}>{r}</span>
+          ))}
+        </div>
+        {cfg.optional?.length > 0 && (
+          <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
+            <span className="label-xs" style={{ marginRight:4, flexShrink:0, color:'var(--dim)' }}>Optional:</span>
+            {cfg.optional.map(r=>(
+              <span key={r} style={{ fontSize:10, padding:'2px 8px', borderRadius:2, color:'var(--dim)', background:'rgba(0,0,0,.04)', border:'1px solid var(--border)', fontFamily:'IBM Plex Mono,monospace' }}>{r}</span>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* file picker row */}
