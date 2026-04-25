@@ -8,19 +8,19 @@ const ENTITIES = [
   {
     id:'customers', label:'Customers', icon:'◉', color:'#3b82f6',
     required:['name','mobile'],
-    optional:['email','address','gstin','tags'],
+    optional:['care_of','email','address','tags'],
     note:'Deduplicated by mobile number. Tags: VIP, Corporate, Loyal.',
   },
   {
     id:'vehicles', label:'Vehicles / Stock', icon:'⬡', color:'#16a34a',
     required:['brand','model','chassis_number'],
-    optional:['variant','color','engine_number','vehicle_number','key_number','type','status','return_date','returned_location'],
+    optional:['variant','color','engine_number','vehicle_number','key_number','type','status','inbound_date','inbound_location','return_date','returned_location'],
     note:'Deduplicated by chassis_number. type: new/used. status: in_stock/sold/returned.',
   },
   {
     id:'sales', label:'Sales Records', icon:'◈', color:'#b8860b',
     required:['customer_name','customer_mobile','vehicle_brand','vehicle_model','sale_price'],
-    optional:['chassis_number','engine_number','vehicle_number','vehicle_color','vehicle_variant','payment_mode','nominee_name','nominee_relation','nominee_age','sale_date','customer_address'],
+    optional:['care_of','chassis_number','engine_number','vehicle_number','vehicle_color','vehicle_variant','payment_mode','nominee_name','nominee_relation','nominee_age','sale_date','customer_address'],
     note:'Customer auto-created if mobile not found. Dedup by chassis_number.',
   },
   {
