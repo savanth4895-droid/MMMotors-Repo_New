@@ -131,7 +131,7 @@ def obj_id(s: str) -> ObjectId:
     except InvalidId:
         raise HTTPException(status_code=400, detail=f"Invalid id: {s}")
 
-def paginate_params(page: int = Query(1, ge=1), limit: int = Query(50, ge=1, le=500)):
+def paginate_params(page: int = Query(1, ge=1), limit: int = Query(50, ge=1, le=5000)):
     return {"page": page, "limit": limit, "skip": (page - 1) * limit}
 
 def now() -> str:
