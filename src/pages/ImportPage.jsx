@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { importApi } from '../api/client';
+import { importApi, errMsg} from '../api/client';
 import { Btn, GhostBtn } from '../components/ui';
 import toast from 'react-hot-toast';
 
@@ -107,7 +107,7 @@ function ImportCard({ cfg, onRefreshCounts }) {
       const res = await importApi.clear(cfg.id);
       toast.success(`Cleared ${res.data.deleted} records`);
       onRefreshCounts();
-    } catch(e) { toast.error(e?.response?.data?.detail||'Clear failed'); }
+    } catch(e) { toast.error(errMsg(e, 'Clear failed')); }
     finally { setStatus(''); }
   };
 
@@ -233,7 +233,7 @@ function ImportCard({ cfg, onRefreshCounts }) {
           {tab==='errors'&&result?.errors?.map((r,i)=>(
             <div key={i} style={{ display:'flex', gap:10, padding:'7px 12px', marginBottom:4, background:'rgba(220,38,38,.06)', border:'1px solid rgba(220,38,38,.15)', borderRadius:3 }}>
               <span className="mono" style={{ fontSize:10, color:'var(--dim)', minWidth:44 }}>Row {r.row}</span>
-              <span style={{ fontSize:11, color:'#f87171' }}>{r.error}</span>
+              <span style={{ fontSize:11, color:'#f87171' }}>{typeof r.error === 'string' ? r.error : JSON.stringify(r.error)}</span>
             </div>
           ))}
         </div>
