@@ -85,7 +85,15 @@ export const serviceApi = {
 };
 
 // ── Service Bills ───────────────────────────────────────────────────
-export const billsApi = {
+export const debtApi = {
+  list:       (p)         => api.get('/debts', { params: p }),
+  create:     (d)         => api.post('/debts', d),
+  update:     (id, d)     => api.put(`/debts/${id}`, d),
+  delete:     (id)        => api.delete(`/debts/${id}`),
+  addPayment: (id, d)     => api.post(`/debts/${id}/payments`, d),
+  summary:    ()          => api.get('/debts/summary'),
+};
+
   list:   (params) => api.get('/service-bills', { params }),
   get:    (id)     => api.get(`/service-bills/${id}`),
   create: (data)   => api.post('/service-bills', data),
