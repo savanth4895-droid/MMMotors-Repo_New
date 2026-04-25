@@ -83,9 +83,12 @@ function NewBillForm({ parts, onCancel, onDone }) {
     else setCart(p=>p.map(i=>i.part.id===id?{...i,qty}:i));
   };
 
-  const subtotal = cart.reduce((s,{part,qty})=>s+part.selling_price*qty,0);
-  const gstTotal = cart.reduce((s,{part,qty})=>s+part.selling_price*qty*part.gst_rate/100,0);
-  const grand    = subtotal+gstTotal;
+  const pbTotal   = cart.reduce((s,{part,qty})=>s+part.selling_price*qty,0);
+  const pbTaxable = cart.reduce((s,{part,qty})=>s+part.selling_price*qty/(1+(part.gst_rate/100)),0);
+  const pbGst     = pbTotal - pbTaxable;
+  const pbCgst    = pbGst / 2;
+  const pbSgst    = pbGst / 2;
+  const grand     = pbTotal;
 
   const handleSubmit = async () => {
     if (!cart.length) return toast.error('Add at least one part');
@@ -159,7 +162,7 @@ function NewBillForm({ parts, onCancel, onDone }) {
                 <div key={part.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', borderBottom:'1px solid var(--border)' }}>
                   <div style={{ flex:1 }}>
                     <div style={{ fontSize:11, fontWeight:500 }}>{part.name}</div>
-                    <div style={{ fontSize:10, color:'var(--muted)' }}>₹{part.selling_price.toLocaleString('en-IN')} + {part.gst_rate}% GST</div>
+                    <div style={{ fontSize:10, color:'var(--muted)' }}>₹{part.selling_price.toLocaleString('en-IN')} incl. {part.gst_rate}% GST</div>
                   </div>
                   <div style={{ display:'flex', alignItems:'center', gap:6 }}>
                     <button onClick={()=>updateQty(part.id,qty-1)} style={{ width:24, height:24, background:'var(--surface2)', border:'1px solid var(--border2)', borderRadius:2, cursor:'pointer', fontSize:14, fontFamily:'inherit' }}>−</button>
@@ -167,7 +170,7 @@ function NewBillForm({ parts, onCancel, onDone }) {
                     <button onClick={()=>updateQty(part.id,qty+1)} style={{ width:24, height:24, background:'var(--surface2)', border:'1px solid var(--border2)', borderRadius:2, cursor:'pointer', fontSize:14, fontFamily:'inherit' }}>+</button>
                   </div>
                   <div style={{ textAlign:'right', minWidth:70 }}>
-                    <div style={{ fontSize:12, fontWeight:700, color:'var(--accent)' }}>₹{Math.round(part.selling_price*qty*(1+part.gst_rate/100)).toLocaleString('en-IN')}</div>
+                    <div style={{ fontSize:12, fontWeight:700, color:'var(--accent)' }}>₹{Math.round(part.selling_price*qty).toLocaleString('en-IN')}</div>
                     <div style={{ fontSize:10, color:'var(--dim)' }}>incl. GST</div>
                   </div>
                 </div>
@@ -182,10 +185,13 @@ function NewBillForm({ parts, onCancel, onDone }) {
             <div className="label-xs" style={{ marginBottom:12 }}>Bill summary</div>
             <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
               <div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--muted)' }}>
-                <span>Subtotal (excl. GST)</span><span className="mono">₹{Math.round(subtotal).toLocaleString('en-IN')}</span>
+                <span>Taxable Amount</span><span className="mono">₹{Math.round(pbTaxable).toLocaleString('en-IN')}</span>
               </div>
               <div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--muted)' }}>
-                <span>GST</span><span className="mono">₹{Math.round(gstTotal).toLocaleString('en-IN')}</span>
+                <span>CGST</span><span className="mono">₹{Math.round(pbCgst).toLocaleString('en-IN')}</span>
+              </div>
+              <div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--muted)' }}>
+                <span>SGST</span><span className="mono">₹{Math.round(pbSgst).toLocaleString('en-IN')}</span>
               </div>
               <div style={{ height:1, background:'var(--border)', margin:'4px 0' }} />
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
@@ -394,7 +400,7 @@ export default function PartsPage() {
             </thead>
             <tbody>
               {(Array.isArray(billsData)?billsData:[]).map(b=>{
-                const total = b.items?.reduce((s,i)=>s+i.unit_price*i.qty*(1+i.gst_rate/100),0)||b.grand_total||0;
+                const total = b.items?.reduce((s,i)=>s+i.unit_price*i.qty,0)||b.grand_total||0;
                 return (
                   <tr key={b.id} style={{ borderBottom:'1px solid var(--border)' }}>
                     <td className="mono" style={{ padding:'11px 20px', fontSize:11, color:'var(--blue)' }}>{b.bill_number}</td>
