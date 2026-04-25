@@ -115,6 +115,8 @@ export const partsApi = {
   outOfStock:           ()           => api.get('/parts/out-of-stock'),
   adjustStockByNumber:  (partNum, d) => api.post(`/parts/${partNum}/adjust-stock-by-number`, d),
   createBill:           (data)       => api.post('/parts-bills', data),
+  listBills:            (params)     => api.get('/parts-bills', { params }),
+  deleteBill:           (id)         => api.delete(`/parts-bills/${id}`),
 };
 
 // ── Parts Sales ─────────────────────────────────────────────────────
