@@ -95,7 +95,7 @@ export default function ServicePage() {
     queryFn: () => serviceApi.list({
       status: filter === 'all' ? undefined : filter,
       search: search || undefined,
-      limit:  200,
+      limit:  5000,
     }),
     keepPreviousData: true,
   });
@@ -766,7 +766,7 @@ export function ServiceBillModal({ job, onClose }) {
 
   const { data:partsData } = useQuery({
     queryKey: ['parts-list'],
-    queryFn: () => partsApi.list({ limit:500 }),
+    queryFn: () => partsApi.list({ limit:2000 }),
   });
   const allParts = partsData?.data?.items || partsData?.data || [];
 
