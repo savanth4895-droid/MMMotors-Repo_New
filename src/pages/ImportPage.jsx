@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { importApi, errMsg} from '../api/client';
+import { importApi, backupApi, errMsg} from '../api/client';
 import { Btn, GhostBtn } from '../components/ui';
 import toast from 'react-hot-toast';
 
@@ -254,11 +254,47 @@ export default function ImportPage() {
     queryFn: ()=>importApi.counts().then(r=>r.data),
   });
 
+  const [backing, setBacking] = useState(false);
+
+  const downloadBackup = async () => {
+    setBacking(true);
+    try {
+      const res = await backupApi.export();
+      const url  = URL.createObjectURL(new Blob([res.data], { type:'application/zip' }));
+      const a    = document.createElement('a');
+      const date = new Date().toISOString().slice(0,10);
+      a.href     = url;
+      a.download = `MMMotors_Backup_${date}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success('Backup downloaded — keep it safe!');
+    } catch(e) {
+      toast.error(errMsg(e, 'Backup failed'));
+    } finally {
+      setBacking(false);
+    }
+  };
+
   return (
     <div style={{ padding:24 }}>
-      <div style={{ marginBottom:20 }}>
-        <div style={{ fontSize:16, fontWeight:600, letterSpacing:'-.01em', marginBottom:4 }}>Import data</div>
-        <div style={{ fontSize:11, color:'var(--muted)' }}>Upload Excel or CSV files to load existing records. Download a template first.</div>
+      <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:20 }}>
+        <div>
+          <div style={{ fontSize:16, fontWeight:600, letterSpacing:'-.01em', marginBottom:4 }}>Import data</div>
+          <div style={{ fontSize:11, color:'var(--muted)' }}>Upload Excel or CSV files to load existing records. Download a template first.</div>
+        </div>
+        {/* ── Backup button ── */}
+        <button onClick={downloadBackup} disabled={backing}
+          style={{
+            display:'flex', alignItems:'center', gap:8, padding:'10px 18px',
+            background: backing ? 'var(--surface2)' : 'rgba(34,197,94,.1)',
+            border:'1px solid rgba(34,197,94,.35)', borderRadius:6,
+            color:'#16a34a', cursor:backing?'wait':'pointer',
+            fontFamily:'IBM Plex Sans,sans-serif', fontWeight:700, fontSize:12,
+            flexShrink:0,
+          }}>
+          <span style={{ fontSize:16 }}>{backing ? '⏳' : '💾'}</span>
+          {backing ? 'Preparing backup…' : 'Download Full Backup'}
+        </button>
       </div>
 
       {/* how it works */}
