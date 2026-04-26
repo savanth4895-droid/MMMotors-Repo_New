@@ -2681,8 +2681,116 @@ async def profit_and_loss(
         })
     return result
 
-app.include_router(api_router)
-app.include_router(import_router)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Full Data Backup Export
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@api_router.get("/backup/export")
+async def export_backup(current_user=Depends(require_admin)):
+    """
+    Export all collections as a ZIP containing individual Excel files.
+    One file per entity — ready to re-import via the Import page.
+    """
+    import zipfile, io as _io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    GOLD = 'FFB8860B'; WHITE = 'FFFFFFFF'
+
+    def make_sheet(wb, title, rows, headers):
+        ws = wb.create_sheet(title)
+        # Header row
+        for ci, h in enumerate(headers, 1):
+            c = ws.cell(row=1, column=ci, value=h)
+            c.font      = Font(name='Arial', bold=True, color=WHITE, size=9)
+            c.fill      = PatternFill('solid', start_color=GOLD)
+            c.alignment = Alignment(horizontal='center', vertical='center')
+        # Data rows
+        for ri, row in enumerate(rows, 2):
+            for ci, h in enumerate(headers, 1):
+                val = row.get(h, '')
+                if isinstance(val, (dict, list)):
+                    val = str(val)
+                ws.cell(row=ri, column=ci, value=val)
+        # Auto width
+        for col in ws.columns:
+            max_len = max((len(str(c.value or '')) for c in col), default=10)
+            ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 40)
+        return ws
+
+    # ── Fetch all collections ──────────────────────────────────────────────────
+    (
+        customers, vehicles, sales, service_jobs, parts, expenses, debts, staff
+    ) = await asyncio.gather(
+        db.customers.find({}).to_list(100000),
+        db.vehicles.find({}).to_list(100000),
+        db.sales.find({}).to_list(100000),
+        db.service_jobs.find({}).to_list(100000),
+        db.spare_parts.find({}).to_list(100000),
+        db.expenses.find({}).to_list(100000),
+        db.debts.find({}).to_list(100000),
+        db.users.find({}, {"password": 0}).to_list(1000),
+    )
+
+    # Convert ObjectIds to strings
+    def clean(docs):
+        out = []
+        for d in docs:
+            row = {}
+            for k, v in d.items():
+                if k == '_id': row['_id'] = str(v)
+                elif hasattr(v, '__str__') and 'ObjectId' in type(v).__name__: row[k] = str(v)
+                elif isinstance(v, datetime): row[k] = v.isoformat()
+                elif isinstance(v, dict): row[k] = str(v)
+                elif isinstance(v, list): row[k] = ', '.join(str(x) for x in v)
+                else: row[k] = v
+            out.append(row)
+        return out
+
+    customers_c    = clean(customers)
+    vehicles_c     = clean(vehicles)
+    sales_c        = clean(sales)
+    service_c      = clean(service_jobs)
+    parts_c        = clean(parts)
+    expenses_c     = clean(expenses)
+    debts_c        = clean(debts)
+    staff_c        = clean(staff)
+
+    # ── Build separate Excel files ─────────────────────────────────────────────
+    def make_workbook(rows, headers, sheet_name):
+        wb = Workbook(); wb.remove(wb.active)
+        make_sheet(wb, sheet_name, rows, headers)
+        buf = _io.BytesIO(); wb.save(buf); buf.seek(0)
+        return buf.read()
+
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+
+    files = [
+        (f"customers_{today}.xlsx",    make_workbook(customers_c, ['name','mobile','care_of','email','address','tags','created_at'], 'Customers')),
+        (f"vehicles_{today}.xlsx",     make_workbook(vehicles_c,  ['brand','model','variant','color','chassis_number','engine_number','vehicle_number','key_number','type','status','inbound_date','inbound_location','return_date','returned_location','customer_name','customer_mobile','created_at'], 'Vehicles')),
+        (f"sales_{today}.xlsx",        make_workbook(sales_c,     ['invoice_number','sale_date','customer_name','customer_mobile','care_of','customer_address','vehicle_brand','vehicle_model','vehicle_variant','vehicle_color','vehicle_number','chassis_number','engine_number','sale_price','discount','insurance','rto','total_amount','payment_mode','nominee','status','created_at'], 'Sales')),
+        (f"service_{today}.xlsx",      make_workbook(service_c,   ['job_number','check_in_date','customer_name','customer_mobile','vehicle_number','brand','model','odometer_km','complaint','technician','status','grand_total','estimated_delivery','notes','created_at'], 'Service')),
+        (f"spare_parts_{today}.xlsx",  make_workbook(parts_c,     ['part_number','name','category','brand','compatible_with','stock','reorder_level','purchase_price','selling_price','gst_rate','hsn_code','location','created_at'], 'Parts')),
+        (f"expenses_{today}.xlsx",     make_workbook(expenses_c,  ['date','category','sub_category','amount','description','vendor','payment_mode','receipt_no','notes','created_by','created_at'], 'Expenses')),
+        (f"debts_{today}.xlsx",        make_workbook(debts_c,     ['customer_name','customer_mobile','amount','paid','balance','description','due_date','status','source','created_at'], 'Debts')),
+        (f"staff_{today}.xlsx",        make_workbook(staff_c,     ['name','username','mobile','email','role','salary','join_date','status','allowed_pages','created_at'], 'Staff')),
+    ]
+
+    # ── Pack into ZIP ──────────────────────────────────────────────────────────
+    zip_buf = _io.BytesIO()
+    with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for fname, data in files:
+            zf.writestr(f"MMMotors_Backup_{today}/{fname}", data)
+
+    zip_buf.seek(0)
+    headers_resp = {
+        "Content-Disposition": f'attachment; filename="MMMotors_Backup_{today}.zip"',
+        "Content-Type": "application/zip",
+    }
+    return StreamingResponse(iter([zip_buf.read()]), headers=headers_resp, media_type="application/zip")
+
+
 
 if __name__ == "__main__":
     import uvicorn
