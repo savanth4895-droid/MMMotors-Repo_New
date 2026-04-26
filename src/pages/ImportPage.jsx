@@ -20,7 +20,7 @@ const ENTITIES = [
   {
     id:'sales', label:'Sales Records', icon:'◈', color:'#b8860b',
     required:['customer_name','customer_mobile','vehicle_brand','vehicle_model','sale_price'],
-    optional:['care_of','chassis_number','engine_number','vehicle_number','vehicle_color','vehicle_variant','payment_mode','nominee_name','nominee_relation','nominee_age','sale_date','customer_address'],
+    optional:['care_of','chassis_number','engine_number','vehicle_number','vehicle_color','vehicle_variant','rto','financier','payment_mode','nominee_name','nominee_relation','nominee_age','sale_date','customer_address'],
     note:'Customer auto-created if mobile not found. Dedup by chassis_number.',
   },
   {
