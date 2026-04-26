@@ -14,15 +14,23 @@ export function AuthProvider({ children }) {
       setLoading(false);
       return;
     }
-    authApi.me()
-      .then((res) => setUser(res.data))
-      .catch(() => {
+    useEffect(() => {
+  const token = localStorage.getItem('mm_token');
+  if (!token) { setLoading(false); return; }
+
+  authApi.me()
+    .then((res) => setUser(res.data))
+    .catch((err) => {
+      // Only log out on 401 (invalid/expired token)
+      // Ignore network errors, 500s, server cold starts etc.
+      if (err?.response?.status === 401) {
         localStorage.removeItem('mm_token');
         setUser(null);
-      })
-      .finally(() => setLoading(false));
-  }, []);
-
+      }
+    })
+    .finally(() => setLoading(false));
+}, []);
+    
   const login = useCallback(async (username, password) => {
     const res = await authApi.login({ username, password });
     const { user: u, access_token } = res.data;
