@@ -187,24 +187,26 @@ class TokenOut(BaseModel):
 
 # ── Users / Staff ──────────────────────────────────────────────────────────────
 class UserCreate(BaseModel):
-    username:   str
-    name:       str
-    mobile:     str
-    email:      Optional[str] = ""
-    role:       str           = "sales"
-    password:   str
-    salary:     Optional[float] = 0
-    join_date:  Optional[str]   = ""
-    status:     Optional[str]   = "active"
+    username:      str
+    name:          str
+    mobile:        str
+    email:         Optional[str]       = ""
+    role:          str                 = "sales"
+    password:      str
+    salary:        Optional[float]     = 0
+    join_date:     Optional[str]       = ""
+    status:        Optional[str]       = "active"
+    allowed_pages: Optional[list[str]] = None  # None = use role defaults
 
 class UserUpdate(BaseModel):
-    name:      Optional[str] = None
-    mobile:    Optional[str] = None
-    email:     Optional[str] = None
-    role:      Optional[str] = None
-    salary:    Optional[float] = None
-    status:    Optional[str] = None
-    join_date: Optional[str] = None
+    name:          Optional[str]       = None
+    mobile:        Optional[str]       = None
+    email:         Optional[str]       = None
+    role:          Optional[str]       = None
+    salary:        Optional[float]     = None
+    status:        Optional[str]       = None
+    join_date:     Optional[str]       = None
+    allowed_pages: Optional[list[str]] = None
 
 class PasswordChange(BaseModel):
     new_password: str
@@ -569,6 +571,9 @@ async def get_user(user_id: str, current_user=Depends(require_admin)):
 @api_router.put("/users/{user_id}")
 async def update_user(user_id: str, body: UserUpdate, current_user=Depends(require_admin)):
     update = {k: v for k, v in body.dict().items() if v is not None}
+    # allowed_pages can be an empty list — treat None as "not provided", [] as "no pages"
+    if body.allowed_pages is not None:
+        update["allowed_pages"] = body.allowed_pages
     if not update:
         raise HTTPException(status_code=400, detail="Nothing to update")
     await db.users.update_one({"_id": obj_id(user_id)}, {"$set": update})
@@ -2005,6 +2010,16 @@ TEMPLATES = {
             ["Suresh B","9900334455","","suresh_b","technician","16000","15/06/2023"],
         ]
     },
+    "expenses": {
+        "cols":["date","category","sub_category","amount","description","vendor","payment_mode","receipt_no","notes"],
+        "rows":[
+            ["01/04/2026","Staff Salaries","","72000","April salaries — 4 staff","","Cash","",""],
+            ["01/04/2026","Rent & Utilities","Rent","25000","Showroom monthly rent","Landlord","Bank","R001",""],
+            ["05/04/2026","Parts & Consumables","","8500","Engine oil, grease, consumables","Spare parts supplier","Cash","",""],
+            ["10/04/2026","Transport & Logistics","","3200","Vehicle delivery charges","Transport vendor","UPI","",""],
+            ["15/04/2026","Marketing & Advertising","","5000","Social media ads","","UPI","",""],
+        ]
+    },
 }
 
 @import_router.get("/template/{entity}")
@@ -2268,6 +2283,49 @@ async def import_staff(file: UploadFile = File(...), mode: str = Form("skip"), c
             traceback.print_exc(); errors.append({"row":rn,"error":str(e)})
     return result_summary(inserted, skipped, errors)
 
+@import_router.post("/expenses")
+async def import_expenses(request: Request, file: UploadFile = File(...), mode: str = Form("skip"), current_user=Depends(verify_token)):
+    content = await file.read(); rows = read_file(content, file.filename or "")
+    inserted, skipped, errors = 0, [], []
+    to_insert = []
+    valid_cats = set(EXPENSE_CATEGORIES)
+    for i, row in enumerate(rows):
+        if i % 200 == 0: await asyncio.sleep(0)
+        rn = i + 2
+        try:
+            date   = safe(row.get("date", "")).strip()
+            cat    = safe(row.get("category", "")).strip()
+            amount = safe_float(row.get("amount", 0))
+            if not date:   skipped.append({"row": rn, "reason": "Missing date"}); continue
+            if not amount: skipped.append({"row": rn, "reason": "Missing amount"}); continue
+            if not cat:    skipped.append({"row": rn, "reason": "Missing category"}); continue
+            # Auto-match category if close
+            if cat not in valid_cats:
+                match = next((c for c in valid_cats if c.lower().startswith(cat.lower()[:4])), "Miscellaneous")
+                cat = match
+            to_insert.append({
+                "date":         date,
+                "category":     cat,
+                "sub_category": safe(row.get("sub_category", "")),
+                "amount":       amount,
+                "description":  safe(row.get("description", "")),
+                "vendor":       safe(row.get("vendor", "")),
+                "payment_mode": safe(row.get("payment_mode", "Cash")) or "Cash",
+                "receipt_no":   safe(row.get("receipt_no", "")),
+                "notes":        safe(row.get("notes", "")),
+                "created_by":   current_user.get("name", "imported"),
+                "created_at":   datetime.utcnow().isoformat(),
+            })
+        except Exception as e:
+            errors.append({"row": rn, "error": str(e)})
+    if to_insert:
+        try:
+            r = await db.expenses.insert_many(to_insert, ordered=False)
+            inserted += len(r.inserted_ids)
+        except Exception as e:
+            errors.append({"row": "bulk", "error": str(e)})
+    return result_summary(inserted, skipped, errors)
+
 @import_router.delete("/clear/{entity}")
 async def clear_entity(entity: str, current_user=Depends(require_admin)):
     entity_map = {
@@ -2409,6 +2467,219 @@ async def delete_debt(debt_id: str, current_user=Depends(require_admin)):
     return {"message": "Deleted"}
 
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Expenses
+# ═══════════════════════════════════════════════════════════════════════════════
+
+EXPENSE_CATEGORIES = [
+    "Staff Salaries", "Rent & Utilities", "Vehicle Purchase",
+    "Parts & Consumables", "RTO & Insurance", "Transport & Logistics",
+    "Marketing & Advertising", "Bank Charges & Loan EMI",
+    "Equipment & Maintenance", "Miscellaneous",
+]
+
+class ExpenseCreate(BaseModel):
+    date:         str
+    category:     str
+    sub_category: Optional[str] = ""
+    amount:       float
+    description:  Optional[str] = ""
+    vendor:       Optional[str] = ""
+    payment_mode: Optional[str] = "Cash"
+    receipt_no:   Optional[str] = ""
+    notes:        Optional[str] = ""
+
+class ExpenseUpdate(BaseModel):
+    date:         Optional[str]   = None
+    category:     Optional[str]   = None
+    sub_category: Optional[str]   = None
+    amount:       Optional[float] = None
+    description:  Optional[str]   = None
+    vendor:       Optional[str]   = None
+    payment_mode: Optional[str]   = None
+    receipt_no:   Optional[str]   = None
+    notes:        Optional[str]   = None
+
+@api_router.get("/expenses")
+async def list_expenses(
+    month:    Optional[str] = Query(None),   # "2026-04"
+    category: Optional[str] = Query(None),
+    search:   Optional[str] = Query(None),
+    limit:    int           = Query(500, ge=1, le=2000),
+    current_user=Depends(verify_token),
+):
+    q: dict = {}
+    if month:    q["date"] = {"$regex": f"^{month}"}
+    if category: q["category"] = category
+    if search:
+        q["$or"] = [
+            {"description": {"$regex": search, "$options": "i"}},
+            {"vendor":      {"$regex": search, "$options": "i"}},
+            {"category":    {"$regex": search, "$options": "i"}},
+        ]
+    docs = await db.expenses.find(q).sort("date", -1).limit(limit).to_list(limit)
+    total = await db.expenses.count_documents(q)
+    return JSONResponse(content=oids(docs), headers={"X-Total-Count": str(total)})
+
+@api_router.post("/expenses", status_code=201)
+async def create_expense(body: ExpenseCreate, current_user=Depends(verify_token)):
+    doc = {
+        "date":         body.date,
+        "category":     body.category,
+        "sub_category": body.sub_category or "",
+        "amount":       body.amount,
+        "description":  body.description or "",
+        "vendor":       body.vendor or "",
+        "payment_mode": body.payment_mode or "Cash",
+        "receipt_no":   body.receipt_no or "",
+        "notes":        body.notes or "",
+        "created_by":   current_user.get("name", ""),
+        "created_at":   datetime.utcnow().isoformat(),
+    }
+    result = await db.expenses.insert_one(doc)
+    doc["id"] = str(result.inserted_id); doc.pop("_id", None)
+    return doc
+
+@api_router.put("/expenses/{expense_id}")
+async def update_expense(expense_id: str, body: ExpenseUpdate, current_user=Depends(verify_token)):
+    update = {k: v for k, v in body.dict().items() if v is not None}
+    if not update:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    await db.expenses.update_one({"_id": obj_id(expense_id)}, {"$set": update})
+    updated = await db.expenses.find_one({"_id": obj_id(expense_id)})
+    return oid(updated)
+
+@api_router.delete("/expenses/{expense_id}")
+async def delete_expense(expense_id: str, current_user=Depends(require_admin)):
+    result = await db.expenses.delete_one({"_id": obj_id(expense_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"message": "Deleted"}
+
+@api_router.get("/expenses/stats/summary")
+async def expense_stats(
+    months: int = Query(10, ge=1, le=24),
+    current_user=Depends(verify_token),
+):
+    """Monthly expense totals by category for the last N months."""
+    pipeline = [
+        {"$addFields": {"month_key": {"$substr": ["$date", 0, 7]}}},
+        {"$group": {
+            "_id": {"month": "$month_key", "category": "$category"},
+            "total": {"$sum": "$amount"},
+        }},
+        {"$sort": {"_id.month": -1}},
+        {"$limit": months * len(EXPENSE_CATEGORIES)},
+    ]
+    rows = await db.expenses.aggregate(pipeline).to_list(500)
+    # Reshape into {month: {category: total}}
+    result: dict = {}
+    for r in rows:
+        m = r["_id"]["month"]
+        c = r["_id"]["category"]
+        result.setdefault(m, {})[c] = r["total"]
+    return result
+
+@api_router.get("/reports/pnl")
+async def profit_and_loss(
+    months: int = Query(10, ge=1, le=24),
+    current_user=Depends(require_admin),
+):
+    """Month-by-month P&L: Revenue (sales+service+parts) minus Expenses."""
+    # ── Revenue pipelines ──────────────────────────────────────────
+    def month_from_sale_date():
+        return {"$addFields": {
+            "parsed": {"$dateFromString": {"dateString": "$sale_date", "format": "%d %b %Y", "onError": None, "onNull": None}},
+        }, "$addFields": {
+            "month_key": {"$cond": [
+                {"$ne": ["$parsed", None]},
+                {"$dateToString": {"format": "%Y-%m", "date": "$parsed"}},
+                {"$substr": ["$created_at", 0, 7]},
+            ]}
+        }}
+
+    sales_pipe = [
+        {"$addFields": {
+            "parsed": {"$dateFromString": {"dateString": "$sale_date", "format": "%d %b %Y", "onError": None, "onNull": None}},
+        }},
+        {"$addFields": {
+            "month_key": {"$cond": [
+                {"$ne": ["$parsed", None]},
+                {"$dateToString": {"format": "%Y-%m", "date": "$parsed"}},
+                {"$substr": ["$created_at", 0, 7]},
+            ]}
+        }},
+        {"$group": {"_id": "$month_key", "revenue": {"$sum": "$total_amount"}, "count": {"$sum": 1}}},
+        {"$sort": {"_id": -1}}, {"$limit": months},
+    ]
+    svc_pipe = [
+        {"$addFields": {"month_key": {"$substr": ["$created_at", 0, 7]}}},
+        {"$group": {"_id": "$month_key", "revenue": {"$sum": "$grand_total"}}},
+        {"$sort": {"_id": -1}}, {"$limit": months},
+    ]
+    parts_pipe = [
+        {"$addFields": {"month_key": {"$substr": ["$created_at", 0, 7]}}},
+        {"$group": {"_id": "$month_key", "revenue": {"$sum": "$grand_total"}}},
+        {"$sort": {"_id": -1}}, {"$limit": months},
+    ]
+    exp_pipe = [
+        {"$addFields": {"month_key": {"$substr": ["$date", 0, 7]}}},
+        {"$group": {
+            "_id": "$month_key",
+            "total": {"$sum": "$amount"},
+            "by_category": {"$push": {"cat": "$category", "amt": "$amount"}},
+        }},
+        {"$sort": {"_id": -1}}, {"$limit": months},
+    ]
+
+    sales_rev, svc_rev, parts_rev, exp_data = await asyncio.gather(
+        db.sales.aggregate(sales_pipe).to_list(months),
+        db.service_bills.aggregate(svc_pipe).to_list(months),
+        db.parts_sales.aggregate(parts_pipe).to_list(months),
+        db.expenses.aggregate(exp_pipe).to_list(months),
+    )
+
+    # Build month set
+    all_months = sorted(set(
+        [r["_id"] for r in sales_rev] +
+        [r["_id"] for r in svc_rev] +
+        [r["_id"] for r in parts_rev] +
+        [r["_id"] for r in exp_data]
+    ), reverse=True)[:months]
+
+    def to_map(rows): return {r["_id"]: r["revenue"] for r in rows}
+    sm, vm, pm = to_map(sales_rev), to_map(svc_rev), to_map(parts_rev)
+    em = {r["_id"]: r["total"] for r in exp_data}
+    ec = {r["_id"]: r["by_category"] for r in exp_data}
+
+    result = []
+    for m in all_months:
+        sales_r = sm.get(m, 0)
+        svc_r   = vm.get(m, 0)
+        parts_r = pm.get(m, 0)
+        revenue = sales_r + svc_r + parts_r
+        expenses = em.get(m, 0)
+        profit   = revenue - expenses
+        margin   = round(profit / revenue * 100, 1) if revenue else 0
+
+        # Category breakdown
+        cat_map: dict = {}
+        for item in ec.get(m, []):
+            cat_map[item["cat"]] = cat_map.get(item["cat"], 0) + item["amt"]
+
+        result.append({
+            "month":       m,
+            "sales_rev":   round(sales_r, 2),
+            "service_rev": round(svc_r, 2),
+            "parts_rev":   round(parts_r, 2),
+            "revenue":     round(revenue, 2),
+            "expenses":    round(expenses, 2),
+            "profit":      round(profit, 2),
+            "margin":      margin,
+            "expense_by_category": cat_map,
+        })
+    return result
 
 app.include_router(api_router)
 app.include_router(import_router)
