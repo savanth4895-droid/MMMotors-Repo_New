@@ -41,6 +41,12 @@ const ENTITIES = [
     optional:['mobile','email','salary','join_date'],
     note:'Dedup by username. Roles: owner/sales/service_advisor/parts_counter/technician. Default password = username.',
   },
+  {
+    id:'expenses', label:'Expenses', icon:'◎', color:'#ef4444',
+    required:['date','category','amount'],
+    optional:['sub_category','description','vendor','payment_mode','receipt_no','notes'],
+    note:'date: DD/MM/YYYY. Categories: Staff Salaries, Rent & Utilities, Vehicle Purchase, Parts & Consumables, RTO & Insurance, Transport & Logistics, Marketing & Advertising, Bank Charges & Loan EMI, Equipment & Maintenance, Miscellaneous.',
+  },
 ];
 
 function ImportCard({ cfg, onRefreshCounts }) {
