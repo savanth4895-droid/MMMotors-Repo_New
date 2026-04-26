@@ -2839,7 +2839,7 @@ async def export_backup(current_user=Depends(require_admin)):
     }
     return StreamingResponse(iter([zip_buf.read()]), headers=headers_resp, media_type="application/zip")
 
-
+app.include_router(api_router)
 
 if __name__ == "__main__":
     import uvicorn
