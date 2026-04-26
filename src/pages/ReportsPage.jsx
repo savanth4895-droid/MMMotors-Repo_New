@@ -139,12 +139,16 @@ function DailyClosingSection() {
 
 // ── Main page ────────────────────────────────────────────────────────
 export default function ReportsPage() {
-  const [months, setMonths] = useState(6);
+  const currentYear = new Date().getFullYear();
+  const [year, setYear] = useState(currentYear);
+  const START_YEAR = 2024;
+  const yearOptions = [];
+  for (let y = START_YEAR; y <= currentYear; y++) yearOptions.push(y);
 
   // Data fetches
   const { data:revenue, isLoading:revLoading, error:revError } = useQuery({
-    queryKey:['reports-revenue', months],
-    queryFn: ()=>reportsApi.revenue({ months }).then(r=>r.data),
+    queryKey:['reports-revenue', year],
+    queryFn: ()=>reportsApi.revenue({ year }).then(r=>r.data),
   });
   const { data:brandData, isLoading:brandLoading, error:brandError } = useQuery({
     queryKey:['reports-brand'],
@@ -175,22 +179,25 @@ export default function ReportsPage() {
     queryFn: ()=>salesApi.stats().then(r=>r.data),
   });
 
-  // Build merged monthly revenue data
+  // Build merged monthly revenue data — all 12 months pre-filled with 0
   const monthlyData = (() => {
     if (!revenue) return [];
+    const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const map = {};
-    (revenue.sales||[]).forEach(d => { map[d._id] = { ...map[d._id], month:d._id, sales: d.sales||0 }; });
-    (revenue.service||[]).forEach(d => { map[d._id] = { ...map[d._id], month:d._id, service: d.service||0 }; });
-    (revenue.parts||[]).forEach(d  => { map[d._id] = { ...map[d._id], month:d._id, parts: d.parts||0 }; });
-    return Object.values(map)
-      .sort((a,b)=>a.month.localeCompare(b.month))
-      .map(d => ({
-        month: d.month?.slice(0,7) || '',
-        sales:   Math.round(d.sales   || 0),
-        service: Math.round(d.service || 0),
-        parts:   Math.round(d.parts   || 0),
-        total:   Math.round((d.sales||0)+(d.service||0)+(d.parts||0)),
-      }));
+    MONTHS.forEach((label, i) => {
+      const key = `${year}-${String(i + 1).padStart(2, '0')}`;
+      map[key] = { label, sales: 0, service: 0, parts: 0 };
+    });
+    (revenue.sales||[]).forEach(d   => { if (map[d._id]) map[d._id].sales   = d.sales||0; });
+    (revenue.service||[]).forEach(d => { if (map[d._id]) map[d._id].service = d.service||0; });
+    (revenue.parts||[]).forEach(d   => { if (map[d._id]) map[d._id].parts   = d.parts||0; });
+    return Object.keys(map).sort().map(key => ({
+      month:   map[key].label,
+      sales:   Math.round(map[key].sales),
+      service: Math.round(map[key].service),
+      parts:   Math.round(map[key].parts),
+      total:   Math.round(map[key].sales + map[key].service + map[key].parts),
+    }));
   })();
 
   const totalRevenue = monthlyData.reduce((s,d)=>s+d.total,0);
@@ -230,14 +237,13 @@ export default function ReportsPage() {
         error={revError}
       >
         <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:16 }}>
-          {[3,6,12].map(m => (
-            <button key={m} onClick={()=>setMonths(m)} style={{
-              padding:'5px 12px', background:months===m?'var(--surface2)':'transparent',
-              border:`1px solid ${months===m?'var(--accent)':'var(--border)'}`,
-              borderRadius:3, color:months===m?'var(--accent)':'var(--muted)',
-              cursor:'pointer', fontSize:10, letterSpacing:'.06em', fontFamily:'IBM Plex Sans,sans-serif',
-            }}>{m}M</button>
-          ))}
+          <select value={year} onChange={e => setYear(Number(e.target.value))} style={{
+            padding:'5px 10px', border:'1px solid var(--border)', borderRadius:3,
+            background:'var(--surface)', color:'var(--text)', fontSize:11,
+            cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif',
+          }}>
+            {yearOptions.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
           <span style={{ marginLeft:'auto', fontSize:11, color:'var(--muted)' }}>
             Period total: <span className="display" style={{ fontSize:16, color:'var(--accent)' }}>{fmt(totalRevenue)}</span>
           </span>
