@@ -97,7 +97,12 @@ export default function DashboardPage({ setActive }) {
   const ps   = partsStats     || {};
   const sal  = salStats       || {};
 
-  const fmt = n => n >= 1_00_000 ? '₹'+(n/1_00_000).toFixed(1)+'L' : n >= 1000 ? '₹'+(n/1000).toFixed(0)+'K' : n!=null ? '₹'+n : '—';
+  const fmt = n => {
+    if (n >= 1_00_00_000) return '₹'+(n/1_00_00_000).toFixed(1)+'Cr';
+    if (n >= 1_00_000)    return '₹'+(n/1_00_000).toFixed(1)+'L';
+    if (n >= 1000)        return '₹'+(n/1000).toFixed(0)+'K';
+    return n != null ? '₹'+n : '—';
+  };
 
   const hour     = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
