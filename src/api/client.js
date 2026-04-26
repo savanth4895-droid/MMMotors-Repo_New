@@ -173,6 +173,10 @@ export const expensesApi = {
   pnl:    (months) => api.get('/reports/pnl', { params: { months } }),
 };
 
+export const backupApi = {
+  export: () => api.get('/backup/export', { responseType: 'blob' }),
+};
+
 export const reportsApi = {
   revenue:      (params) => api.get('/reports/revenue', { params }),
   brandSales:   (params) => api.get('/reports/brand-sales', { params }),
