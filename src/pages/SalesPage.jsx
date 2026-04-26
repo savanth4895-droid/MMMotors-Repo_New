@@ -191,6 +191,35 @@ function InvoiceModal({ sale, onClose }) {
         <div style={{ padding:'16px 20px', background:'var(--surface2)', borderTop:'1px solid var(--border)', display:'flex', gap:8, flexShrink:0 }}>
           <Btn onClick={print}>Print →</Btn>
           <GhostBtn onClick={()=>sendWA(sale.customer_mobile,`Dear ${sale.customer_name}, your vehicle documentation is ready. Thank you for choosing MM Motors!`)}>WhatsApp</GhostBtn>
+          <GhostBtn onClick={() => {
+            const lines = [
+              `Invoice    : ${sale.invoice_number || '—'}`,
+              `Date       : ${sale.sale_date || '—'}`,
+              `Name       : ${sale.customer_name || '—'}`,
+              `C/O        : ${sale.care_of || sale.customer_care_of || '—'}`,
+              `Mobile     : ${sale.customer_mobile || '—'}`,
+              `Address    : ${sale.customer_address || '—'}`,
+              `Brand      : ${sale.vehicle_brand || '—'}`,
+              `Model      : ${sale.vehicle_model || '—'}`,
+              `Variant    : ${sale.vehicle_variant || '—'}`,
+              `Colour     : ${sale.vehicle_color || '—'}`,
+              `Vehicle No : ${sale.vehicle_number || '—'}`,
+              `Chassis No : ${sale.chassis_number || '—'}`,
+              `Engine No  : ${sale.engine_number || '—'}`,
+              `RTO        : ${sale.rto ? `₹${sale.rto.toLocaleString('en-IN')}` : '—'}`,
+              `Financier  : ${sale.financier || '—'}`,
+              `Nominee    : ${sale.nominee?.name || '—'} (${sale.nominee?.relation || '—'}, ${sale.nominee?.age || '—'})`,
+              `Amount     : ${sale.total_amount ? `₹${sale.total_amount.toLocaleString('en-IN')}` : '—'}`,
+              `Payment    : ${sale.payment_mode || '—'}`,
+            ].join('
+');
+            navigator.clipboard.writeText(lines).then(() => {
+              const btn = document.activeElement;
+              const orig = btn.textContent;
+              btn.textContent = 'Copied!';
+              setTimeout(() => { btn.textContent = orig; }, 1800);
+            });
+          }}>Copy</GhostBtn>
         </div>
       </div>
     </div>
