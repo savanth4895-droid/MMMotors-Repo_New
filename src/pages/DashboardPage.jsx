@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { dashboardApi, salesApi, vehiclesApi, partsApi, serviceApi } from '../api/client';
+import { dashboardApi, salesApi, vehiclesApi, partsApi, serviceApi, expensesApi } from '../api/client';
 import { Skeleton, ApiError } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
 
@@ -80,6 +80,13 @@ export default function DashboardPage({ setActive }) {
     queryKey:['parts-stats'],
     queryFn: ()=>partsApi.stats().then(r=>r.data),
   });
+  // Current month P&L
+  const { data:pnlData } = useQuery({
+    queryKey:['pnl-dashboard'],
+    queryFn: ()=>expensesApi.pnl(1).then(r=>r.data),
+    refetchInterval: 60_000,
+  });
+  const thisMonthPnl = Array.isArray(pnlData) ? pnlData[0] : null;
 
   // nested response: raw.revenue.today, raw.vehicles.in_stock, etc.
   const rev  = raw?.revenue   || {};
@@ -99,13 +106,14 @@ export default function DashboardPage({ setActive }) {
   if (pts.low_stock   > 0) alerts.push({ icon:'⚠', msg:`${pts.low_stock} parts below reorder level`,      color:'#f0c040', page:'parts' });
   if (pts.out_of_stock> 0) alerts.push({ icon:'🚫', msg:`${pts.out_of_stock} parts out of stock`,          color:'#f87171', page:'parts' });
   if (svc.ready       > 0) alerts.push({ icon:'✓', msg:`${svc.ready} vehicle${svc.ready>1?'s':''} ready for pickup`, color:'#4ade80', page:'service' });
+  if (thisMonthPnl && thisMonthPnl.profit < 0) alerts.push({ icon:'📉', msg:`This month is at a loss — expenses exceed revenue by ${fmt(Math.abs(thisMonthPnl.profit))}`, color:'#f87171', page:'reports' });
 
   return (
     <div>
       {/* KPI bar */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', borderBottom:'1px solid var(--border)' }}>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(6,1fr)', borderBottom:'1px solid var(--border)' }}>
         {statsLoading ? (
-          Array.from({length:5}).map((_,i)=>(
+          Array.from({length:6}).map((_,i)=>(
             <div key={i} style={{ padding:'16px 22px', borderRight:'1px solid var(--border)' }}>
               <Skeleton h={10} w={60} style={{ marginBottom:8 }} />
               <Skeleton h={28} w={80} />
@@ -120,6 +128,14 @@ export default function DashboardPage({ setActive }) {
             <StatCard label="Vehicles in stock"   value={veh.in_stock??'—'}       color="var(--green)"  sub={`${vs.sold||0} sold all time`}             onClick={()=>setActive('vehicles')} />
             <StatCard label="Active service jobs" value={svc.active_total??'—'}   color="var(--blue)"   sub={`${svc.ready||0} ready for pickup`}        onClick={()=>setActive('service')} />
             <StatCard label="Parts alerts"        value={(pts.low_stock||0)+(pts.out_of_stock||0)||'—'} color={(pts.low_stock>0||pts.out_of_stock>0)?'var(--red)':'var(--dim)'} sub="low + out of stock" onClick={()=>setActive('parts')} />
+            {/* Net Profit this month */}
+            <StatCard
+              label="Net profit (month)"
+              value={thisMonthPnl ? fmt(thisMonthPnl.profit) : '—'}
+              color={thisMonthPnl ? (thisMonthPnl.profit >= 0 ? '#4ade80' : 'var(--red)') : 'var(--dim)'}
+              sub={thisMonthPnl ? `${thisMonthPnl.margin}% margin · ${fmt(thisMonthPnl.expenses)} exp` : 'Add expenses to track'}
+              onClick={()=>setActive('reports')}
+            />
           </>
         )}
       </div>
