@@ -5,13 +5,39 @@ import { Btn, GhostBtn, Field, Avatar, Skeleton, Empty, ApiError } from '../comp
 import toast from 'react-hot-toast';
 import { useConfirm } from '../components/ConfirmModal';
 
-const ROLES = [
-  { value:'owner',           label:'Owner',           desc:'Full access — all modules, delete, settings.' },
-  { value:'sales',           label:'Sales',           desc:'Dashboard, sales, vehicles, customers.' },
-  { value:'service_advisor', label:'Service Advisor', desc:'Dashboard, service jobs, customers.' },
-  { value:'parts_counter',   label:'Parts Counter',   desc:'Dashboard, parts inventory and billing.' },
-  { value:'technician',      label:'Technician',      desc:'Service view only.' },
+// All pages available in the system
+const ALL_PAGES = [
+  { id:'dashboard',   label:'Dashboard',      desc:'Overview, KPI stats, alerts' },
+  { id:'sales',       label:'Sales',          desc:'Create & manage vehicle sales, invoices' },
+  { id:'service',     label:'Service',        desc:'Job cards, billing, service board' },
+  { id:'service-due', label:'Service Due',    desc:'Overdue service reminders & WhatsApp' },
+  { id:'vehicles',    label:'Vehicles',       desc:'Stock inventory, inbound/outbound' },
+  { id:'parts',       label:'Parts',          desc:'Spare parts inventory & parts billing' },
+  { id:'customers',   label:'Customers',      desc:'Customer records, history, tags' },
+  { id:'debt',        label:'Debt Ledger',    desc:'Outstanding payments from customers' },
+  { id:'expenses',    label:'Expenses',       desc:'Showroom expense tracking' },
+  { id:'reports',     label:'Reports',        desc:'Revenue, P&L, brand analytics' },
+  { id:'staff',       label:'Staff',          desc:'Staff management (owner only recommended)' },
+  { id:'import',      label:'Import data',    desc:'Bulk import customers, vehicles, parts' },
 ];
+
+// Role-based defaults (pre-selects when role changes)
+const ROLE_DEFAULTS = {
+  owner:           ALL_PAGES.map(p => p.id),
+  sales:           ['dashboard','sales','vehicles','customers','debt'],
+  service_advisor: ['dashboard','service','service-due','customers'],
+  parts_counter:   ['dashboard','parts'],
+  technician:      ['dashboard','service'],
+};
+
+const ROLES = [
+  { value:'owner',           label:'Owner'           },
+  { value:'sales',           label:'Sales'           },
+  { value:'service_advisor', label:'Service Advisor' },
+  { value:'parts_counter',   label:'Parts Counter'   },
+  { value:'technician',      label:'Technician'      },
+];
+
 const ROLE_COLOR = {
   owner:          { color:'#f0c040', bg:'rgba(240,192,64,.12)',  border:'rgba(240,192,64,.3)' },
   sales:          { color:'#4ade80', bg:'rgba(74,222,128,.12)',  border:'rgba(74,222,128,.3)' },
@@ -27,11 +53,75 @@ const STATUS_COLOR = {
 
 const selStyle = { background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:3, padding:'8px 10px', color:'var(--text)', outline:'none', fontSize:13, fontFamily:'IBM Plex Sans,sans-serif', width:'100%' };
 
+// ── Page Permission Checklist ──────────────────────────────────────────────────
+function PagePermissions({ selectedPages, onChange, role }) {
+  const handleToggle = (id) => {
+    onChange(selectedPages.includes(id)
+      ? selectedPages.filter(p => p !== id)
+      : [...selectedPages, id]);
+  };
+  const selectAll   = () => onChange(ALL_PAGES.map(p => p.id));
+  const selectNone  = () => onChange([]);
+  const useDefaults = () => onChange(ROLE_DEFAULTS[role] || []);
+
+  return (
+    <div>
+      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12 }}>
+        <div style={{ fontSize:10, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--muted)', fontWeight:600 }}>
+          Page Access — {selectedPages.length} of {ALL_PAGES.length} pages
+        </div>
+        <div style={{ marginLeft:'auto', display:'flex', gap:6 }}>
+          <button onClick={useDefaults} style={{ padding:'3px 10px', background:'rgba(184,134,11,.12)', border:'1px solid rgba(184,134,11,.3)', borderRadius:3, color:'var(--accent)', fontSize:10, cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif', fontWeight:600 }}>
+            Role defaults
+          </button>
+          <button onClick={selectAll} style={{ padding:'3px 10px', background:'transparent', border:'1px solid var(--border)', borderRadius:3, color:'var(--muted)', fontSize:10, cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif' }}>
+            All
+          </button>
+          <button onClick={selectNone} style={{ padding:'3px 10px', background:'transparent', border:'1px solid var(--border)', borderRadius:3, color:'var(--muted)', fontSize:10, cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif' }}>
+            None
+          </button>
+        </div>
+      </div>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:6 }}>
+        {ALL_PAGES.map(page => {
+          const isOn = selectedPages.includes(page.id);
+          return (
+            <label key={page.id}
+              onClick={() => handleToggle(page.id)}
+              style={{
+                display:'flex', alignItems:'flex-start', gap:10, padding:'10px 12px',
+                borderRadius:5, cursor:'pointer', transition:'all .12s',
+                border: `1.5px solid ${isOn ? 'var(--accent)' : 'var(--border)'}`,
+                background: isOn ? 'rgba(184,134,11,.06)' : 'transparent',
+              }}>
+              <div style={{
+                width:16, height:16, borderRadius:3, flexShrink:0, marginTop:1,
+                border: `1.5px solid ${isOn ? 'var(--accent)' : 'var(--border)'}`,
+                background: isOn ? 'var(--accent)' : 'transparent',
+                display:'flex', alignItems:'center', justifyContent:'center',
+              }}>
+                {isOn && <span style={{ color:'#000', fontSize:10, fontWeight:900, lineHeight:1 }}>✓</span>}
+              </div>
+              <div>
+                <div style={{ fontSize:12, fontWeight:600, color: isOn ? 'var(--text)' : 'var(--muted)' }}>{page.label}</div>
+                <div style={{ fontSize:10, color:'var(--dim)', marginTop:1 }}>{page.desc}</div>
+              </div>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── Staff profile ────────────────────────────────────────────────────
 function StaffProfile({ staff, onBack }) {
   const qc = useQueryClient();
   const [tab,    setTab]  = useState('info');
-  const [form,   setForm] = useState({ ...staff });
+  const [form,   setForm] = useState({
+    ...staff,
+    allowed_pages: staff.allowed_pages || ROLE_DEFAULTS[staff.role] || [],
+  });
   const [pw,     setPw]   = useState({ new_password:'', confirm:'' });
   const [saved,  setSaved] = useState(false);
 
@@ -63,12 +153,16 @@ function StaffProfile({ staff, onBack }) {
         <span style={{ fontSize:9, padding:'3px 9px', borderRadius:2, fontWeight:500, color:sc.color, background:sc.bg, border:`1px solid ${sc.border}` }}>{sc.label}</span>
         <div style={{ marginLeft:'auto', display:'flex', gap:8, alignItems:'center' }}>
           {saved && <span style={{ fontSize:11, color:'#4ade80' }}>✓ Saved</span>}
-          <Btn onClick={()=>updateMut.mutate({ name:form.name, mobile:form.mobile, email:form.email, role:form.role, status:form.status, salary:parseFloat(form.salary)||0, join_date:form.join_date })}>Save changes</Btn>
+          <Btn onClick={()=>updateMut.mutate({
+            name:form.name, mobile:form.mobile, email:form.email, role:form.role,
+            status:form.status, salary:parseFloat(form.salary)||0, join_date:form.join_date,
+            allowed_pages: form.role === 'owner' ? null : form.allowed_pages,
+          })}>Save changes</Btn>
         </div>
       </div>
 
       <div style={{ display:'flex', borderBottom:'1px solid var(--border)', flexShrink:0, background:'var(--surface)' }}>
-        {[{id:'info',l:'Profile info'},{id:'security',l:'Security'}].map(t=>(
+        {[{id:'info',l:'Profile info'},{id:'access',l:'Page Access'},{id:'security',l:'Security'}].map(t=>(
           <button key={t.id} onClick={()=>setTab(t.id)} style={{ padding:'10px 20px', background:'transparent', border:'none', borderBottom:tab===t.id?'2px solid var(--accent)':'2px solid transparent', color:tab===t.id?'var(--accent)':'var(--muted)', cursor:'pointer', fontSize:10, letterSpacing:'.07em', textTransform:'uppercase', fontFamily:'IBM Plex Sans,sans-serif' }}>{t.l.toUpperCase()}</button>
         ))}
       </div>
@@ -82,7 +176,10 @@ function StaffProfile({ staff, onBack }) {
               <Field label="Email">    <input value={form.email||''}  onChange={s('email')}    /></Field>
               <Field label="Username"> <input value={form.username}   readOnly style={{ opacity:.6 }} /></Field>
               <Field label="Role">
-                <select value={form.role} onChange={s('role')} style={selStyle}>
+                <select value={form.role} onChange={e => {
+                  const newRole = e.target.value;
+                  setForm(p => ({ ...p, role: newRole, allowed_pages: ROLE_DEFAULTS[newRole] || [] }));
+                }} style={selStyle}>
                   {ROLES.map(r=><option key={r.value} value={r.value}>{r.label}</option>)}
                 </select>
               </Field>
@@ -96,10 +193,22 @@ function StaffProfile({ staff, onBack }) {
               <Field label="Monthly salary (₹)"><input type="number" value={form.salary||0}    onChange={s('salary')}    /></Field>
               <Field label="Join date">          <input              value={form.join_date||''} onChange={s('join_date')} placeholder="01 Jan 2024" /></Field>
             </div>
-            <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:4, padding:'12px 16px' }}>
-              <div className="label-xs" style={{ marginBottom:6 }}>Access level — {ROLES.find(r=>r.value===form.role)?.label}</div>
-              <div style={{ fontSize:12, color:'var(--text)', lineHeight:1.6 }}>{ROLES.find(r=>r.value===form.role)?.desc}</div>
-            </div>
+          </div>
+        )}
+
+        {tab==='access' && (
+          <div style={{ maxWidth:720 }}>
+            {form.role === 'owner' ? (
+              <div style={{ padding:'16px 18px', background:'rgba(184,134,11,.06)', border:'1px solid rgba(184,134,11,.2)', borderRadius:6, fontSize:12 }}>
+                Owner has access to all pages by default and cannot be restricted.
+              </div>
+            ) : (
+              <PagePermissions
+                selectedPages={form.allowed_pages || []}
+                onChange={pages => setForm(p => ({ ...p, allowed_pages: pages }))}
+                role={form.role}
+              />
+            )}
           </div>
         )}
 
@@ -133,30 +242,44 @@ function StaffProfile({ staff, onBack }) {
 
 // ── Add staff form ───────────────────────────────────────────────────
 function AddStaffForm({ onSave, onCancel, saving }) {
-  const [f, setF] = useState({ name:'', mobile:'', email:'', username:'', role:'sales', salary:'' });
+  const [f, setF] = useState({
+    name:'', mobile:'', email:'', username:'', role:'sales', salary:'',
+    allowed_pages: ROLE_DEFAULTS['sales'],
+  });
   const s = k => e => setF(p=>({...p,[k]:e.target.value}));
+
   return (
-    <div style={{ maxWidth:560, display:'flex', flexDirection:'column', gap:14 }}>
+    <div style={{ maxWidth:720, display:'flex', flexDirection:'column', gap:16 }}>
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
         <Field label="Full name *"><input value={f.name}     onChange={s('name')}     placeholder="Full name" /></Field>
         <Field label="Mobile *">   <input value={f.mobile}   onChange={s('mobile')}   placeholder="10-digit mobile" /></Field>
         <Field label="Email">      <input value={f.email}    onChange={s('email')}    placeholder="Optional" /></Field>
         <Field label="Username *"> <input value={f.username} onChange={s('username')} placeholder="Login username" className="mono" /></Field>
         <Field label="Role *">
-          <select value={f.role} onChange={s('role')} style={selStyle}>
+          <select value={f.role} onChange={e => {
+            const role = e.target.value;
+            setF(p => ({ ...p, role, allowed_pages: ROLE_DEFAULTS[role] || [] }));
+          }} style={selStyle}>
             {ROLES.map(r=><option key={r.value} value={r.value}>{r.label}</option>)}
           </select>
         </Field>
         <Field label="Monthly salary (₹)"><input type="number" value={f.salary} onChange={s('salary')} placeholder="0" /></Field>
       </div>
-      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:4, padding:'12px 14px' }}>
-        <div className="label-xs" style={{ marginBottom:4 }}>Access — {ROLES.find(r=>r.value===f.role)?.label}</div>
-        <div style={{ fontSize:11, color:'var(--text)', lineHeight:1.6 }}>{ROLES.find(r=>r.value===f.role)?.desc}</div>
+
+      {/* Page access */}
+      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:6, padding:'16px 18px' }}>
+        <PagePermissions
+          selectedPages={f.allowed_pages}
+          onChange={pages => setF(p => ({ ...p, allowed_pages: pages }))}
+          role={f.role}
+        />
       </div>
+
       <div style={{ fontSize:10, color:'var(--dim)', fontStyle:'italic' }}>Default password: <span className="mono">mm@123456</span></div>
       <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
         <GhostBtn onClick={onCancel}>Cancel</GhostBtn>
-        <Btn disabled={!f.name||!f.mobile||!f.username||saving} onClick={()=>onSave({...f,salary:parseFloat(f.salary)||0, password:'mm@123456'})}>
+        <Btn disabled={!f.name||!f.mobile||!f.username||saving}
+          onClick={()=>onSave({ ...f, salary:parseFloat(f.salary)||0, password:'mm@123456' })}>
           {saving?'Adding…':'Add staff member'}
         </Btn>
       </div>
