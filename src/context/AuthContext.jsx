@@ -14,27 +14,22 @@ export function AuthProvider({ children }) {
       setLoading(false);
       return;
     }
-    useEffect(() => {
-  const token = localStorage.getItem('mm_token');
-  if (!token) { setLoading(false); return; }
+    authApi.me()
+      .then((res) => setUser(res.data))
+      .catch((err) => {
+        // Only clear token on 401 (invalid/expired)
+        // Ignore network errors, 500s, server cold starts
+        if (err?.response?.status === 401) {
+          localStorage.removeItem('mm_token');
+          setUser(null);
+        }
+      })
+      .finally(() => setLoading(false));
+  }, []);
 
-  authApi.me()
-    .then((res) => setUser(res.data))
-    .catch((err) => {
-      // Only log out on 401 (invalid/expired token)
-      // Ignore network errors, 500s, server cold starts etc.
-      if (err?.response?.status === 401) {
-        localStorage.removeItem('mm_token');
-        setUser(null);
-      }
-    })
-    .finally(() => setLoading(false));
-}, []);
-    
   const login = useCallback(async (username, password) => {
     const res = await authApi.login({ username, password });
     const { user: u, access_token } = res.data;
-    // Store token so it persists across tabs, devices and refreshes
     if (access_token) localStorage.setItem('mm_token', access_token);
     setUser(u);
     return u;
