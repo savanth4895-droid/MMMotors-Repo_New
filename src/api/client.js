@@ -164,6 +164,15 @@ export const dashboardApi = {
   recentActivity: () => api.get('/dashboard/recent-activity'),
 };
 
+export const expensesApi = {
+  list:   (params) => api.get('/expenses', { params }),
+  create: (data)   => api.post('/expenses', data),
+  update: (id, d)  => api.put(`/expenses/${id}`, d),
+  delete: (id)     => api.delete(`/expenses/${id}`),
+  stats:  (months) => api.get('/expenses/stats/summary', { params: { months } }),
+  pnl:    (months) => api.get('/reports/pnl', { params: { months } }),
+};
+
 export const reportsApi = {
   revenue:      (params) => api.get('/reports/revenue', { params }),
   brandSales:   (params) => api.get('/reports/brand-sales', { params }),
