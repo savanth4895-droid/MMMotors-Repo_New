@@ -15,7 +15,7 @@ Render env vars required:
 import asyncio
 import traceback
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Any
 
 from fastapi import FastAPI, Depends, HTTPException, status, Query, Request, UploadFile, File, Form, Response, Cookie
@@ -1244,6 +1244,7 @@ async def get_notifications(current_user=Depends(verify_token)):
     return {d["vehicle_number"]: d["notified_at"] for d in docs if d.get("vehicle_number")}
 
 
+@api_router.get("/service/stats")
 async def service_stats(current_user=Depends(verify_token)):
     pending, in_progress, ready, delivered = await asyncio.gather(
         db.service_jobs.count_documents({"status":"pending"}),
@@ -1801,20 +1802,22 @@ async def recent_activity(limit: int = Query(10, le=50), current_user=Depends(ve
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @api_router.get("/reports/revenue")
-async def revenue_report(year: int = Query(None), current_user=Depends(require_admin)):
-    if year is None:
-        year = datetime.utcnow().year
-    yr = str(year)
-
-    # Sales — sale_date can be "08 Apr 2026", "2026-04-24", "01/04/2026"
+async def revenue_report(months: int = Query(6, ge=1, le=24), current_user=Depends(require_admin)):
+    # sale_date can be: "08 Apr 2026", "2026-04-24", "2024-07-01 00:00:00", "01/04/2026"
+    # Strategy: try multiple formats, fall back to created_at substring
     pipeline = [
         {"$addFields": {
+            # Try "DD Mon YYYY" e.g. "08 Apr 2026"
             "p1": {"$dateFromString": {"dateString": "$sale_date", "format": "%d %b %Y", "onError": None, "onNull": None}},
+            # Try "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
             "p2": {"$dateFromString": {"dateString": {"$substr": ["$sale_date", 0, 10]}, "format": "%Y-%m-%d", "onError": None, "onNull": None}},
+            # Try "DD/MM/YYYY"
             "p3": {"$dateFromString": {"dateString": "$sale_date", "format": "%d/%m/%Y", "onError": None, "onNull": None}},
         }},
         {"$addFields": {
-            "parsed_date": {"$ifNull": ["$p1", {"$ifNull": ["$p2", {"$ifNull": ["$p3", None]}]}]}
+            "parsed_date": {
+                "$ifNull": ["$p1", {"$ifNull": ["$p2", {"$ifNull": ["$p3", None]}]}]
+            }
         }},
         {"$addFields": {
             "month_key": {"$cond": [
@@ -1823,72 +1826,37 @@ async def revenue_report(year: int = Query(None), current_user=Depends(require_a
                 {"$substr": ["$created_at", 0, 7]}
             ]}
         }},
-        {"$match": {"month_key": {"$regex": f"^{yr}"}}},
         {"$group": {"_id": "$month_key", "sales": {"$sum": "$total_amount"}, "count": {"$sum": 1}}},
-        {"$sort": {"_id": 1}},
+        {"$sort": {"_id": -1}}, {"$limit": months},
     ]
-    sales_by_month = await db.sales.aggregate(pipeline).to_list(12)
-
-    # Service — use bill_date (fix: was incorrectly using created_at)
-    svc_pipeline = [
-        {"$addFields": {"month_key": {"$substr": ["$bill_date", 0, 7]}}},
-        {"$match": {"month_key": {"$regex": f"^{yr}"}}},
-        {"$group": {"_id": "$month_key", "service": {"$sum": "$grand_total"}}},
-        {"$sort": {"_id": 1}},
-    ]
-    svc_by_month = await db.service_bills.aggregate(svc_pipeline).to_list(12)
-
-    # Parts — use sale_date (fix: was incorrectly using created_at)
-    parts_pipeline = [
-        {"$addFields": {"month_key": {"$substr": ["$sale_date", 0, 7]}}},
-        {"$match": {"month_key": {"$regex": f"^{yr}"}}},
-        {"$group": {"_id": "$month_key", "parts": {"$sum": "$grand_total"}}},
-        {"$sort": {"_id": 1}},
-    ]
-    parts_by_month = await db.parts_sales.aggregate(parts_pipeline).to_list(12)
-
-    # Return raw dicts — _id is already a "YYYY-MM" string, no oids() needed
-    def serialize(docs):
-        return [{"_id": d["_id"], **{k: v for k, v in d.items() if k != "_id"}} for d in docs]
-
-    return {"year": year, "sales": serialize(sales_by_month), "service": serialize(svc_by_month), "parts": serialize(parts_by_month)}
+    sales_by_month = await db.sales.aggregate(pipeline).to_list(months)
+    svc_pipeline   = [{"$addFields":{"month_key":{"$substr":["$created_at",0,7]}}},{"$group":{"_id":"$month_key","service":{"$sum":"$grand_total"}}},{"$sort":{"_id":-1}},{"$limit":months}]
+    svc_by_month   = await db.service_bills.aggregate(svc_pipeline).to_list(months)
+    parts_pipeline = [{"$addFields":{"month_key":{"$substr":["$created_at",0,7]}}},{"$group":{"_id":"$month_key","parts":{"$sum":"$grand_total"}}},{"$sort":{"_id":-1}},{"$limit":months}]
+    parts_by_month = await db.parts_sales.aggregate(parts_pipeline).to_list(months)
+    return {"sales":oids(sales_by_month),"service":oids(svc_by_month),"parts":oids(parts_by_month)}
 
 @api_router.get("/reports/daily-closing")
 async def daily_closing_report(date: Optional[str] = Query(None), current_user=Depends(require_admin)):
-    # target_date in "DD Mon YYYY" format (e.g. "25 Apr 2026") — used by sales/service/parts
     target_date = date or datetime.utcnow().strftime("%d %b %Y")
-    # Expenses store date in ISO format "YYYY-MM-DD" — convert for matching
-    try:
-        iso_date = datetime.strptime(target_date, "%d %b %Y").strftime("%Y-%m-%d")
-    except ValueError:
-        iso_date = target_date  # already ISO if passed directly
-
     async def get_totals(collection, date_field, amount_field):
         pipeline = [{"$match":{date_field:target_date}},{"$group":{"_id":{"$toLower":"$payment_mode"},"total":{"$sum":amount_field}}}]
         return await db[collection].aggregate(pipeline).to_list(None)
-
-    async def get_expense_totals():
-        pipeline = [{"$match":{"date":iso_date}},{"$group":{"_id":{"$toLower":"$payment_mode"},"total":{"$sum":"$amount"}}}]
-        return await db.expenses.aggregate(pipeline).to_list(None)
-
-    sales_r, service_r, parts_r, expense_r = await asyncio.gather(
+    sales_r, service_r, parts_r = await asyncio.gather(
         get_totals("sales","sale_date","$total_amount"),
         get_totals("service_bills","bill_date","$grand_total"),
         get_totals("parts_sales","sale_date","$grand_total"),
-        get_expense_totals(),
     )
     summary = {}
-    for source, data in [("Vehicles",sales_r),("Service",service_r),("Parts",parts_r),("Expenses",expense_r)]:
+    for source, data in [("Vehicles",sales_r),("Service",service_r),("Parts",parts_r)]:
         for item in data:
             mode = (item["_id"] or "unknown").title()
             if mode not in summary:
-                summary[mode] = {"total":0,"Vehicles":0,"Service":0,"Parts":0,"Expenses":0}
-            # Expenses are outflows — store as negative
-            amount = item["total"] if source != "Expenses" else -item["total"]
-            summary[mode][source] = summary[mode].get(source, 0) + item["total"]
-            summary[mode]["total"] += amount
+                summary[mode] = {"total":0,"Vehicles":0,"Service":0,"Parts":0}
+            summary[mode][source] += item["total"]
+            summary[mode]["total"] += item["total"]
     result = [{"payment_mode":k,**v} for k,v in summary.items()]
-    result.sort(key=lambda x: 0 if x["payment_mode"]=="Cash" else 1 if x["payment_mode"]=="Upi" else 2)
+    result.sort(key=lambda x: 0 if x["payment_mode"]=="Cash" else 1)
     return {"date":target_date,"breakdown":result,"grand_total":sum(r["total"] for r in result)}
 
 @api_router.get("/reports/brand-sales")
@@ -1914,6 +1882,13 @@ from openpyxl import load_workbook
 from openpyxl import Workbook
 from fastapi import File, Form, UploadFile
 from fastapi.responses import StreamingResponse
+
+EXPENSE_CATEGORIES = [
+    "Staff Salaries", "Rent & Utilities", "Vehicle Purchase",
+    "Parts & Consumables", "RTO & Insurance", "Transport & Logistics",
+    "Marketing & Advertising", "Bank Charges & Loan EMI",
+    "Equipment & Maintenance", "Miscellaneous",
+]
 
 import_router = APIRouter(prefix="/api/import", tags=["import"])
 
@@ -2216,7 +2191,7 @@ async def import_sales(request: Request, file: UploadFile = File(...), mode: str
                 cust_id = str(r.inserted_id); customer_cache[mobile] = cust_id
             discount=safe_float(row.get("discount",0)); insurance=safe_float(row.get("insurance",0)); rto=safe_float(row.get("rto",0)); total=round(price-discount+insurance+rto,2)
             inv_no = await next_sequence("invoice")
-            doc = {"invoice_number":inv_no,"customer_id":cust_id,"customer_name":name,"customer_mobile":mobile,"care_of":safe(row.get("care_of","")),"customer_address":safe(row.get("customer_address","")),"vehicle_brand":brand,"vehicle_model":model,"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"vehicle_color":safe(row.get("vehicle_color")),"vehicle_variant":safe(row.get("vehicle_variant")),"sale_price":price,"discount":discount,"insurance":insurance,"rto":rto,"total_amount":total,"amount_in_words":amount_in_words(total),"payment_mode":safe(row.get("payment_mode","Cash")),"nominee":{"name":safe(row.get("nominee_name")),"relation":safe(row.get("nominee_relation")),"age":safe(row.get("nominee_age"))},"sale_date":safe(row.get("sale_date","")) or datetime.utcnow().strftime("%d %b %Y"),"status":"delivered","created_at":datetime.utcnow().isoformat(),"_imported":True}
+            doc = {"invoice_number":inv_no,"customer_id":cust_id,"customer_name":name,"customer_mobile":mobile,"care_of":safe(row.get("care_of","")),"vehicle_brand":brand,"vehicle_model":model,"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"vehicle_color":safe(row.get("vehicle_color")),"vehicle_variant":safe(row.get("vehicle_variant")),"sale_price":price,"discount":discount,"insurance":insurance,"rto":rto,"total_amount":total,"amount_in_words":amount_in_words(total),"payment_mode":safe(row.get("payment_mode","Cash")),"nominee":{"name":safe(row.get("nominee_name")),"relation":safe(row.get("nominee_relation")),"age":safe(row.get("nominee_age"))},"sale_date":safe(row.get("sale_date","")) or datetime.utcnow().strftime("%d %b %Y"),"status":"delivered","created_at":datetime.utcnow().isoformat(),"_imported":True}
             to_insert.append(doc)
             if chassis: existing_chassis.add(chassis)
         except Exception as e:
@@ -2521,12 +2496,6 @@ async def delete_debt(debt_id: str, current_user=Depends(require_admin)):
 #  Expenses
 # ═══════════════════════════════════════════════════════════════════════════════
 
-EXPENSE_CATEGORIES = [
-    "Staff Salaries", "Rent & Utilities", "Vehicle Purchase",
-    "Parts & Consumables", "RTO & Insurance", "Transport & Logistics",
-    "Marketing & Advertising", "Bank Charges & Loan EMI",
-    "Equipment & Maintenance", "Miscellaneous",
-]
 
 class ExpenseCreate(BaseModel):
     date:         str
@@ -2840,6 +2809,7 @@ async def export_backup(current_user=Depends(require_admin)):
     return StreamingResponse(iter([zip_buf.read()]), headers=headers_resp, media_type="application/zip")
 
 app.include_router(api_router)
+app.include_router(import_router)
 
 if __name__ == "__main__":
     import uvicorn
