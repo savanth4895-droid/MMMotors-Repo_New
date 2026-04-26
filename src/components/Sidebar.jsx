@@ -8,11 +8,12 @@ const NAV = [
   { id: 'dashboard', label: 'Dashboard',   roles: ['owner','sales','service_advisor','parts_counter'] },
   { id: 'sales',     label: 'Sales',        roles: ['owner','sales'] },
   { id: 'service',     label: 'Service',       roles: ['owner','service_advisor'] },
-  { id: 'service-due', label: 'Service Due', roles: ['owner','service_advisor'] },
+  { id: 'service-due', label: '🔔 Service Due', roles: ['owner','service_advisor'] },
   { id: 'vehicles',  label: 'Vehicles',     roles: ['owner','sales'] },
   { id: 'parts',     label: 'Parts',        roles: ['owner','parts_counter'] },
   { id: 'customers', label: 'Customers',    roles: ['owner','sales','service_advisor'] },
-  { id: 'debt',      label: 'Debt Ledger',  roles: ['owner','sales'] },
+  { id: 'debt',        label: 'Debt Ledger',  roles: ['owner','sales'] },
+  { id: 'expenses',    label: 'Expenses',     roles: ['owner'] },
   { id: 'reports',   label: 'Reports',      roles: ['owner'] },
   { id: 'staff',     label: 'Staff',        roles: ['owner'] },
   { id: 'import',    label: 'Import data',  roles: ['owner'] },
@@ -28,7 +29,16 @@ export default function Sidebar({ active, setActive }) {
   const { user, logout } = useAuth();
   const navigate  = useNavigate();
   const location  = useLocation();
-  const allowed   = NAV.filter((n) => n.roles.includes(user?.role));
+  const allowed = (() => {
+    // Owner always gets everything
+    if (user?.role === 'owner') return NAV;
+    // If user has custom page permissions set, use those
+    if (Array.isArray(user?.allowed_pages) && user.allowed_pages.length > 0) {
+      return NAV.filter(n => user.allowed_pages.includes(n.id));
+    }
+    // Fallback: role-based defaults
+    return NAV.filter(n => n.roles.includes(user?.role));
+  })();
 
   // Derive active page from URL
   const currentPage = location.pathname.replace('/', '') || 'dashboard';
