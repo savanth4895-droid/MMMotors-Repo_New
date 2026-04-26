@@ -1859,6 +1859,51 @@ async def daily_closing_report(date: Optional[str] = Query(None), current_user=D
     result.sort(key=lambda x: 0 if x["payment_mode"]=="Cash" else 1)
     return {"date":target_date,"breakdown":result,"grand_total":sum(r["total"] for r in result)}
 
+@api_router.post("/migrations/backfill-sale-addresses")
+async def backfill_sale_addresses(current_user=Depends(require_admin)):
+    """
+    One-time migration: copies customer.address → sale.customer_address
+    for every sale that is missing the address field or has it blank.
+    Also copies back into the customers collection if the customer has no address.
+    """
+    updated = 0
+    skipped = 0
+    no_address = 0
+
+    async for sale in db.sales.find(
+        {"$or": [{"customer_address": {"$exists": False}}, {"customer_address": ""}, {"customer_address": None}]},
+        {"_id": 1, "customer_id": 1, "customer_mobile": 1}
+    ):
+        # Try by customer_id first, fall back to mobile
+        customer = None
+        if sale.get("customer_id"):
+            try:
+                customer = await db.customers.find_one({"_id": obj_id(sale["customer_id"])}, {"address": 1})
+            except Exception:
+                pass
+        if not customer and sale.get("customer_mobile"):
+            customer = await db.customers.find_one({"mobile": sale["customer_mobile"]}, {"address": 1})
+
+        address = (customer or {}).get("address", "").strip() if customer else ""
+
+        if address:
+            await db.sales.update_one(
+                {"_id": sale["_id"]},
+                {"$set": {"customer_address": address}}
+            )
+            updated += 1
+        else:
+            no_address += 1
+
+        await asyncio.sleep(0) if updated % 100 == 0 else None
+
+    return {
+        "updated": updated,
+        "no_customer_address": no_address,
+        "message": f"✅ {updated} sales updated with address. {no_address} customers have no address on file — import template with addresses to fill those."
+    }
+
+
 @api_router.get("/reports/brand-sales")
 async def brand_sales_report(current_user=Depends(require_admin)):
     pipeline = [{"$group":{"_id":"$vehicle_brand","units":{"$sum":1},"revenue":{"$sum":"$total_amount"}}},{"$sort":{"units":-1}}]
@@ -1997,13 +2042,14 @@ TEMPLATES = {
     "sales": {
         "cols":["customer_name","customer_mobile","care_of","vehicle_brand","vehicle_model","chassis_number",
                 "engine_number","vehicle_number","vehicle_color","vehicle_variant","sale_price",
-                "payment_mode","nominee_name","nominee_relation","nominee_age","sale_date","customer_address"],
+                "rto","financier","payment_mode","nominee_name","nominee_relation","nominee_age",
+                "sale_date","customer_address"],
         "rows":[
             ["Ravi Kumar","9876543210","Srinivas","HONDA","Activa 6G","ME4JF502RH7000001","JF50E7000001",
-             "KA01HH1234","Pearl Black","STD","80500","Cash",
+             "KA01HH1234","Pearl Black","STD","80500","KA07","","Cash",
              "Balakrishna","Father","54","08/04/2026","12 MG Road, Bengaluru"],
             ["Priya Nair","9845001122","","HERO","Splendor+","MBLHA10EVHM000002","HA10EAHM00002",
-             "","Heavy Grey","Self Start","73200","Finance",
+             "","Heavy Grey","Self Start","73200","","HDFC Bank","Finance",
              "Suresh Nair","Husband","42","15/04/2026",""],
         ]
     },
@@ -2278,8 +2324,8 @@ async def import_sales(request: Request, file: UploadFile = File(...), mode: str
 
             discount  = safe_float(row.get("discount",0))
             insurance = safe_float(row.get("insurance",0))
-            rto       = safe_float(row.get("rto",0))
-            total     = round(price - discount + insurance + rto, 2)
+            rto       = safe(row.get("rto",""))          # RTO office code e.g. KA07 — stored as text
+            total     = round(price - discount + insurance, 2)
             inv_no    = await next_sequence("invoice")
 
             doc = {
@@ -2299,9 +2345,10 @@ async def import_sales(request: Request, file: UploadFile = File(...), mode: str
                 "sale_price":     price,
                 "discount":       discount,
                 "insurance":      insurance,
-                "rto":            rto,
+                "rto":            rto,  # RTO office code e.g. KA07
                 "total_amount":   total,
                 "amount_in_words":amount_in_words(total),
+                "financier":      safe(row.get("financier","")),
                 "payment_mode":   safe(row.get("payment_mode","Cash")),
                 "nominee": {
                     "name":     safe(row.get("nominee_name")),
