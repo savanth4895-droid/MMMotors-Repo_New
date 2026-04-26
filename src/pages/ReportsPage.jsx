@@ -4,7 +4,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Cell, PieChart, Pie,
 } from 'recharts';
-import { reportsApi, dashboardApi, vehiclesApi, partsApi, serviceApi, salesApi } from '../api/client';
+import { reportsApi, dashboardApi, vehiclesApi, partsApi, serviceApi, salesApi, expensesApi } from '../api/client';
 import { Skeleton, ApiError } from '../components/ui';
 
 // ── Palette ──────────────────────────────────────────────────────────
@@ -445,6 +445,179 @@ export default function ReportsPage() {
         )}
       </Section>
 
+      <PnLSection />
+
     </div>
+  );
+}
+
+// ── P&L Section ────────────────────────────────────────────────────────────────
+function PnLSection() {
+  const [pnlMonths, setPnlMonths] = useState(10);
+  const [drill,     setDrill]     = useState(null); // month key for drill-down
+
+  const { data: pnlRaw, isLoading: pnlLoading } = useQuery({
+    queryKey: ['pnl', pnlMonths],
+    queryFn: () => expensesApi.pnl(pnlMonths).then(r => r.data),
+    refetchInterval: 60_000,
+  });
+  const pnl = Array.isArray(pnlRaw) ? pnlRaw : [];
+
+  const RS   = '₹';
+  const fmtK = n => {
+    const v = Number(n || 0);
+    if (Math.abs(v) >= 100000) return `${RS}${(v/100000).toFixed(1)}L`;
+    if (Math.abs(v) >= 1000)   return `${RS}${(v/1000).toFixed(1)}K`;
+    return `${RS}${Math.round(v)}`;
+  };
+  const fmtFull = n => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 });
+
+  const monthLabel = m => {
+    const [y, mo] = (m || '').split('-');
+    return new Date(y, parseInt(mo)-1).toLocaleDateString('en-IN', { month: 'short', year: '2-digit' });
+  };
+
+  return (
+    <Section title="Profit & Loss" sub="Revenue vs Expenses — monthly breakdown">
+      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:20 }}>
+        <select value={pnlMonths} onChange={e => setPnlMonths(Number(e.target.value))}
+          style={{ padding:'7px 10px', border:'1px solid var(--border)', borderRadius:4, background:'var(--surface2)', color:'var(--text)', fontSize:12, fontFamily:'IBM Plex Sans,sans-serif', outline:'none' }}>
+          {[[3,'Last 3 months'],[6,'Last 6 months'],[10,'Last 10 months'],[12,'Last 12 months']].map(([v,l]) => (
+            <option key={v} value={v}>{l}</option>
+          ))}
+        </select>
+        {drill && (
+          <button onClick={() => setDrill(null)}
+            style={{ padding:'6px 12px', background:'transparent', border:'1px solid var(--border)', borderRadius:4, color:'var(--muted)', fontSize:11, cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif' }}>
+            ← Back to summary
+          </button>
+        )}
+      </div>
+
+      {pnlLoading ? (
+        <div style={{ color:'var(--muted)', fontSize:12 }}>Loading P&L…</div>
+      ) : pnl.length === 0 ? (
+        <div style={{ padding:32, textAlign:'center', color:'var(--muted)', fontSize:12 }}>
+          No data yet. Add expenses to see P&L.
+        </div>
+      ) : drill ? (
+        /* ── Drill-down: expense breakdown for selected month ── */
+        (() => {
+          const row = pnl.find(r => r.month === drill);
+          if (!row) return null;
+          const cats = Object.entries(row.expense_by_category || {}).sort((a,b) => b[1]-a[1]);
+          return (
+            <div>
+              <div style={{ fontSize:13, fontWeight:700, marginBottom:16 }}>
+                {monthLabel(drill)} — Expense breakdown
+              </div>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:20 }}>
+                {[
+                  ['Revenue',  row.revenue,  'var(--accent)'],
+                  ['Expenses', row.expenses, 'var(--red)'],
+                  ['Profit',   row.profit,   row.profit >= 0 ? '#4ade80' : 'var(--red)'],
+                ].map(([l,v,c]) => (
+                  <div key={l} style={{ padding:'14px 16px', background:'var(--surface2)', borderRadius:6, border:'1px solid var(--border)' }}>
+                    <div style={{ fontSize:10, color:'var(--muted)', letterSpacing:'.06em', textTransform:'uppercase' }}>{l}</div>
+                    <div style={{ fontSize:20, fontWeight:800, color:c, marginTop:6 }}>{fmtK(v)}</div>
+                  </div>
+                ))}
+              </div>
+              {cats.length > 0 ? (
+                <table style={{ width:'100%', borderCollapse:'collapse' }}>
+                  <thead>
+                    <tr style={{ borderBottom:'1px solid var(--border)' }}>
+                      {['Category','Amount','% of expenses'].map(h => (
+                        <th key={h} style={{ padding:'8px 12px', textAlign:'left', fontSize:9, letterSpacing:'.06em', color:'var(--dim)', fontWeight:600, textTransform:'uppercase' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cats.map(([cat, amt]) => (
+                      <tr key={cat} style={{ borderBottom:'1px solid var(--border)' }}>
+                        <td style={{ padding:'9px 12px', fontSize:12 }}>{cat}</td>
+                        <td style={{ padding:'9px 12px', fontSize:13, fontWeight:700, color:'var(--red)', fontFamily:'monospace' }}>
+                          {RS}{fmtFull(amt)}
+                        </td>
+                        <td style={{ padding:'9px 12px', fontSize:11, color:'var(--muted)' }}>
+                          {row.expenses > 0 ? Math.round(amt / row.expenses * 100) : 0}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div style={{ color:'var(--dim)', fontSize:12 }}>No expense entries for this month.</div>
+              )}
+            </div>
+          );
+        })()
+      ) : (
+        /* ── Summary table ── */
+        <table style={{ width:'100%', borderCollapse:'collapse' }}>
+          <thead>
+            <tr style={{ borderBottom:'1px solid var(--border)' }}>
+              {['Month','Sales Rev','Service Rev','Parts Rev','Total Revenue','Expenses','Profit / Loss','Margin',''].map(h => (
+                <th key={h} style={{ padding:'9px 12px', textAlign:'left', fontSize:9, letterSpacing:'.06em', color:'var(--dim)', fontWeight:600, textTransform:'uppercase', whiteSpace:'nowrap' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {pnl.map(r => {
+              const profit  = r.profit || 0;
+              const margin  = r.margin || 0;
+              return (
+                <tr key={r.month} style={{ borderBottom:'1px solid var(--border)', cursor:'pointer' }}
+                  onMouseEnter={e => e.currentTarget.style.background='var(--surface2)'}
+                  onMouseLeave={e => e.currentTarget.style.background='transparent'}
+                  onClick={() => setDrill(r.month)}>
+                  <td style={{ padding:'10px 12px', fontWeight:600, fontSize:12 }}>{monthLabel(r.month)}</td>
+                  <td style={{ padding:'10px 12px', fontSize:11, fontFamily:'monospace', color:'var(--accent)' }}>{fmtK(r.sales_rev)}</td>
+                  <td style={{ padding:'10px 12px', fontSize:11, fontFamily:'monospace', color:'var(--blue)' }}>{fmtK(r.service_rev)}</td>
+                  <td style={{ padding:'10px 12px', fontSize:11, fontFamily:'monospace', color:'var(--green)' }}>{fmtK(r.parts_rev)}</td>
+                  <td style={{ padding:'10px 12px', fontSize:13, fontWeight:700, fontFamily:'monospace' }}>{fmtK(r.revenue)}</td>
+                  <td style={{ padding:'10px 12px', fontSize:11, fontFamily:'monospace', color:'var(--red)' }}>{fmtK(r.expenses)}</td>
+                  <td style={{ padding:'10px 12px', fontSize:13, fontWeight:800, fontFamily:'monospace', color: profit >= 0 ? '#4ade80' : 'var(--red)' }}>
+                    {profit >= 0 ? '+' : ''}{fmtK(profit)}
+                  </td>
+                  <td style={{ padding:'10px 12px' }}>
+                    <span style={{
+                      fontSize:11, padding:'3px 8px', borderRadius:3, fontWeight:700,
+                      background: margin >= 20 ? 'rgba(74,222,128,.1)' : margin >= 0 ? 'rgba(251,191,36,.1)' : 'rgba(248,113,113,.1)',
+                      color:      margin >= 20 ? '#4ade80'             : margin >= 0 ? '#fbbf24'             : '#f87171',
+                    }}>{margin}%</span>
+                  </td>
+                  <td style={{ padding:'10px 12px', fontSize:10, color:'var(--dim)' }}>drill →</td>
+                </tr>
+              );
+            })}
+          </tbody>
+          <tfoot>
+            <tr style={{ borderTop:'2px solid var(--border)', background:'var(--surface2)' }}>
+              <td style={{ padding:'10px 12px', fontWeight:700, fontSize:12 }}>TOTAL</td>
+              <td style={{ padding:'10px 12px', fontSize:12, fontFamily:'monospace', color:'var(--accent)', fontWeight:700 }}>
+                {fmtK(pnl.reduce((s,r)=>s+r.sales_rev,0))}
+              </td>
+              <td style={{ padding:'10px 12px', fontSize:12, fontFamily:'monospace', color:'var(--blue)', fontWeight:700 }}>
+                {fmtK(pnl.reduce((s,r)=>s+r.service_rev,0))}
+              </td>
+              <td style={{ padding:'10px 12px', fontSize:12, fontFamily:'monospace', color:'var(--green)', fontWeight:700 }}>
+                {fmtK(pnl.reduce((s,r)=>s+r.parts_rev,0))}
+              </td>
+              <td style={{ padding:'10px 12px', fontSize:14, fontWeight:800, fontFamily:'monospace' }}>
+                {fmtK(pnl.reduce((s,r)=>s+r.revenue,0))}
+              </td>
+              <td style={{ padding:'10px 12px', fontSize:14, fontWeight:800, fontFamily:'monospace', color:'var(--red)' }}>
+                {fmtK(pnl.reduce((s,r)=>s+r.expenses,0))}
+              </td>
+              <td style={{ padding:'10px 12px', fontSize:14, fontWeight:800, fontFamily:'monospace', color: pnl.reduce((s,r)=>s+r.profit,0) >= 0 ? '#4ade80':'var(--red)' }}>
+                {fmtK(pnl.reduce((s,r)=>s+r.profit,0))}
+              </td>
+              <td colSpan={2} />
+            </tr>
+          </tfoot>
+        </table>
+      )}
+    </Section>
   );
 }
