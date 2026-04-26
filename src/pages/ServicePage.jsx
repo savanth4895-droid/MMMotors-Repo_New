@@ -990,7 +990,7 @@ function BillRow({ row, idx, allParts, onChange, onRemove, onSelectPart }) {
         {showDrop && filtered.length > 0 && (
           <div style={{ position:'absolute', top:'100%', left:0, right:0, background:C.surface,
             border:'1px solid var(--border2,#2a2a2a)', borderRadius:4, zIndex:200,
-            boxShadow:'0 8px 24px rgba(0,0,0,.5)', maxHeight:200, overflowY:'auto' }}>
+            boxShadow:'0 8px 24px rgba(0,0,0,.5)', maxHeight:360, minHeight:80, overflowY:'auto' }}>
             {filtered.map(p => (
               <div key={p._id}
                 onMouseDown={() => { onSelectPart(row._key,p); setSearch(''); setShowDrop(false); }}
