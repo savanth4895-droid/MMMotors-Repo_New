@@ -152,23 +152,29 @@ async def _ensure_indexes():
     print("[MM Motors] Indexes ensured")
 
 async def _seed_owner():
-    """Create default owner account if no users exist."""
-    count = await db.users.count_documents({})
-    if count == 0:
-        pwd = pwd_ctx.hash("mm@123456")
+    """Always ensure the default owner account exists (upsert — never overwrites password if already set)."""
+    existing = await db.users.find_one({"username": "owner"})
+    if not existing:
         await db.users.insert_one({
             "username":   "owner",
             "name":       "Owner",
-            "mobile":     "7026263123",
-            "email":      "owner@mmmotors.com",
+            "mobile":     "",
+            "email":      "",
             "role":       "owner",
-            "password":   pwd,
+            "password":   pwd_ctx.hash("mm@123456"),
             "status":     "active",
             "salary":     0,
             "join_date":  datetime.utcnow().strftime("%d %b %Y"),
-            "created_at": datetime.utcnow(),
+            "created_at": datetime.utcnow().isoformat(),
         })
         print("[MM Motors] Default owner created  username=owner  password=mm@123456")
+    else:
+        # Make sure the existing owner account is active
+        await db.users.update_one(
+            {"username": "owner"},
+            {"$set": {"status": "active", "role": "owner"}}
+        )
+        print(f"[MM Motors] Owner account verified  status=active")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
