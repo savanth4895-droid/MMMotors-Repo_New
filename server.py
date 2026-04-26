@@ -1796,15 +1796,25 @@ async def recent_activity(limit: int = Query(10, le=50), current_user=Depends(ve
 
 @api_router.get("/reports/revenue")
 async def revenue_report(months: int = Query(6, ge=1, le=24), current_user=Depends(require_admin)):
-    # Sales: parse sale_date "DD Mon YYYY" → extract "YYYY-MM" for grouping
-    # Use dateFromString to handle "08 Apr 2026" format
+    # sale_date can be: "08 Apr 2026", "2026-04-24", "2024-07-01 00:00:00", "01/04/2026"
+    # Strategy: try multiple formats, fall back to created_at substring
     pipeline = [
         {"$addFields": {
-            "parsed_date": {"$dateFromString": {"dateString": "$sale_date", "format": "%d %b %Y", "onError": None, "onNull": None}},
+            # Try "DD Mon YYYY" e.g. "08 Apr 2026"
+            "p1": {"$dateFromString": {"dateString": "$sale_date", "format": "%d %b %Y", "onError": None, "onNull": None}},
+            # Try "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
+            "p2": {"$dateFromString": {"dateString": {"$substr": ["$sale_date", 0, 10]}, "format": "%Y-%m-%d", "onError": None, "onNull": None}},
+            # Try "DD/MM/YYYY"
+            "p3": {"$dateFromString": {"dateString": "$sale_date", "format": "%d/%m/%Y", "onError": None, "onNull": None}},
+        }},
+        {"$addFields": {
+            "parsed_date": {
+                "$ifNull": ["$p1", {"$ifNull": ["$p2", {"$ifNull": ["$p3", None]}]}]
+            }
         }},
         {"$addFields": {
             "month_key": {"$cond": [
-                {"$and": [{"$ne": ["$parsed_date", None]}, {"$ne": ["$sale_date", None]}]},
+                {"$ne": ["$parsed_date", None]},
                 {"$dateToString": {"format": "%Y-%m", "date": "$parsed_date"}},
                 {"$substr": ["$created_at", 0, 7]}
             ]}
