@@ -1801,22 +1801,20 @@ async def recent_activity(limit: int = Query(10, le=50), current_user=Depends(ve
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @api_router.get("/reports/revenue")
-async def revenue_report(months: int = Query(6, ge=1, le=24), current_user=Depends(require_admin)):
-    # sale_date can be: "08 Apr 2026", "2026-04-24", "2024-07-01 00:00:00", "01/04/2026"
-    # Strategy: try multiple formats, fall back to created_at substring
+async def revenue_report(year: int = Query(None), current_user=Depends(require_admin)):
+    if year is None:
+        year = datetime.utcnow().year
+    yr = str(year)
+
+    # Sales — sale_date can be "08 Apr 2026", "2026-04-24", "01/04/2026"
     pipeline = [
         {"$addFields": {
-            # Try "DD Mon YYYY" e.g. "08 Apr 2026"
             "p1": {"$dateFromString": {"dateString": "$sale_date", "format": "%d %b %Y", "onError": None, "onNull": None}},
-            # Try "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
             "p2": {"$dateFromString": {"dateString": {"$substr": ["$sale_date", 0, 10]}, "format": "%Y-%m-%d", "onError": None, "onNull": None}},
-            # Try "DD/MM/YYYY"
             "p3": {"$dateFromString": {"dateString": "$sale_date", "format": "%d/%m/%Y", "onError": None, "onNull": None}},
         }},
         {"$addFields": {
-            "parsed_date": {
-                "$ifNull": ["$p1", {"$ifNull": ["$p2", {"$ifNull": ["$p3", None]}]}]
-            }
+            "parsed_date": {"$ifNull": ["$p1", {"$ifNull": ["$p2", {"$ifNull": ["$p3", None]}]}]}
         }},
         {"$addFields": {
             "month_key": {"$cond": [
@@ -1825,15 +1823,35 @@ async def revenue_report(months: int = Query(6, ge=1, le=24), current_user=Depen
                 {"$substr": ["$created_at", 0, 7]}
             ]}
         }},
+        {"$match": {"month_key": {"$regex": f"^{yr}"}}},
         {"$group": {"_id": "$month_key", "sales": {"$sum": "$total_amount"}, "count": {"$sum": 1}}},
-        {"$sort": {"_id": -1}}, {"$limit": months},
+        {"$sort": {"_id": 1}},
     ]
-    sales_by_month = await db.sales.aggregate(pipeline).to_list(months)
-    svc_pipeline   = [{"$addFields":{"month_key":{"$substr":["$created_at",0,7]}}},{"$group":{"_id":"$month_key","service":{"$sum":"$grand_total"}}},{"$sort":{"_id":-1}},{"$limit":months}]
-    svc_by_month   = await db.service_bills.aggregate(svc_pipeline).to_list(months)
-    parts_pipeline = [{"$addFields":{"month_key":{"$substr":["$created_at",0,7]}}},{"$group":{"_id":"$month_key","parts":{"$sum":"$grand_total"}}},{"$sort":{"_id":-1}},{"$limit":months}]
-    parts_by_month = await db.parts_sales.aggregate(parts_pipeline).to_list(months)
-    return {"sales":oids(sales_by_month),"service":oids(svc_by_month),"parts":oids(parts_by_month)}
+    sales_by_month = await db.sales.aggregate(pipeline).to_list(12)
+
+    # Service — use bill_date (was incorrectly using created_at)
+    svc_pipeline = [
+        {"$addFields": {"month_key": {"$substr": ["$bill_date", 0, 7]}}},
+        {"$match": {"month_key": {"$regex": f"^{yr}"}}},
+        {"$group": {"_id": "$month_key", "service": {"$sum": "$grand_total"}}},
+        {"$sort": {"_id": 1}},
+    ]
+    svc_by_month = await db.service_bills.aggregate(svc_pipeline).to_list(12)
+
+    # Parts — use sale_date (was incorrectly using created_at)
+    parts_pipeline = [
+        {"$addFields": {"month_key": {"$substr": ["$sale_date", 0, 7]}}},
+        {"$match": {"month_key": {"$regex": f"^{yr}"}}},
+        {"$group": {"_id": "$month_key", "parts": {"$sum": "$grand_total"}}},
+        {"$sort": {"_id": 1}},
+    ]
+    parts_by_month = await db.parts_sales.aggregate(parts_pipeline).to_list(12)
+
+    # Return raw dicts — _id is already a "YYYY-MM" string, no oids() needed
+    def serialize(docs):
+        return [{"_id": d["_id"], **{k: v for k, v in d.items() if k != "_id"}} for d in docs]
+
+    return {"year": year, "sales": serialize(sales_by_month), "service": serialize(svc_by_month), "parts": serialize(parts_by_month)}
 
 @api_router.get("/reports/daily-closing")
 async def daily_closing_report(date: Optional[str] = Query(None), current_user=Depends(require_admin)):
