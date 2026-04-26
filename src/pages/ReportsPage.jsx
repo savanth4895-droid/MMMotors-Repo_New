@@ -200,7 +200,12 @@ export default function ReportsPage() {
   const ss  = svcStats   || {};
   const sal = salesStats || {};
 
-  const fmt = n => n >= 1_00_000 ? '₹'+(n/1_00_000).toFixed(1)+'L' : n >= 1000 ? '₹'+(n/1000).toFixed(0)+'K' : n!=null ? '₹'+n : '—';
+  const fmt = n => {
+    if (n >= 1_00_00_000) return '₹'+(n/1_00_00_000).toFixed(1)+'Cr';
+    if (n >= 1_00_000)    return '₹'+(n/1_00_000).toFixed(1)+'L';
+    if (n >= 1000)        return '₹'+(n/1000).toFixed(0)+'K';
+    return n != null ? '₹'+n : '—';
+  };
 
   return (
     <div style={{ padding:24, display:'flex', flexDirection:'column', gap:20 }}>
@@ -246,7 +251,12 @@ export default function ReportsPage() {
             <BarChart data={monthlyData} barSize={18} barGap={4}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
               <XAxis dataKey="month" tick={axisStyle} axisLine={false} tickLine={false} />
-              <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v=>'₹'+(v/1000).toFixed(0)+'K'} width={52} />
+              <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v=>{
+                if(v>=1_00_00_000) return '₹'+(v/1_00_00_000).toFixed(1)+'Cr';
+                if(v>=1_00_000)    return '₹'+(v/1_00_000).toFixed(1)+'L';
+                if(v>=1000)        return '₹'+(v/1000).toFixed(0)+'K';
+                return '₹'+v;
+              }} width={68} />
               <Tooltip content={<RevenueTooltip />} cursor={{ fill:'rgba(200,148,10,.06)' }} />
               <Bar dataKey="sales"   fill="#c8940a" radius={[2,2,0,0]} name="sales" />
               <Bar dataKey="service" fill="#4ade80" radius={[2,2,0,0]} name="service" />
@@ -290,7 +300,7 @@ export default function ReportsPage() {
                     <div style={{ width:8, height:8, background:COLORS[i%COLORS.length], borderRadius:2, flexShrink:0 }} />
                     <span style={{ fontSize:11, flex:1, fontWeight:500 }}>{b.brand||'Unknown'}</span>
                     <span className="mono" style={{ fontSize:10, color:'var(--muted)' }}>{b.units} units</span>
-                    <span className="display" style={{ fontSize:12, color:'var(--accent)' }}>₹{Math.round(b.revenue/1000)}K</span>
+                    <span className="display" style={{ fontSize:12, color:'var(--accent)' }}>{fmt(b.revenue)}</span>
                   </div>
                 ))}
               </div>
@@ -466,8 +476,9 @@ function PnLSection() {
   const RS   = '₹';
   const fmtK = n => {
     const v = Number(n || 0);
-    if (Math.abs(v) >= 100000) return `${RS}${(v/100000).toFixed(1)}L`;
-    if (Math.abs(v) >= 1000)   return `${RS}${(v/1000).toFixed(1)}K`;
+    if (Math.abs(v) >= 1_00_00_000) return `${RS}${(v/1_00_00_000).toFixed(1)}Cr`;
+    if (Math.abs(v) >= 1_00_000)    return `${RS}${(v/1_00_000).toFixed(1)}L`;
+    if (Math.abs(v) >= 1000)        return `${RS}${(v/1000).toFixed(1)}K`;
     return `${RS}${Math.round(v)}`;
   };
   const fmtFull = n => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 });
