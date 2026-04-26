@@ -110,23 +110,29 @@ function DailyClosingSection() {
               <th style={{ paddingBottom: 8, fontWeight: 500 }}>Vehicles</th>
               <th style={{ paddingBottom: 8, fontWeight: 500 }}>Service</th>
               <th style={{ paddingBottom: 8, fontWeight: 500 }}>Parts</th>
-              <th style={{ paddingBottom: 8, fontWeight: 500 }}>Total</th>
+              <th style={{ paddingBottom: 8, fontWeight: 500, color: 'var(--red, #ef4444)' }}>Expenses</th>
+              <th style={{ paddingBottom: 8, fontWeight: 500 }}>Net Total</th>
             </tr>
           </thead>
           <tbody>
             {data.breakdown.map((row) => (
               <tr key={row.payment_mode} style={{ borderBottom: '1px solid var(--border)' }}>
                 <td style={{ fontWeight: 600, padding: '12px 0' }}>{row.payment_mode}</td>
-                <td className="mono" style={{ color: 'var(--muted)' }}>₹{row.Vehicles.toLocaleString('en-IN')}</td>
-                <td className="mono" style={{ color: 'var(--muted)' }}>₹{row.Service.toLocaleString('en-IN')}</td>
-                <td className="mono" style={{ color: 'var(--muted)' }}>₹{row.Parts.toLocaleString('en-IN')}</td>
-                <td className="display" style={{ color: 'var(--accent)', fontSize: 14 }}>₹{row.total.toLocaleString('en-IN')}</td>
+                <td className="mono" style={{ color: 'var(--muted)' }}>₹{(row.Vehicles||0).toLocaleString('en-IN')}</td>
+                <td className="mono" style={{ color: 'var(--muted)' }}>₹{(row.Service||0).toLocaleString('en-IN')}</td>
+                <td className="mono" style={{ color: 'var(--muted)' }}>₹{(row.Parts||0).toLocaleString('en-IN')}</td>
+                <td className="mono" style={{ color: 'var(--red, #ef4444)' }}>
+                  {row.Expenses ? `−₹${(row.Expenses||0).toLocaleString('en-IN')}` : '—'}
+                </td>
+                <td className="display" style={{ color: row.total >= 0 ? 'var(--accent)' : 'var(--red, #ef4444)', fontSize: 14 }}>
+                  ₹{Math.abs(row.total).toLocaleString('en-IN')}{row.total < 0 ? ' (−)' : ''}
+                </td>
               </tr>
             ))}
           </tbody>
           <tfoot>
             <tr>
-              <td colSpan={4} style={{ textAlign: 'right', padding: '16px 16px 0 0', fontWeight: 600, color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase' }}>Grand Total</td>
+              <td colSpan={5} style={{ textAlign: 'right', padding: '16px 16px 0 0', fontWeight: 600, color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase' }}>Grand Total</td>
               <td className="display" style={{ padding: '16px 0 0 0', fontSize: 18, color: 'var(--text)' }}>₹{data.grand_total.toLocaleString('en-IN')}</td>
             </tr>
           </tfoot>
@@ -179,15 +185,17 @@ export default function ReportsPage() {
     queryFn: ()=>salesApi.stats().then(r=>r.data),
   });
 
-  // Build merged monthly revenue data — all 12 months pre-filled with 0
+  // Build merged monthly revenue data
   const monthlyData = (() => {
     if (!revenue) return [];
     const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    // Pre-fill all 12 months with 0 so empty months still appear
     const map = {};
-    MONTHS.forEach((label, i) => {
+    MONTHS.forEach((_, i) => {
       const key = `${year}-${String(i + 1).padStart(2, '0')}`;
-      map[key] = { label, sales: 0, service: 0, parts: 0 };
+      map[key] = { label: MONTHS[i], sales: 0, service: 0, parts: 0 };
     });
+    // _id is "YYYY-MM" string returned directly from backend (no oids() rename)
     (revenue.sales||[]).forEach(d   => { if (map[d._id]) map[d._id].sales   = d.sales||0; });
     (revenue.service||[]).forEach(d => { if (map[d._id]) map[d._id].service = d.service||0; });
     (revenue.parts||[]).forEach(d   => { if (map[d._id]) map[d._id].parts   = d.parts||0; });
