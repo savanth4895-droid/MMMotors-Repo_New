@@ -211,8 +211,7 @@ function InvoiceModal({ sale, onClose }) {
               `Nominee    : ${sale.nominee?.name || '—'} (${sale.nominee?.relation || '—'}, ${sale.nominee?.age || '—'})`,
               `Amount     : ${sale.total_amount ? `₹${sale.total_amount.toLocaleString('en-IN')}` : '—'}`,
               `Payment    : ${sale.payment_mode || '—'}`,
-            ].join('
-');
+            ].join("\n");
             navigator.clipboard.writeText(lines).then(() => {
               const btn = document.activeElement;
               const orig = btn.textContent;
