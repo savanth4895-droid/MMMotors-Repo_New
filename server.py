@@ -1829,7 +1829,7 @@ async def revenue_report(year: int = Query(None), current_user=Depends(require_a
     ]
     sales_by_month = await db.sales.aggregate(pipeline).to_list(12)
 
-    # Service — use bill_date (was incorrectly using created_at)
+    # Service — use bill_date (fix: was incorrectly using created_at)
     svc_pipeline = [
         {"$addFields": {"month_key": {"$substr": ["$bill_date", 0, 7]}}},
         {"$match": {"month_key": {"$regex": f"^{yr}"}}},
@@ -1838,7 +1838,7 @@ async def revenue_report(year: int = Query(None), current_user=Depends(require_a
     ]
     svc_by_month = await db.service_bills.aggregate(svc_pipeline).to_list(12)
 
-    # Parts — use sale_date (was incorrectly using created_at)
+    # Parts — use sale_date (fix: was incorrectly using created_at)
     parts_pipeline = [
         {"$addFields": {"month_key": {"$substr": ["$sale_date", 0, 7]}}},
         {"$match": {"month_key": {"$regex": f"^{yr}"}}},
@@ -1855,25 +1855,40 @@ async def revenue_report(year: int = Query(None), current_user=Depends(require_a
 
 @api_router.get("/reports/daily-closing")
 async def daily_closing_report(date: Optional[str] = Query(None), current_user=Depends(require_admin)):
+    # target_date in "DD Mon YYYY" format (e.g. "25 Apr 2026") — used by sales/service/parts
     target_date = date or datetime.utcnow().strftime("%d %b %Y")
+    # Expenses store date in ISO format "YYYY-MM-DD" — convert for matching
+    try:
+        iso_date = datetime.strptime(target_date, "%d %b %Y").strftime("%Y-%m-%d")
+    except ValueError:
+        iso_date = target_date  # already ISO if passed directly
+
     async def get_totals(collection, date_field, amount_field):
         pipeline = [{"$match":{date_field:target_date}},{"$group":{"_id":{"$toLower":"$payment_mode"},"total":{"$sum":amount_field}}}]
         return await db[collection].aggregate(pipeline).to_list(None)
-    sales_r, service_r, parts_r = await asyncio.gather(
+
+    async def get_expense_totals():
+        pipeline = [{"$match":{"date":iso_date}},{"$group":{"_id":{"$toLower":"$payment_mode"},"total":{"$sum":"$amount"}}}]
+        return await db.expenses.aggregate(pipeline).to_list(None)
+
+    sales_r, service_r, parts_r, expense_r = await asyncio.gather(
         get_totals("sales","sale_date","$total_amount"),
         get_totals("service_bills","bill_date","$grand_total"),
         get_totals("parts_sales","sale_date","$grand_total"),
+        get_expense_totals(),
     )
     summary = {}
-    for source, data in [("Vehicles",sales_r),("Service",service_r),("Parts",parts_r)]:
+    for source, data in [("Vehicles",sales_r),("Service",service_r),("Parts",parts_r),("Expenses",expense_r)]:
         for item in data:
             mode = (item["_id"] or "unknown").title()
             if mode not in summary:
-                summary[mode] = {"total":0,"Vehicles":0,"Service":0,"Parts":0}
-            summary[mode][source] += item["total"]
-            summary[mode]["total"] += item["total"]
+                summary[mode] = {"total":0,"Vehicles":0,"Service":0,"Parts":0,"Expenses":0}
+            # Expenses are outflows — store as negative
+            amount = item["total"] if source != "Expenses" else -item["total"]
+            summary[mode][source] = summary[mode].get(source, 0) + item["total"]
+            summary[mode]["total"] += amount
     result = [{"payment_mode":k,**v} for k,v in summary.items()]
-    result.sort(key=lambda x: 0 if x["payment_mode"]=="Cash" else 1)
+    result.sort(key=lambda x: 0 if x["payment_mode"]=="Cash" else 1 if x["payment_mode"]=="Upi" else 2)
     return {"date":target_date,"breakdown":result,"grand_total":sum(r["total"] for r in result)}
 
 @api_router.get("/reports/brand-sales")
@@ -2824,7 +2839,7 @@ async def export_backup(current_user=Depends(require_admin)):
     }
     return StreamingResponse(iter([zip_buf.read()]), headers=headers_resp, media_type="application/zip")
 
-app.include_router(api_router)
+
 
 if __name__ == "__main__":
     import uvicorn
