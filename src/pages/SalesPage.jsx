@@ -252,7 +252,7 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
     enabled: vehSearch.length >= 1,
   });
   const vehResults = Array.isArray(vehData)
-    ? vehData.filter(v => v.status === 'Instock' || v.status === 'in_stock' || v.id === initial.vehicle_id)
+    ? vehData.filter(v => ['instock','in_stock','in stock'].includes((v.status||'').toLowerCase().replace(/-/g,'')) || v.id === initial.vehicle_id)
     : [];
 
   const [f, setF] = useState({
