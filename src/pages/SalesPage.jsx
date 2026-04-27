@@ -672,8 +672,29 @@ const createMut = useMutation({
                     <div style={{ display:'flex', gap:6, alignItems: 'center' }}>
                       <GhostBtn sm onClick={()=>setSelSale(s)}>View</GhostBtn>
                       <button onClick={() => {
-                        const base = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-                        window.open(`${base}/api/sales/${s.id}/pdf`, '_blank');
+                        // Generate PDF client-side — no auth needed, works on any device
+                        const modal = { sale: s, notes: s.notes || '' };
+                        const RS = '₹';
+                        const fmt = n => Number(n||0).toLocaleString('en-IN');
+                        const exShowroom  = s.ex_showroom_price || s.total_amount || 0;
+                        const rto         = s.rto         || 0;
+                        const insurance   = s.insurance   || 0;
+                        const accessories = s.accessories || 0;
+                        const discount    = s.discount    || 0;
+                        const totalAmount = s.total_amount || 0;
+                        const amountRows = [
+                          ['Ex-Showroom Price', exShowroom],
+                          rto         ? ['RTO',         rto]         : null,
+                          insurance   ? ['Insurance',   insurance]   : null,
+                          accessories ? ['Accessories', accessories] : null,
+                          discount    ? ['Discount',    -discount]   : null,
+                        ].filter(Boolean).map(([l,v]) =>
+                          `<tr><td style="padding:8px 12px;border-bottom:1px solid #eee;color:#555;font-size:12px">${l}</td><td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;font-size:12px">${v<0?'− ':''}${RS}${fmt(Math.abs(v))}</td></tr>`
+                        ).join('');
+                        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Invoice — ${s.invoice_number}</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#111;padding:24px;background:#fff}.wrap{max-width:680px;margin:0 auto}.hdr{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:14px;border-bottom:2.5px solid #B8860B;margin-bottom:20px}.brand{font-size:22px;font-weight:800;color:#B8860B}.brand-sub{font-size:10px;color:#888;margin-top:3px}.inv-no{font-size:16px;font-weight:700;color:#B8860B}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}.box{background:#f9f9f9;border:1px solid #e5e5e5;border-radius:5px;padding:14px}.row{display:flex;padding:7px 0;border-bottom:1px solid #eee}.row:last-child{border-bottom:none}.lbl{width:150px;color:#666;font-size:11px;flex-shrink:0}.val{font-size:12px;font-weight:500}.section-title{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:#888;margin-bottom:10px;font-weight:700}.amt-table{width:100%;border-collapse:collapse;margin-bottom:16px}.total-row td{font-size:14px;font-weight:800;color:#B8860B;padding:10px 12px;border-top:2px solid #B8860B}.footer{display:flex;justify-content:space-between;border-top:1px solid #ddd;padding-top:12px;font-size:10px;color:#888}@media print{body{padding:10px}}</style></head><body><div class="wrap"><div class="hdr"><div><div class="brand">MM MOTORS</div><div class="brand-sub">Authorised Multi-Brand Dealership · Malur</div></div><div style="text-align:right"><div style="font-size:11px;color:#888;font-weight:600;text-transform:uppercase">Tax Invoice</div><div class="inv-no">${s.invoice_number}</div><div style="font-size:10px;color:#666;margin-top:4px">Date: ${s.sale_date||new Date().toLocaleDateString('en-IN')}</div></div></div><div class="grid2"><div class="box"><div class="section-title">Customer Details</div><div class="row"><div class="lbl">Name</div><div class="val">${s.customer_name||'—'}</div></div><div class="row"><div class="lbl">Mobile</div><div class="val">${s.customer_mobile||'—'}</div></div><div class="row"><div class="lbl">Address</div><div class="val">${s.customer_address||'—'}</div></div></div><div class="box"><div class="section-title">Vehicle Details</div><div class="row"><div class="lbl">Brand / Model</div><div class="val">${s.vehicle_brand||''} ${s.vehicle_model||''}</div></div><div class="row"><div class="lbl">Colour</div><div class="val">${s.vehicle_color||'—'}</div></div><div class="row"><div class="lbl">Chassis No.</div><div class="val">${s.chassis_number||'—'}</div></div><div class="row"><div class="lbl">Engine No.</div><div class="val">${s.engine_number||'—'}</div></div><div class="row"><div class="lbl">Financier</div><div class="val">${s.financier||'—'}</div></div></div></div><div class="section-title">Amount Breakdown</div><table class="amt-table"><tbody>${amountRows}</tbody><tfoot><tr class="total-row"><td>Total Amount</td><td style="text-align:right">${RS}${fmt(totalAmount)}</td></tr></tfoot></table><div style="text-align:right;font-size:10px;color:#888;margin-bottom:20px">Payment: ${s.payment_mode||'Cash'}</div>${s.notes?`<div class="section-title">Notes</div><div style="background:#f9f9f9;border:1px solid #e5e5e5;border-radius:5px;padding:12px;font-size:12px;margin-bottom:20px">${s.notes}</div>`:''}<div class="footer"><span>Thank you for choosing MM Motors!</span><span>Authorised Signatory</span></div></div><script>window.onload=()=>window.print()</script></body></html>`;
+                        const w = window.open('', '_blank');
+                        w.document.write(html);
+                        w.document.close();
                       }} style={{ padding:'5px 10px', background:'rgba(184,134,11,.1)', border:'1px solid rgba(184,134,11,.3)', borderRadius:3, color:'#7A5800', cursor:'pointer', fontSize:10, fontFamily:'IBM Plex Sans,sans-serif' }}>PDF</button>
                       <GhostBtn sm onClick={()=>setEditSale(s)}>Edit</GhostBtn>
                       
