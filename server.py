@@ -2988,6 +2988,11 @@ async def profit_and_loss(
 #  Full Data Backup Export
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@api_router.get("/health")
+async def health():
+    return {"status": "ok", "ts": datetime.utcnow().isoformat()}
+
+
 @api_router.post("/admin/normalize-fields")
 async def normalize_fields(current_user=Depends(require_admin)):
     """One-time migration: normalize status/type/brand/role across all collections."""
