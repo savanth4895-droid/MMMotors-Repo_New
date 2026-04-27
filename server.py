@@ -250,7 +250,7 @@ class VehicleCreate(BaseModel):
     location:          Optional[str] = ""
     outbound_date:     Optional[str] = ""
     outbound_location: Optional[str] = ""
-    status:            Optional[str] = "Instock"
+    status:            Optional[str] = "in_stock"
     type:           Optional[str] = "new"
     notes:          Optional[str] = ""
 
