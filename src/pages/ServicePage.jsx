@@ -725,7 +725,8 @@ function printBill(job, bill, rows, total, taxable, cgst, sgst) {
     <div class="header">
       <div>
         <div class="brand">MM MOTORS</div>
-        <div class="brand-sub">Authorised Multi-Brand Service Centre</div>
+        <div class="brand-sub">Authorised Multi-Brand Service Centre · Malur</div>
+        <div class="brand-sub" style="margin-top:3px;font-weight:700;color:#B8860B;letter-spacing:.04em">GSTIN: 29CUJPM6814P1ZQ</div>
       </div>
       <div class="bill-meta">
         <div class="bill-no">TAX INVOICE</div>
