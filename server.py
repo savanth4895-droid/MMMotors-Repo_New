@@ -137,7 +137,10 @@ async def _ensure_indexes():
     await db.spare_parts.create_index("part_number", unique=True)
     await db.spare_parts.create_index("category")
     await db.spare_parts.create_index([("name","text"),("part_number","text")])
-    # parts_bills
+    # parts_sales
+    await db.parts_sales.create_index("bill_number", unique=True)
+    await db.parts_sales.create_index("sale_date")
+    # parts_bills  ← PATCH 7: new collection index
     await db.parts_bills.create_index("bill_number")
     await db.parts_bills.create_index("customer_mobile")
     await db.parts_bills.create_index("bill_date")
@@ -379,7 +382,7 @@ class ServiceBillUpdate(BaseModel):
 
 # ── Spare Parts ───────────────────────────────────────────────────────────────
 class SparePartCreate(BaseModel):
-    part_number:     Optional[str] = ""
+    part_number:     str
     name:            str
     category:        Optional[str] = ""
     brand:           Optional[str] = ""
@@ -410,6 +413,24 @@ class StockAdjust(BaseModel):
     qty:    int    # positive = stock in, negative = adjustment
     action: Optional[str] = "add"   # "add" | "subtract"
     reason: Optional[str] = ""
+
+# ── Parts Sales ───────────────────────────────────────────────────────────────
+class PartsSaleItem(BaseModel):
+    part_id:     str
+    part_number: str
+    name:        str
+    hsn_code:    Optional[str] = ""
+    qty:         int
+    unit_price:  float
+    gst_rate:    float = 18
+
+class PartsSaleCreate(BaseModel):
+    customer_name:  Optional[str] = ""
+    customer_mobile:Optional[str] = ""
+    items:          List[PartsSaleItem]
+    payment_mode:   Optional[str] = "Cash"
+    sold_by:        Optional[str] = ""
+    notes:          Optional[str] = ""
 
 # PATCH 3: Parts Bills models ─────────────────────────────────────────────────
 class PartsBillItem(BaseModel):
@@ -496,11 +517,12 @@ async def login(body: LoginIn):
     await db.login_attempts.delete_many({"username": username})
     token = create_token({"sub": str(user["_id"]), "role": user["role"]})
     user_data = {
-        "id":       str(user["_id"]),
-        "username": user["username"],
-        "name":     user["name"],
-        "role":     user["role"],
-        "mobile":   user.get("mobile", ""),
+        "id":            str(user["_id"]),
+        "username":      user["username"],
+        "name":          user["name"],
+        "role":          user["role"],
+        "mobile":        user.get("mobile", ""),
+        "allowed_pages": user.get("allowed_pages", []),
     }
     response = JSONResponse(content={"access_token": token, "token_type": "bearer", "user": user_data})
     response.set_cookie(
@@ -1049,7 +1071,7 @@ async def update_sale(sale_id: str, body: SaleUpdate, current_user=Depends(verif
     if body.nominee is not None:
         update["nominee"] = body.nominee.dict()
     if body.vehicle_id is not None and body.vehicle_id != sale.get("vehicle_id",""):
-        if current_user.get("role") != "owner":
+        if current_user.get("role", "").lower() != "owner":
             raise HTTPException(status_code=403, detail="Only owner can change vehicle on a sale")
         new_vehicle = await db.vehicles.find_one({"_id": obj_id(body.vehicle_id)})
         if not new_vehicle:
@@ -1438,29 +1460,15 @@ async def delete_service_bill(bill_id: str, current_user=Depends(require_admin))
     bill = await db.service_bills.find_one({"_id": obj_id(bill_id)})
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
-
     # Restore stock for all parts used in this bill
     for item in bill.get("items", []):
         part_number = item.get("part_number", "").strip()
         qty = item.get("qty", 0)
-        if not part_number or qty <= 0:
-            continue
-        part = await db.spare_parts.find_one({"part_number": part_number})
-        if not part:
-            # try case-insensitive fallback
-            part = await db.spare_parts.find_one(
-                {"part_number": {"$regex": f"^{part_number}$", "$options": "i"}}
-            )
-        if part:
-            new_stock = (part.get("stock") or 0) + qty
+        if part_number and qty > 0:
             await db.spare_parts.update_one(
-                {"_id": part["_id"]},
-                {"$set": {"stock": new_stock}, "$push": {"stock_log": {
-                    "qty": qty, "action": "add", "reason": "service_bill_deleted",
-                    "new_stock": new_stock, "date": datetime.utcnow().isoformat(),
-                }}}
+                {"part_number": part_number},
+                {"$inc": {"stock": qty}}
             )
-
     await db.service_bills.delete_one({"_id": obj_id(bill_id)})
     await db.service_jobs.update_one(
         {"_id": obj_id(bill["job_id"])},
@@ -1502,24 +1510,10 @@ async def list_parts(
 
 @api_router.post("/parts", status_code=201)
 async def create_part(body: SparePartCreate, current_user=Depends(verify_token)):
-    part_number = (body.part_number or "").strip()
-
-    # Auto-generate if not provided: MM-<CATEGORY_PREFIX>-<6 digit counter>
-    if not part_number:
-        cat_prefix = (body.category or "GEN")[:3].upper()
-        seq = await db.counters.find_one_and_update(
-            {"_id": "part_number"},
-            {"$inc": {"seq": 1}},
-            upsert=True,
-            return_document=True,
-        )
-        part_number = f"MM-{cat_prefix}-{str(seq['seq']).zfill(6)}"
-
-    if await db.spare_parts.find_one({"part_number": part_number}):
+    if await db.spare_parts.find_one({"part_number": body.part_number.strip()}):
         raise HTTPException(status_code=409, detail="Part number already exists")
-
     doc = body.dict()
-    doc["part_number"] = part_number
+    doc["part_number"] = doc["part_number"].strip()
     doc["created_at"]  = datetime.utcnow().isoformat()
     result = await db.spare_parts.insert_one(doc)
     doc["id"] = str(result.inserted_id); doc.pop("_id", None)
@@ -1616,7 +1610,70 @@ async def delete_part(part_id: str, current_user=Depends(require_admin)):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  PARTS BILLS (walk-in counter, vehicle number optional)
+#  PARTS SALES (Counter bills with GST — requires part_id)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@api_router.get("/parts-sales")
+async def list_parts_sales(
+    search: Optional[str] = Query(None),
+    p=Depends(paginate_params),
+    current_user=Depends(verify_token),
+):
+    query: dict = {}
+    if search:
+        query["$or"] = [
+            {"bill_number":     {"$regex": search, "$options":"i"}},
+            {"customer_name":   {"$regex": search, "$options":"i"}},
+            {"customer_mobile": {"$regex": search, "$options":"i"}},
+        ]
+    docs  = await db.parts_sales.find(query).skip(p["skip"]).limit(p["limit"]).sort("created_at",-1).to_list(p["limit"])
+    total = await db.parts_sales.count_documents(query)
+    return JSONResponse(content=oids(docs), headers={"X-Total-Count": str(total)})
+
+@api_router.post("/parts-sales", status_code=201)
+async def create_parts_sale(body: PartsSaleCreate, current_user=Depends(verify_token)):
+    if not body.items:
+        raise HTTPException(status_code=400, detail="At least one item required")
+    items_out = []
+    for item in body.items:
+        part = await db.spare_parts.find_one({"_id": obj_id(item.part_id)})
+        if not part:
+            raise HTTPException(status_code=404, detail=f"Part {item.part_id} not found")
+        if part["stock"] < item.qty:
+            raise HTTPException(status_code=409, detail=f"Insufficient stock for {part['name']} (have {part['stock']}, need {item.qty})")
+        line = calc_gst_line(item.unit_price, item.qty, item.gst_rate)
+        items_out.append({"part_id":item.part_id,"part_number":item.part_number,"name":item.name,"hsn_code":item.hsn_code or part.get("hsn_code",""),"qty":item.qty,"unit_price":item.unit_price,"gst_rate":item.gst_rate,**line})
+        await db.spare_parts.update_one({"_id": obj_id(item.part_id)}, {"$inc": {"stock": -item.qty}})
+    totals  = calc_bill_totals([{"unit_price":i["unit_price"],"qty":i["qty"],"gst_rate":i["gst_rate"]} for i in items_out])
+    bill_no = await next_sequence("part_bill")
+    doc = {"bill_number":bill_no,"customer_name":body.customer_name or "","customer_mobile":body.customer_mobile or "","items":items_out,**totals,"amount_in_words":amount_in_words(totals["grand_total"]),"payment_mode":body.payment_mode or "Cash","sold_by":body.sold_by or current_user.get("name",""),"sale_date":datetime.utcnow().strftime("%d %b %Y"),"notes":body.notes or "","created_at":datetime.utcnow().isoformat()}
+    result = await db.parts_sales.insert_one(doc)
+    doc["id"] = str(result.inserted_id); doc.pop("_id", None)
+    return doc
+
+@api_router.get("/parts-sales/{bill_id}")
+async def get_parts_sale(bill_id: str, current_user=Depends(verify_token)):
+    doc = await db.parts_sales.find_one({"_id": obj_id(bill_id)})
+    if not doc:
+        doc = await db.parts_sales.find_one({"bill_number": bill_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    return oid(doc)
+
+@api_router.delete("/parts-sales/{bill_id}")
+async def delete_parts_sale(bill_id: str, current_user=Depends(require_admin)):
+    bill = await db.parts_sales.find_one({"_id": obj_id(bill_id)})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    for item in bill.get("items", []):
+        await db.spare_parts.update_one({"_id": obj_id(item["part_id"])}, {"$inc": {"stock": item["qty"]}})
+    await db.parts_sales.delete_one({"_id": obj_id(bill_id)})
+    await _sync_counter("part_bill", "parts_sales", "bill_number")
+    return {"message": "Deleted — stock restored"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PARTS BILLS — PATCH 6 (walk-in counter, vehicle number optional)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @api_router.get("/parts-bills")
@@ -1681,7 +1738,7 @@ async def create_parts_bill(body: PartsBillCreate, current_user=Depends(verify_t
         })
 
     totals  = calc_bill_totals([{"unit_price":i["unit_price"],"qty":i["qty"],"gst_rate":i["gst_rate"]} for i in items_out])
-    bill_no = await next_sequence("part_bill")
+    bill_no = await next_sequence("part_bill")   # shared counter with parts_sales
 
     doc = {
         "bill_number":      bill_no,
@@ -1701,14 +1758,14 @@ async def create_parts_bill(body: PartsBillCreate, current_user=Depends(verify_t
     return JSONResponse(content=oid(created), status_code=201)
 
 
-@api_router.put("/parts-bills/{bill_id}")
-async def update_parts_bill(bill_id: str, body: dict, current_user=Depends(verify_token)):
-    allowed = {"customer_name", "customer_mobile", "customer_vehicle", "payment_mode"}
-    update  = {k: v for k, v in body.items() if k in allowed}
-    if not update:
-        raise HTTPException(status_code=400, detail="Nothing to update")
-    await db.parts_bills.update_one({"_id": obj_id(bill_id)}, {"$set": update})
-    return oid(await db.parts_bills.find_one({"_id": obj_id(bill_id)}))
+@api_router.get("/parts-bills/{bill_id}")
+async def get_parts_bill(bill_id: str, current_user=Depends(verify_token)):
+    doc = await db.parts_bills.find_one({"_id": obj_id(bill_id)})
+    if not doc:
+        doc = await db.parts_bills.find_one({"bill_number": bill_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Parts bill not found")
+    return oid(doc)
 
 
 @api_router.delete("/parts-bills/{bill_id}")
@@ -1730,7 +1787,6 @@ async def delete_parts_bill(bill_id: str, current_user=Depends(require_admin)):
         if query:
             await db.spare_parts.update_one(query, {"$inc": {"stock": item["qty"]}})
     await db.parts_bills.delete_one({"_id": obj_id(bill_id)})
-    await _sync_counter("part_bill", "parts_bills", "bill_number")
     return {"message": "Deleted — stock restored"}
 
 
@@ -1772,7 +1828,7 @@ async def recent_activity(limit: int = Query(10, le=50), current_user=Depends(ve
     sales_docs, job_docs, bill_docs = await asyncio.gather(
         db.sales.find({}).sort("created_at",-1).limit(limit).to_list(limit),
         db.service_jobs.find({}).sort("created_at",-1).limit(limit).to_list(limit),
-        db.parts_bills.find({}).sort("created_at",-1).limit(limit).to_list(limit),
+        db.parts_sales.find({}).sort("created_at",-1).limit(limit).to_list(limit),
     )
     activity = []
     for s in sales_docs:
@@ -1790,50 +1846,39 @@ async def recent_activity(limit: int = Query(10, le=50), current_user=Depends(ve
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @api_router.get("/reports/revenue")
-async def revenue_report(
-    months: int = Query(12, ge=1, le=24),
-    year:   int = Query(None),
-    current_user=Depends(require_admin)
-):
-    target_year = year or datetime.utcnow().year
-    year_prefix = str(target_year)
-
-    # Sales: filter by year in sale_date string OR created_at
+async def revenue_report(months: int = Query(6, ge=1, le=24), current_user=Depends(require_admin)):
+    # sale_date can be: "08 Apr 2026", "2026-04-24", "2024-07-01 00:00:00", "01/04/2026"
+    # Strategy: try multiple formats, fall back to created_at substring
     pipeline = [
         {"$addFields": {
+            # Try "DD Mon YYYY" e.g. "08 Apr 2026"
             "p1": {"$dateFromString": {"dateString": "$sale_date", "format": "%d %b %Y", "onError": None, "onNull": None}},
+            # Try "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
             "p2": {"$dateFromString": {"dateString": {"$substr": ["$sale_date", 0, 10]}, "format": "%Y-%m-%d", "onError": None, "onNull": None}},
+            # Try "DD/MM/YYYY"
             "p3": {"$dateFromString": {"dateString": "$sale_date", "format": "%d/%m/%Y", "onError": None, "onNull": None}},
         }},
-        {"$addFields": {"parsed_date": {"$ifNull": ["$p1", {"$ifNull": ["$p2", "$p3"]}]}}},
-        {"$addFields": {"month_key": {"$cond": [
-            {"$ne": ["$parsed_date", None]},
-            {"$dateToString": {"format": "%Y-%m", "date": "$parsed_date"}},
-            {"$substr": ["$created_at", 0, 7]}
-        ]}}},
-        {"$match": {"month_key": {"$regex": f"^{year_prefix}"}}},
+        {"$addFields": {
+            "parsed_date": {
+                "$ifNull": ["$p1", {"$ifNull": ["$p2", {"$ifNull": ["$p3", None]}]}]
+            }
+        }},
+        {"$addFields": {
+            "month_key": {"$cond": [
+                {"$ne": ["$parsed_date", None]},
+                {"$dateToString": {"format": "%Y-%m", "date": "$parsed_date"}},
+                {"$substr": ["$created_at", 0, 7]}
+            ]}
+        }},
         {"$group": {"_id": "$month_key", "sales": {"$sum": "$total_amount"}, "count": {"$sum": 1}}},
-        {"$sort": {"_id": 1}},
+        {"$sort": {"_id": -1}}, {"$limit": months},
     ]
-    sales_by_month = await db.sales.aggregate(pipeline).to_list(12)
-
-    svc_pipeline = [
-        {"$addFields": {"month_key": {"$substr": ["$created_at", 0, 7]}}},
-        {"$match": {"month_key": {"$regex": f"^{year_prefix}"}}},
-        {"$group": {"_id": "$month_key", "service": {"$sum": "$grand_total"}}},
-        {"$sort": {"_id": 1}},
-    ]
-    svc_by_month = await db.service_bills.aggregate(svc_pipeline).to_list(12)
-
-    parts_pipeline = [
-        {"$addFields": {"month_key": {"$substr": ["$created_at", 0, 7]}}},
-        {"$match": {"month_key": {"$regex": f"^{year_prefix}"}}},
-        {"$group": {"_id": "$month_key", "parts": {"$sum": "$grand_total"}}},
-        {"$sort": {"_id": 1}},
-    ]
-    parts_by_month = await db.parts_bills.aggregate(parts_pipeline).to_list(12)
-
-    return {"sales": oids(sales_by_month), "service": oids(svc_by_month), "parts": oids(parts_by_month)}
+    sales_by_month = await db.sales.aggregate(pipeline).to_list(months)
+    svc_pipeline   = [{"$addFields":{"month_key":{"$substr":["$created_at",0,7]}}},{"$group":{"_id":"$month_key","service":{"$sum":"$grand_total"}}},{"$sort":{"_id":-1}},{"$limit":months}]
+    svc_by_month   = await db.service_bills.aggregate(svc_pipeline).to_list(months)
+    parts_pipeline = [{"$addFields":{"month_key":{"$substr":["$created_at",0,7]}}},{"$group":{"_id":"$month_key","parts":{"$sum":"$grand_total"}}},{"$sort":{"_id":-1}},{"$limit":months}]
+    parts_by_month = await db.parts_sales.aggregate(parts_pipeline).to_list(months)
+    return {"sales":oids(sales_by_month),"service":oids(svc_by_month),"parts":oids(parts_by_month)}
 
 @api_router.get("/reports/daily-closing")
 async def daily_closing_report(date: Optional[str] = Query(None), current_user=Depends(require_admin)):
@@ -1844,7 +1889,7 @@ async def daily_closing_report(date: Optional[str] = Query(None), current_user=D
     sales_r, service_r, parts_r = await asyncio.gather(
         get_totals("sales","sale_date","$total_amount"),
         get_totals("service_bills","bill_date","$grand_total"),
-        get_totals("parts_bills","bill_date","$grand_total"),
+        get_totals("parts_sales","sale_date","$grand_total"),
     )
     summary = {}
     for source, data in [("Vehicles",sales_r),("Service",service_r),("Parts",parts_r)]:
@@ -1946,7 +1991,7 @@ async def brand_sales_report(current_user=Depends(require_admin)):
 @api_router.get("/reports/top-parts")
 async def top_parts_report(limit: int = Query(10), current_user=Depends(require_admin)):
     pipeline = [{"$unwind":"$items"},{"$group":{"_id":"$items.name","qty":{"$sum":"$items.qty"},"revenue":{"$sum":"$items.total"}}},{"$sort":{"qty":-1}},{"$limit":limit}]
-    docs = await db.parts_bills.aggregate(pipeline).to_list(limit)
+    docs = await db.parts_sales.aggregate(pipeline).to_list(limit)
     return [{"name":d["_id"],"qty_sold":d["qty"],"revenue":round(d["revenue"],2)} for d in docs]
 
 
@@ -2586,12 +2631,12 @@ async def import_expenses(request: Request, file: UploadFile = File(...), mode: 
 @import_router.delete("/clear/{entity}")
 async def clear_entity(entity: str, current_user=Depends(require_admin)):
     entity_map = {
-        "customers":   ("customers","",  ""),
-        "vehicles":    ("vehicles","",   ""),
-        "sales":       ("sales","invoice","invoice_number"),
-        "service":     ("service_jobs","job","job_number"),
-        "parts":       ("spare_parts","",""),
-        "parts_bills": ("parts_bills","part_bill","bill_number"),
+        "customers":  ("customers","",  ""),
+        "vehicles":   ("vehicles","",   ""),
+        "sales":      ("sales","invoice","invoice_number"),
+        "service":    ("service_jobs","job","job_number"),
+        "parts":      ("spare_parts","",""),
+        "parts_sales":("parts_sales","part_bill","bill_number"),
     }
     if entity not in entity_map:
         raise HTTPException(status_code=400, detail=f"Cannot clear '{entity}'")
@@ -2606,10 +2651,10 @@ async def import_counts(current_user=Depends(verify_token)):
     counts = await asyncio.gather(
         db.customers.count_documents({}), db.vehicles.count_documents({}),
         db.sales.count_documents({}), db.service_jobs.count_documents({}),
-        db.spare_parts.count_documents({}), db.parts_bills.count_documents({}),
+        db.spare_parts.count_documents({}), db.parts_sales.count_documents({}),
         db.users.count_documents({}),
     )
-    return {"customers":counts[0],"vehicles":counts[1],"sales":counts[2],"service_jobs":counts[3],"spare_parts":counts[4],"parts_bills":counts[5],"users":counts[6]}
+    return {"customers":counts[0],"vehicles":counts[1],"sales":counts[2],"service_jobs":counts[3],"spare_parts":counts[4],"parts_sales":counts[5],"users":counts[6]}
 
 
 
@@ -2887,7 +2932,7 @@ async def profit_and_loss(
     sales_rev, svc_rev, parts_rev, exp_data = await asyncio.gather(
         db.sales.aggregate(sales_pipe).to_list(months),
         db.service_bills.aggregate(svc_pipe).to_list(months),
-        db.parts_bills.aggregate(parts_pipe).to_list(months),
+        db.parts_sales.aggregate(parts_pipe).to_list(months),
         db.expenses.aggregate(exp_pipe).to_list(months),
     )
 
