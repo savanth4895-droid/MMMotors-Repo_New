@@ -147,14 +147,26 @@ export function useSortable(data, defaultCol = null, defaultDir = 'asc') {
 
   const sorted = useMemo(() => {
     if (!col || !Array.isArray(data)) return data || [];
+    const parseDate = (v) => {
+      if (!v || typeof v !== 'string') return null;
+      const dmy = v.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/);
+      if (dmy) return new Date(`${dmy[3]}-${dmy[2].padStart(2,'0')}-${dmy[1].padStart(2,'0')}`).getTime();
+      const dmy2 = v.match(/^(\d{1,2})\s([A-Za-z]{3})\s(\d{4})/);
+      if (dmy2) return new Date(`${dmy2[2]} ${dmy2[1]} ${dmy2[3]}`).getTime();
+      if (/^\d{4}-\d{2}-\d{2}/.test(v)) return new Date(v).getTime();
+      return null;
+    };
     return [...data].sort((a, b) => {
       const av = a[col], bv = b[col];
       if (av == null && bv == null) return 0;
       if (av == null) return 1;
       if (bv == null) return -1;
-      const cmp = typeof av === 'number' && typeof bv === 'number'
-        ? av - bv
-        : String(av).localeCompare(String(bv), undefined, { numeric: true });
+      const ad = parseDate(av), bd = parseDate(bv);
+      const cmp = (ad !== null && bd !== null)
+        ? ad - bd
+        : typeof av === 'number' && typeof bv === 'number'
+          ? av - bv
+          : String(av).localeCompare(String(bv), undefined, { numeric: true });
       return dir === 'asc' ? cmp : -cmp;
     });
   }, [data, col, dir]);
