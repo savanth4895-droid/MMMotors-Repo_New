@@ -1176,7 +1176,7 @@ export function PartsBillModal({ onClose }) {
               <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12, marginBottom:10 }}>
                 <thead>
                   <tr style={{ background:'#1A1A1A' }}>
-                    {['Part Name','Part No','Qty','Price','GST','Amount',''].map((h,i)=>(
+                    {['Part Name','Part No','Qty','Price','CGST%','SGST%','Amount',''].map((h,i)=>(
                       <th key={i} style={{ padding:'7px 10px', color:C.gold, fontWeight:700, fontSize:10,
                         letterSpacing:'.06em', textAlign:i>=2?'right':'left' }}>{h}</th>
                     ))}
@@ -1196,7 +1196,8 @@ export function PartsBillModal({ onClose }) {
                             style={{ ...inp, width:52, textAlign:'right' }}/>
                         </td>
                         <td style={{ padding:'8px 10px', textAlign:'right' }}>{RS}{price}</td>
-                        <td style={{ padding:'8px 10px', textAlign:'right', color:C.muted }}>{gstR}%</td>
+                        <td style={{ padding:'8px 10px', textAlign:'right', color:C.muted }}>{(gstR/2).toFixed(1).replace('.0','')}%</td>
+                        <td style={{ padding:'8px 10px', textAlign:'right', color:C.muted }}>{(gstR/2).toFixed(1).replace('.0','')}%</td>
                         <td style={{ padding:'8px 10px', textAlign:'right', fontWeight:700, color:C.gold }}>
                           {RS}{fmtI(Math.round(amount))}
                         </td>
