@@ -4,6 +4,8 @@ import { partsApi, customersApi, errMsg } from '../api/client';
 import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError, useSortable } from '../components/ui';
 import toast from 'react-hot-toast';
 
+const CATEGORIES = ['Engine','Electrical','Brakes','Tyres & Tubes','Filters','Body Parts','Transmission','Suspension','Accessories','Consumables'];
+
 // ── PDF invoice printer ─────────────────────────────────────────────
 function printPartsBill(bill) {
   const RS = 'Rs.';
