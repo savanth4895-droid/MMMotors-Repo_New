@@ -1,10 +1,553 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { partsApi, customersApi, errMsg } from '../api/client';
 import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError, useSortable } from '../components/ui';
 import toast from 'react-hot-toast';
-import { PartsBillModal } from './ServicePage';
 
-const CATEGORIES = ['Engine','Electrical','Brakes','Tyres & Tubes','Filters','Body Parts','Transmission','Suspension','Accessories','Consumables'];
+// ── PDF invoice printer ─────────────────────────────────────────────
+function printPartsBill(bill) {
+  const RS = 'Rs.';
+  const items = bill.items || [];
+  const grand    = bill.grand_total || 0;
+  const subtotal = bill.subtotal    || 0;
+  const gstTotal = bill.gst_total   || 0;
+  const cgst     = Math.round(gstTotal / 2 * 100) / 100;
+  const sgst     = Math.round((gstTotal - cgst) * 100) / 100;
+
+  const rows = items.map((item, i) => `
+    <tr style="background:${i % 2 === 0 ? '#fff' : '#f9f7f3'}">
+      <td>${item.description || item.name || '—'}</td>
+      <td style="font-family:monospace">${item.part_number || '—'}</td>
+      <td style="font-family:monospace;text-align:center">${item.hsn_code || '—'}</td>
+      <td style="text-align:center;font-weight:700">${item.qty}</td>
+      <td style="text-align:right">${RS}${(item.unit_price || 0).toLocaleString('en-IN')}</td>
+      <td style="text-align:center">${item.gst_rate || 18}%</td>
+      <td style="text-align:right;font-weight:700;color:#B8860B">${RS}${Math.round(item.total || (item.unit_price || 0) * item.qty).toLocaleString('en-IN')}</td>
+    </tr>`).join('');
+
+  const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Parts Invoice ${bill.bill_number || ''}</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:Arial,sans-serif;color:#1a1a1a;padding:20px;font-size:12px}
+  .hdr{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;padding-bottom:12px;border-bottom:2.5px solid #B8860B}
+  .co-name{font-size:22px;font-weight:800;letter-spacing:.04em}
+  .co-sub{font-size:10px;color:#888;margin-top:3px;text-transform:uppercase;letter-spacing:.06em}
+  .inv-box{text-align:right}
+  .inv-label{font-size:10px;font-weight:700;color:#B8860B;text-transform:uppercase;letter-spacing:.08em}
+  .inv-num{font-size:18px;font-weight:800;font-family:monospace;margin-top:2px}
+  .inv-date{font-size:10px;color:#888;margin-top:3px}
+  .meta{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;padding:12px 16px;background:#f9f7f3;border:1px solid #e8e0cc;border-radius:4px}
+  .meta-label{font-size:9px;color:#B8860B;font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
+  .meta-row{display:flex;gap:8px;font-size:11px;margin-bottom:3px}
+  .meta-key{color:#888;width:65px;flex-shrink:0}
+  .meta-val{font-weight:600}
+  table{width:100%;border-collapse:collapse;margin-bottom:16px}
+  thead tr{background:#1a1a1a}
+  thead th{padding:8px 10px;font-size:9px;font-weight:700;color:#fff;text-align:left;text-transform:uppercase;letter-spacing:.07em}
+  tbody td{padding:8px 10px;border-bottom:1px solid #eee;font-size:11px;vertical-align:middle}
+  .totals{display:flex;justify-content:flex-end}
+  .totals-inner{width:260px}
+  .tot-row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #eee;font-size:11px}
+  .tot-key{color:#888}.tot-val{font-family:monospace;font-weight:600}
+  .tot-grand{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#1a1a1a;border-radius:3px;margin-top:8px}
+  .tot-grand-key{color:#aaa;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+  .tot-grand-val{font-family:monospace;font-size:17px;font-weight:800;color:#B8860B}
+  .words{font-size:10px;color:#888;font-style:italic;margin-top:6px;text-align:right}
+  .footer{margin-top:24px;padding-top:12px;border-top:1px solid #eee;display:flex;justify-content:space-between;align-items:flex-end}
+  .footer-note{font-size:9px;color:#bbb}
+  .sig{border-top:1px solid #ccc;width:140px;text-align:center;padding-top:4px;font-size:9px;color:#888}
+  @media print{body{padding:10px}}
+</style></head>
+<body>
+<div class="hdr">
+  <div><div class="co-name">MM MOTORS</div><div class="co-sub">Multi-Brand Dealership · Malur</div><div class="co-sub" style="margin-top:3px;text-transform:none;font-weight:700;color:#B8860B;letter-spacing:.04em">GSTIN: 29CUJPM6814P1ZQ</div></div>
+  <div class="inv-box">
+    <div class="inv-label">Parts Invoice</div>
+    <div class="inv-num">${bill.bill_number || '—'}</div>
+    <div class="inv-date">${bill.bill_date || new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})}</div>
+  </div>
+</div>
+<div class="meta">
+  <div>
+    <div class="meta-label">Customer</div>
+    <div class="meta-row"><span class="meta-key">Name</span><span class="meta-val">${bill.customer_name || '—'}</span></div>
+    <div class="meta-row"><span class="meta-key">Mobile</span><span class="meta-val">${bill.customer_mobile || '—'}</span></div>
+    <div class="meta-row"><span class="meta-key">Vehicle</span><span class="meta-val">${bill.customer_vehicle || '—'}</span></div>
+  </div>
+  <div style="text-align:right">
+    <div class="meta-label">Payment</div>
+    <div style="font-size:15px;font-weight:800;margin-top:8px">${bill.payment_mode || 'Cash'}</div>
+    <div style="font-size:10px;color:#888;margin-top:4px">Sold by: ${bill.sold_by || 'MM Motors'}</div>
+  </div>
+</div>
+<table>
+  <thead><tr>
+    <th>Description</th><th>Part No.</th><th style="text-align:center">HSN</th>
+    <th style="text-align:center">Qty</th><th style="text-align:right">Unit Price</th>
+    <th style="text-align:center">GST%</th><th style="text-align:right">Amount</th>
+  </tr></thead>
+  <tbody>${rows}</tbody>
+</table>
+<div class="totals"><div class="totals-inner">
+  <div class="tot-row"><span class="tot-key">Taxable Amount</span><span class="tot-val">${RS}${Math.round(subtotal).toLocaleString('en-IN')}</span></div>
+  <div class="tot-row"><span class="tot-key">CGST</span><span class="tot-val">${RS}${Math.round(cgst).toLocaleString('en-IN')}</span></div>
+  <div class="tot-row"><span class="tot-key">SGST</span><span class="tot-val">${RS}${Math.round(sgst).toLocaleString('en-IN')}</span></div>
+  <div class="tot-grand"><span class="tot-grand-key">Total</span><span class="tot-grand-val">${RS}${Math.round(grand).toLocaleString('en-IN')}</span></div>
+  <div class="words">${bill.amount_in_words || ''}</div>
+</div></div>
+<div class="footer">
+  <div class="footer-note">Computer-generated document. No signature required if digitally authenticated.</div>
+  <div class="sig">Authorised Signatory<br><strong>MM MOTORS</strong></div>
+</div>
+<script>window.onload=()=>window.print()</script>
+</body></html>`;
+
+  const w = window.open('', '_blank');
+  w.document.write(html);
+  w.document.close();
+}
+
+// ── View Bill Modal ──────────────────────────────────────────────────
+function ViewBillModal({ bill, onClose, onEdit }) {
+  const items    = bill.items    || [];
+  const grand    = bill.grand_total || 0;
+  const subtotal = bill.subtotal    || 0;
+  const gstTotal = bill.gst_total   || 0;
+  const cgst     = Math.round(gstTotal / 2 * 100) / 100;
+  const sgst     = Math.round((gstTotal - cgst) * 100) / 100;
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.7)', zIndex:400, display:'flex', alignItems:'center', justifyContent:'center' }}
+      onClick={onClose}>
+      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:8, width:740, maxWidth:'96vw', maxHeight:'90vh', display:'flex', flexDirection:'column' }}
+        onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div style={{ background:'#141414', borderTop:'3px solid #B8860B', padding:'16px 20px', borderRadius:'8px 8px 0 0', display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0 }}>
+          <div>
+            <div style={{ fontSize:9, color:'#B8860B', fontWeight:700, letterSpacing:'.1em', textTransform:'uppercase' }}>Parts Invoice</div>
+            <div style={{ fontSize:18, fontWeight:800, fontFamily:'monospace', color:'#fff', marginTop:3 }}>{bill.bill_number}</div>
+            <div style={{ fontSize:11, color:'#888', marginTop:2 }}>{bill.bill_date || bill.created_at?.slice(0,10)}</div>
+          </div>
+          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+            <button onClick={() => printPartsBill(bill)}
+              style={{ padding:'7px 14px', background:'rgba(184,134,11,.15)', border:'1px solid rgba(184,134,11,.4)', borderRadius:4, color:'#B8860B', fontSize:11, cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif', fontWeight:600 }}>
+              🖨 Print
+            </button>
+            {onEdit && (
+              <button onClick={onEdit}
+                style={{ padding:'7px 14px', background:'rgba(59,130,246,.1)', border:'1px solid rgba(59,130,246,.35)', borderRadius:4, color:'var(--blue)', fontSize:11, cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif', fontWeight:600 }}>
+                ✏ Edit
+              </button>
+            )}
+            <button onClick={onClose} style={{ background:'transparent', border:'none', color:'#888', fontSize:22, cursor:'pointer', padding:'0 4px', lineHeight:1 }}>×</button>
+          </div>
+        </div>
+
+        <div style={{ overflowY:'auto', flex:1, padding:20 }}>
+          {/* Customer + Payment */}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, marginBottom:18 }}>
+            <div style={{ background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:4, padding:'12px 16px' }}>
+              <div style={{ fontSize:9, color:'#B8860B', fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', marginBottom:8 }}>Customer</div>
+              {[['Name', bill.customer_name], ['Mobile', bill.customer_mobile], ['Vehicle', bill.customer_vehicle]].map(([k, v]) =>
+                v ? (
+                  <div key={k} style={{ display:'flex', gap:8, fontSize:11, marginBottom:4 }}>
+                    <span style={{ color:'var(--muted)', width:60, flexShrink:0 }}>{k}</span>
+                    <span style={{ fontWeight:600 }}>{v}</span>
+                  </div>
+                ) : null
+              )}
+            </div>
+            <div style={{ background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:4, padding:'12px 16px' }}>
+              <div style={{ fontSize:9, color:'#B8860B', fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', marginBottom:8 }}>Payment</div>
+              <div style={{ fontSize:16, fontWeight:800 }}>{bill.payment_mode || 'Cash'}</div>
+              <div style={{ fontSize:11, color:'var(--muted)', marginTop:4 }}>Sold by: {bill.sold_by || 'MM Motors'}</div>
+            </div>
+          </div>
+
+          {/* Items table */}
+          <table style={{ width:'100%', borderCollapse:'collapse', marginBottom:16 }}>
+            <thead>
+              <tr style={{ background:'var(--surface2)', borderBottom:'1px solid var(--border)' }}>
+                {[['Description','left'],['Part No.','left'],['HSN','center'],['Qty','center'],['Unit Price','center'],['GST%','center'],['Amount','right']].map(([h,a]) => (
+                  <th key={h} style={{ padding:'8px 10px', fontSize:9, fontWeight:600, color:'var(--muted)', letterSpacing:'.06em', textAlign:a, textTransform:'uppercase' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item, i) => (
+                <tr key={i} style={{ borderBottom:'1px solid var(--border)', background: i%2===0?'transparent':'var(--surface2)' }}>
+                  <td style={{ padding:'9px 10px', fontSize:11, fontWeight:500 }}>{item.description || item.name}</td>
+                  <td className="mono" style={{ padding:'9px 10px', fontSize:10, color:'var(--blue)' }}>{item.part_number || '—'}</td>
+                  <td className="mono" style={{ padding:'9px 10px', fontSize:10, color:'var(--muted)', textAlign:'center' }}>{item.hsn_code || '—'}</td>
+                  <td style={{ padding:'9px 10px', textAlign:'center', fontSize:13, fontWeight:700 }}>{item.qty}</td>
+                  <td style={{ padding:'9px 10px', textAlign:'center', fontSize:11 }}>₹{(item.unit_price || 0).toLocaleString('en-IN')}</td>
+                  <td style={{ padding:'9px 10px', textAlign:'center', fontSize:11, color:'var(--muted)' }}>{item.gst_rate || 18}%</td>
+                  <td style={{ padding:'9px 10px', textAlign:'right', fontSize:12, fontWeight:700, color:'var(--accent)' }}>₹{Math.round(item.total || (item.unit_price || 0) * item.qty).toLocaleString('en-IN')}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {/* Totals */}
+          <div style={{ display:'flex', justifyContent:'flex-end' }}>
+            <div style={{ width:250 }}>
+              {[['Taxable', Math.round(subtotal)], ['CGST', Math.round(cgst)], ['SGST', Math.round(sgst)]].map(([k,v]) => (
+                <div key={k} style={{ display:'flex', justifyContent:'space-between', padding:'5px 0', borderBottom:'1px solid var(--border)', fontSize:11 }}>
+                  <span style={{ color:'var(--muted)' }}>{k}</span>
+                  <span className="mono" style={{ fontWeight:600 }}>₹{v.toLocaleString('en-IN')}</span>
+                </div>
+              ))}
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'10px 14px', background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:4, marginTop:8 }}>
+                <span style={{ fontSize:11, fontWeight:700, color:'var(--muted)', letterSpacing:'.06em', textTransform:'uppercase' }}>Total</span>
+                <span className="display" style={{ fontSize:20, color:'var(--accent)' }}>₹{Math.round(grand).toLocaleString('en-IN')}</span>
+              </div>
+              {bill.amount_in_words && (
+                <div style={{ fontSize:10, color:'var(--muted)', fontStyle:'italic', marginTop:6, textAlign:'right' }}>{bill.amount_in_words}</div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Edit Bill Modal ──────────────────────────────────────────────────
+function EditBillModal({ bill, onClose, onSaved }) {
+  const qc = useQueryClient();
+  const [form, setForm] = useState({
+    customer_name:    bill.customer_name    || '',
+    customer_mobile:  bill.customer_mobile  || '',
+    customer_vehicle: bill.customer_vehicle || '',
+    payment_mode:     bill.payment_mode     || 'Cash',
+  });
+  const [saving, setSaving] = useState(false);
+
+  const s = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await partsApi.updateBill(bill.id, form);
+      qc.invalidateQueries(['parts-bills-list']);
+      toast.success('Bill updated');
+      onSaved();
+    } catch (e) {
+      toast.error(errMsg(e, 'Update failed'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const inp = { background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:3, padding:'8px 10px', color:'var(--text)', outline:'none', fontSize:13, fontFamily:'IBM Plex Sans,sans-serif', width:'100%' };
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.7)', zIndex:400, display:'flex', alignItems:'center', justifyContent:'center' }}
+      onClick={onClose}>
+      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:8, width:480, maxWidth:'96vw' }}
+        onClick={e => e.stopPropagation()}>
+
+        <div style={{ background:'#141414', borderTop:'3px solid #B8860B', padding:'14px 20px', borderRadius:'8px 8px 0 0', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+          <div>
+            <div style={{ fontSize:9, color:'#B8860B', fontWeight:700, letterSpacing:'.1em', textTransform:'uppercase' }}>Edit Bill</div>
+            <div style={{ fontSize:15, fontWeight:700, color:'#fff', marginTop:2 }}>{bill.bill_number}</div>
+          </div>
+          <button onClick={onClose} style={{ background:'transparent', border:'none', color:'#888', fontSize:22, cursor:'pointer' }}>×</button>
+        </div>
+
+        <div style={{ padding:20, display:'flex', flexDirection:'column', gap:12 }}>
+          <Field label="Customer Name"><input value={form.customer_name}    onChange={s('customer_name')}    placeholder="Customer name"   style={inp} /></Field>
+          <Field label="Mobile">       <input value={form.customer_mobile}  onChange={s('customer_mobile')}  placeholder="Mobile number"   style={inp} /></Field>
+          <Field label="Vehicle">      <input value={form.customer_vehicle} onChange={s('customer_vehicle')} placeholder="KA 01 AB 1234"  style={inp} /></Field>
+          <Field label="Payment Mode">
+            <select value={form.payment_mode} onChange={s('payment_mode')} style={inp}>
+              {['Cash','UPI','Card','Bank Transfer','Credit'].map(m => <option key={m}>{m}</option>)}
+            </select>
+          </Field>
+        </div>
+
+        <div style={{ display:'flex', justifyContent:'flex-end', gap:8, padding:'12px 20px', borderTop:'1px solid var(--border)' }}>
+          <GhostBtn onClick={onClose}>Cancel</GhostBtn>
+          <Btn disabled={saving} onClick={handleSave}>{saving ? 'Saving…' : 'Save changes'}</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Parts Bill Modal (walk-in counter) ───────────────────────────────
+function PartsBillModal({ onClose }) {
+  const qc = useQueryClient();
+  const [cust, setCust]       = useState({ name:'', mobile:'', vehicle:'' });
+  const [lookup, setLookup]   = useState(null); // null | 'found' | 'new'
+  const [cart, setCart]       = useState([]);
+  const [psearch, setPsearch] = useState('');
+  const [payMode, setPayMode] = useState('Cash');
+  const [saving, setSaving]   = useState(false);
+  const [doneBill, setDoneBill] = useState(null);
+
+  const { data: partsRaw } = useQuery({
+    queryKey: ['parts', '', '', 'all'],
+    queryFn: () => partsApi.list({ limit: 2000 }).then(r => r.data),
+  });
+  const allParts = (Array.isArray(partsRaw) ? partsRaw : []).filter(p => p.stock > 0);
+
+  // Customer lookup on mobile blur
+  const lookupCustomer = async (mobile) => {
+    if (mobile.replace(/\D/g,'').length < 10) { setLookup(null); return; }
+    try {
+      const res = await customersApi.list({ search: mobile, limit: 10 });
+      const list = Array.isArray(res.data) ? res.data : [];
+      const exact = list.find(c => c.mobile === mobile);
+      if (exact) {
+        setCust(p => ({ ...p, name: p.name || exact.name }));
+        setLookup('found');
+      } else {
+        setLookup('new');
+      }
+    } catch { setLookup('new'); }
+  };
+
+  const results = psearch.length > 1
+    ? allParts.filter(p =>
+        p.name?.toLowerCase().includes(psearch.toLowerCase()) ||
+        p.part_number?.toLowerCase().includes(psearch.toLowerCase())
+      ).slice(0, 10)
+    : [];
+
+  const addToCart = part => {
+    setCart(prev => {
+      const ex = prev.find(c => c.id === part.id);
+      if (ex) {
+        if (ex.qty >= part.stock) { toast.error('Not enough stock'); return prev; }
+        return prev.map(c => c.id === part.id ? { ...c, qty: c.qty + 1 } : c);
+      }
+      return [...prev, { ...part, qty: 1 }];
+    });
+    setPsearch('');
+  };
+
+  const setQty = (id, qty) => {
+    const p = allParts.find(p => p.id === id);
+    if (qty > (p?.stock || 0)) { toast.error('Not enough stock'); return; }
+    setCart(prev => qty <= 0 ? prev.filter(c => c.id !== id) : prev.map(c => c.id === id ? { ...c, qty } : c));
+  };
+
+  const pbTotal   = cart.reduce((s, c) => s + (c.selling_price || 0) * c.qty, 0);
+  const pbTaxable = cart.reduce((s, c) => s + (c.selling_price || 0) * c.qty / (1 + ((c.gst_rate || 18) / 100)), 0);
+  const pbGst     = pbTotal - pbTaxable;
+  const total     = Math.round(pbTotal);
+
+  const handleGenerate = async () => {
+    if (!cart.length) return toast.error('Add at least one part');
+    setSaving(true);
+    try {
+      const res = await partsApi.createBill({
+        customer_name:    cust.name,
+        customer_mobile:  cust.mobile,
+        customer_vehicle: cust.vehicle,
+        payment_mode:     payMode,
+        items: cart.map(c => ({
+          part_id:     c.id,
+          part_number: c.part_number || '',
+          name:        c.name,
+          hsn_code:    c.hsn_code || '8714',
+          qty:         c.qty,
+          unit_price:  c.selling_price || 0,
+          gst_rate:    c.gst_rate || 18,
+        })),
+      });
+      setDoneBill(res.data);
+      qc.invalidateQueries(['parts-bills-list']);
+      qc.invalidateQueries(['parts']);
+      qc.invalidateQueries(['parts-stats']);
+    } catch (e) {
+      toast.error(errMsg(e, 'Failed to generate bill'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const C = { gold:'#B8860B', muted:'var(--muted)', s2:'var(--surface2)', red:'var(--red,#ef4444)', green:'var(--green,#4ade80)', amber:'#fbbf24', surface:'var(--surface)', text:'var(--text)', blue:'var(--blue)', border:'var(--border)' };
+  const inp = { background:C.s2, border:`1px solid ${C.border}`, borderRadius:3, padding:'8px 10px', color:C.text, outline:'none', fontSize:13, fontFamily:'IBM Plex Sans,sans-serif', width:'100%' };
+  const fmtI = n => Math.round(n).toLocaleString('en-IN');
+
+  return (
+    <div onClick={onClose} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.85)', display:'flex', alignItems:'flex-start', justifyContent:'center', zIndex:300, padding:'24px 16px', overflowY:'auto' }}>
+      <div onClick={e => e.stopPropagation()} style={{ background:C.surface, width:'100%', maxWidth:860, borderRadius:6, overflow:'hidden', boxShadow:'0 24px 80px rgba(0,0,0,.7)', fontFamily:'IBM Plex Sans,sans-serif' }}>
+
+        {/* Header */}
+        <div style={{ background:'#1A1A1A', borderTop:'3px solid #B8860B', padding:'16px 20px', display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
+          <div>
+            <div style={{ fontSize:9, letterSpacing:'.12em', color:C.gold, fontWeight:700, marginBottom:4 }}>MM MOTORS</div>
+            <div style={{ fontSize:17, fontWeight:800, color:'#fff' }}>New Parts Bill</div>
+            <div style={{ fontSize:11, color:'#888', marginTop:3 }}>Walk-in counter sale</div>
+          </div>
+          <button onClick={onClose} style={{ background:'transparent', border:'none', color:'#888', fontSize:20, cursor:'pointer', padding:4 }}>×</button>
+        </div>
+
+        {doneBill ? (
+          /* ── Success screen ── */
+          <div style={{ padding:40, textAlign:'center' }}>
+            <div style={{ fontSize:44, marginBottom:12 }}>✅</div>
+            <div style={{ fontSize:18, fontWeight:800, marginBottom:6 }}>Bill Generated!</div>
+            <div style={{ fontSize:13, color:C.muted, fontFamily:'monospace', marginBottom:4 }}>{doneBill.bill_number}</div>
+            <div style={{ fontSize:16, fontWeight:700, color:C.gold, marginBottom:28 }}>
+              ₹{fmtI(doneBill.grand_total || total)} — {payMode}
+            </div>
+            <div style={{ display:'flex', gap:10, justifyContent:'center' }}>
+              <button onClick={() => printPartsBill(doneBill)}
+                style={{ padding:'10px 22px', background:C.gold, border:'none', borderRadius:4, color:'#0c0c0d', fontSize:13, fontWeight:700, cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif' }}>
+                Print Bill
+              </button>
+              <button onClick={onClose}
+                style={{ padding:'10px 22px', background:'transparent', border:`1px solid ${C.border}`, borderRadius:4, color:C.muted, fontSize:13, cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif' }}>
+                Close
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ padding:'16px 20px 0' }}>
+            {/* Customer */}
+            <div style={{ marginBottom:16 }}>
+              <div style={{ fontSize:9, color:C.gold, fontWeight:700, letterSpacing:'.1em', textTransform:'uppercase', marginBottom:10 }}>Customer Details</div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
+                <div>
+                  <label style={{ fontSize:9, color:C.muted, textTransform:'uppercase', letterSpacing:'.05em', display:'block', marginBottom:4 }}>Name</label>
+                  <input value={cust.name} onChange={e => setCust(p => ({ ...p, name: e.target.value }))} placeholder="Customer name" style={inp} />
+                </div>
+                <div>
+                  <label style={{ fontSize:9, color:C.muted, textTransform:'uppercase', letterSpacing:'.05em', display:'block', marginBottom:4 }}>
+                    Mobile
+                    {lookup === 'found' && <span style={{ marginLeft:6, color:'#4ade80', fontSize:9 }}>✓ Found</span>}
+                    {lookup === 'new'   && <span style={{ marginLeft:6, color:'#fbbf24', fontSize:9 }}>+ New customer</span>}
+                  </label>
+                  <input
+                    value={cust.mobile}
+                    onChange={e => { setCust(p => ({ ...p, mobile: e.target.value })); setLookup(null); }}
+                    onBlur={e => lookupCustomer(e.target.value)}
+                    placeholder="Mobile number"
+                    style={inp}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize:9, color:C.muted, textTransform:'uppercase', letterSpacing:'.05em', display:'block', marginBottom:4 }}>Vehicle (optional)</label>
+                  <input value={cust.vehicle} onChange={e => setCust(p => ({ ...p, vehicle: e.target.value }))} placeholder="KA 07 U 3915" style={inp} />
+                </div>
+              </div>
+            </div>
+
+            {/* Parts search */}
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:9, color:C.gold, fontWeight:700, letterSpacing:'.1em', textTransform:'uppercase', marginBottom:10 }}>Add Parts</div>
+              <div style={{ position:'relative', maxWidth:400 }}>
+                <input value={psearch} onChange={e => setPsearch(e.target.value)}
+                  placeholder="Search part name or number…" style={inp} />
+                {results.length > 0 && (
+                  <div style={{ position:'absolute', top:'100%', left:0, right:0, background:C.surface, border:`1px solid ${C.border}`, borderRadius:4, zIndex:200, boxShadow:'0 8px 24px rgba(0,0,0,.5)', maxHeight:240, overflowY:'auto' }}>
+                    {results.map(p => (
+                      <div key={p.id} onClick={() => addToCart(p)}
+                        style={{ padding:'9px 12px', cursor:'pointer', borderBottom:`1px solid ${C.border}`, display:'flex', justifyContent:'space-between', alignItems:'center' }}
+                        onMouseEnter={e => e.currentTarget.style.background = C.s2}
+                        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                        <div>
+                          <div style={{ fontSize:12, fontWeight:600 }}>{p.name}</div>
+                          <div style={{ fontSize:10, color:C.muted }}>{p.part_number} · {p.category}</div>
+                        </div>
+                        <div style={{ textAlign:'right' }}>
+                          <div style={{ fontSize:12, fontWeight:700, color:C.gold }}>₹{p.selling_price}</div>
+                          <div style={{ fontSize:10, color: p.stock <= 5 ? C.amber : C.green }}>Stock: {p.stock}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Cart */}
+            {cart.length === 0 ? (
+              <div style={{ padding:'24px 0', textAlign:'center', color:C.muted, fontSize:12, borderTop:`1px solid ${C.border}`, marginBottom:12 }}>No parts added yet.</div>
+            ) : (
+              <>
+                <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12, marginBottom:10 }}>
+                  <thead>
+                    <tr style={{ background:'#1A1A1A' }}>
+                      {['Part','Part No.','Qty','Unit Price','GST%','CGST%','SGST%','Amount',''].map((h, i) => (
+                        <th key={i} style={{ padding:'7px 10px', color:C.gold, fontWeight:700, fontSize:10, letterSpacing:'.06em', textAlign: i >= 2 ? 'right' : 'left' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cart.map((item, idx) => {
+                      const gstR   = item.gst_rate || 18;
+                      const half   = (gstR / 2).toFixed(1).replace('.0', '');
+                      const amount = (item.selling_price || 0) * item.qty;
+                      return (
+                        <tr key={item.id} style={{ background: idx%2===0 ? 'transparent' : C.s2, borderBottom:`1px solid ${C.border}` }}>
+                          <td style={{ padding:'8px 10px', fontWeight:600 }}>{item.name}</td>
+                          <td style={{ padding:'8px 10px', fontFamily:'monospace', fontSize:11, color:C.muted }}>{item.part_number}</td>
+                          <td style={{ padding:'8px 6px', textAlign:'right' }}>
+                            <input type="number" min="1" max={item.stock} value={item.qty}
+                              onChange={e => setQty(item.id, Number(e.target.value))}
+                              style={{ background:C.s2, border:`1px solid ${C.border}`, borderRadius:3, padding:'3px 6px', color:C.text, fontSize:11, fontFamily:'IBM Plex Sans,sans-serif', width:52, textAlign:'right', outline:'none' }} />
+                          </td>
+                          <td style={{ padding:'8px 10px', textAlign:'right' }}>₹{item.selling_price}</td>
+                          <td style={{ padding:'8px 10px', textAlign:'right', color:C.muted }}>{gstR}%</td>
+                          <td style={{ padding:'8px 10px', textAlign:'right', color:C.muted }}>{half}%</td>
+                          <td style={{ padding:'8px 10px', textAlign:'right', color:C.muted }}>{half}%</td>
+                          <td style={{ padding:'8px 10px', textAlign:'right', fontWeight:700, color:C.gold }}>₹{fmtI(Math.round(amount))}</td>
+                          <td style={{ padding:'8px 6px' }}>
+                            <button onClick={() => setCart(p => p.filter(c => c.id !== item.id))}
+                              style={{ background:'transparent', border:'none', color:C.red, cursor:'pointer', fontSize:16, padding:0 }}>×</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:12 }}>
+                  <div style={{ minWidth:260 }}>
+                    {[['Taxable Amount', `₹${fmtI(pbTaxable)}`], ['CGST', `₹${fmtI(pbGst / 2)}`], ['SGST', `₹${fmtI(pbGst / 2)}`]].map(([k,v]) => (
+                      <div key={k} style={{ display:'flex', justifyContent:'space-between', padding:'5px 0', fontSize:12, color:C.muted, borderBottom:`1px solid ${C.border}` }}>
+                        <span>{k}</span><span>{v}</span>
+                      </div>
+                    ))}
+                    <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', fontSize:15, fontWeight:800, color:C.gold }}>
+                      <span>Total</span><span>₹{fmtI(total)}</span>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Payment mode */}
+            <div style={{ marginBottom:20 }}>
+              <label style={{ fontSize:9, color:C.muted, textTransform:'uppercase', letterSpacing:'.05em', display:'block', marginBottom:4 }}>Payment Mode</label>
+              <select value={payMode} onChange={e => setPayMode(e.target.value)} style={{ ...inp, maxWidth:200 }}>
+                {['Cash','UPI','Card','Bank Transfer','Credit'].map(m => <option key={m}>{m}</option>)}
+              </select>
+            </div>
+          </div>
+        )}
+
+        {!doneBill && (
+          <div style={{ display:'flex', justifyContent:'flex-end', gap:8, padding:'14px 20px', background:C.s2, borderTop:`1px solid ${C.border}` }}>
+            <button onClick={onClose} style={{ padding:'9px 18px', background:'transparent', border:`1px solid ${C.border}`, borderRadius:4, color:C.muted, fontSize:12, cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif' }}>
+              Cancel
+            </button>
+            <button onClick={handleGenerate} disabled={saving || cart.length === 0}
+              style={{ padding:'9px 20px', background: saving || cart.length === 0 ? '#555' : C.gold, border:'none', borderRadius:4, color:'#0c0c0d', fontSize:12, fontWeight:700, cursor: saving || cart.length === 0 ? 'default' : 'pointer', fontFamily:'IBM Plex Sans,sans-serif' }}>
+              {saving ? 'Generating…' : `Generate Bill — ₹${fmtI(total)}`}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function stockStyle(p) {
   if (p.stock === 0)                   return { color:'#f87171', bg:'rgba(248,113,113,.08)', border:'rgba(248,113,113,.2)', label:'Out of stock' };
@@ -307,9 +850,10 @@ function NewBillForm({ parts, onCancel, onDone }) {
     setSaving(true);
     try {
       await partsApi.createBill({
-        customer_name:   customer.name,
-        customer_mobile: customer.mobile,
-        items: cart.map(({part,qty})=>({ part_id:part.id, part_number:part.part_number, name:part.name, hsn_code:part.hsn_code||'', qty, unit_price:part.selling_price, gst_rate:part.gst_rate })),
+        customer_name:    customer.name,
+        customer_mobile:  customer.mobile,
+        customer_vehicle: '',
+        items: cart.map(({part,qty})=>({ part_id:part.id, part_number:part.part_number, name:part.name, hsn_code:part.hsn_code||'8714', qty, unit_price:part.selling_price, gst_rate:part.gst_rate })),
         payment_mode: payMode,
       });
       toast.success('Bill created');
@@ -446,6 +990,8 @@ export default function PartsPage() {
   const [partsBillOpen, setPartsBillOpen] = useState(false);
   const [orderOpen,     setOrderOpen]     = useState(false);
   const [editPart,      setEditPart]      = useState(null);
+  const [viewBill,      setViewBill]      = useState(null);
+  const [editBill,      setEditBill]      = useState(null);
 
   const { data:statsData } = useQuery({
     queryKey:['parts-stats'],
@@ -672,7 +1218,7 @@ export default function PartsPage() {
           <table style={{ width:'100%', borderCollapse:'collapse' }}>
             <thead>
               <tr style={{ borderBottom:'1px solid var(--border)' }}>
-                {['Bill #','Date','Job #','Customer','Parts Used','Amount','Payment',''].map(h=>(
+                {['Bill #','Date','Job #','Customer','Parts Used','Amount','Payment','Actions'].map(h=>(
                   <th key={h} style={{ padding:'9px 20px', textAlign:'left', fontSize:9, letterSpacing:'.07em', color:'var(--dim)', fontWeight:500, textTransform:'uppercase' }}>{h}</th>
                 ))}
               </tr>
@@ -688,7 +1234,7 @@ export default function PartsPage() {
                     onMouseEnter={e=>e.currentTarget.style.background='var(--surface2)'}
                     onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
                     <td className="mono" style={{ padding:'11px 20px', fontSize:11, color:'var(--blue)' }}>{b.bill_number}</td>
-                    <td className="mono" style={{ padding:'11px 20px', fontSize:11, color:'var(--dim)' }}>{b.created_at?.slice(0,10)}</td>
+                    <td className="mono" style={{ padding:'11px 20px', fontSize:11, color:'var(--dim)' }}>{b.bill_date || b.created_at?.slice(0,10)}</td>
                     <td className="mono" style={{ padding:'11px 20px', fontSize:11, color:'var(--muted)' }}>{b.job_number||'—'}</td>
                     <td style={{ padding:'11px 20px', fontSize:12, fontWeight:500 }}>{b.customer_name||'—'}</td>
                     <td style={{ padding:'11px 20px', fontSize:10, color:'var(--muted)', maxWidth:200 }}>
@@ -699,8 +1245,18 @@ export default function PartsPage() {
                     <td className="display" style={{ padding:'11px 20px', fontSize:14, color:'var(--accent)' }}>₹{Math.round(total).toLocaleString('en-IN')}</td>
                     <td style={{ padding:'11px 20px', fontSize:10 }}><span className="pill pill-green">{b.payment_mode||'Cash'}</span></td>
                     <td style={{ padding:'11px 20px' }}>
-                      <button onClick={()=>window.confirm(`Delete bill ${b.bill_number}?`)&&deleteBillMut.mutate(b.id)}
-                        style={{ padding:'4px 8px', background:'transparent', border:'1px solid rgba(220,38,38,.3)', borderRadius:3, fontSize:10, cursor:'pointer', color:'var(--red)', fontFamily:'IBM Plex Sans,sans-serif' }}>✕</button>
+                      <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                        <button onClick={() => setViewBill(b)}
+                          style={{ padding:'4px 10px', background:'rgba(184,134,11,.1)', border:'1px solid rgba(184,134,11,.35)', borderRadius:3, fontSize:10, cursor:'pointer', color:'var(--accent)', fontFamily:'IBM Plex Sans,sans-serif' }}>
+                          View
+                        </button>
+                        <button onClick={() => setEditBill(b)}
+                          style={{ padding:'4px 10px', background:'rgba(59,130,246,.08)', border:'1px solid rgba(59,130,246,.3)', borderRadius:3, fontSize:10, cursor:'pointer', color:'var(--blue)', fontFamily:'IBM Plex Sans,sans-serif' }}>
+                          Edit
+                        </button>
+                        <button onClick={()=>window.confirm(`Delete bill ${b.bill_number}?`)&&deleteBillMut.mutate(b.id)}
+                          style={{ padding:'4px 8px', background:'transparent', border:'1px solid rgba(220,38,38,.3)', borderRadius:3, fontSize:10, cursor:'pointer', color:'var(--red)', fontFamily:'IBM Plex Sans,sans-serif' }}>✕</button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -710,8 +1266,22 @@ export default function PartsPage() {
         )
       )}
 
-      {partsBillOpen && <PartsBillModal onClose={() => setPartsBillOpen(false)} />}
-      {orderOpen && <PartsOrderModal onClose={() => setOrderOpen(false)} />}
+      {partsBillOpen && <PartsBillModal onClose={() => { setPartsBillOpen(false); qc.invalidateQueries(['parts-bills-list']); }} />}
+      {orderOpen    && <PartsOrderModal onClose={() => setOrderOpen(false)} />}
+      {viewBill     && (
+        <ViewBillModal
+          bill={viewBill}
+          onClose={() => setViewBill(null)}
+          onEdit={() => { setEditBill(viewBill); setViewBill(null); }}
+        />
+      )}
+      {editBill     && (
+        <EditBillModal
+          bill={editBill}
+          onClose={() => setEditBill(null)}
+          onSaved={() => { setEditBill(null); qc.invalidateQueries(['parts-bills-list']); }}
+        />
+      )}
     </div>
   );
 }
