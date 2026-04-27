@@ -1673,14 +1673,14 @@ async def create_parts_bill(body: PartsBillCreate, current_user=Depends(verify_t
     return JSONResponse(content=oid(created), status_code=201)
 
 
-@api_router.get("/parts-bills/{bill_id}")
-async def get_parts_bill(bill_id: str, current_user=Depends(verify_token)):
-    doc = await db.parts_bills.find_one({"_id": obj_id(bill_id)})
-    if not doc:
-        doc = await db.parts_bills.find_one({"bill_number": bill_id})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Parts bill not found")
-    return oid(doc)
+@api_router.put("/parts-bills/{bill_id}")
+async def update_parts_bill(bill_id: str, body: dict, current_user=Depends(verify_token)):
+    allowed = {"customer_name", "customer_mobile", "customer_vehicle", "payment_mode"}
+    update  = {k: v for k, v in body.items() if k in allowed}
+    if not update:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    await db.parts_bills.update_one({"_id": obj_id(bill_id)}, {"$set": update})
+    return oid(await db.parts_bills.find_one({"_id": obj_id(bill_id)}))
 
 
 @api_router.delete("/parts-bills/{bill_id}")
