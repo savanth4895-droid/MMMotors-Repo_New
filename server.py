@@ -688,13 +688,15 @@ async def list_vehicles(
     current_user=Depends(verify_token),
 ):
     query: dict = {}
-    if brand:  query["brand"]  = brand.upper()
-    if status: query["status"] = status
-    if type:   query["type"]   = type
+    if brand:  query["brand"]  = {"$regex": f"^{brand}$", "$options": "i"}
+    if status: query["status"] = {"$regex": f"^{status}$", "$options": "i"}
+    if type:   query["type"]   = {"$regex": f"^{type}$", "$options": "i"}
     if search:
         query["$or"] = [
+            {"brand":          {"$regex": search, "$options": "i"}},
             {"model":          {"$regex": search, "$options": "i"}},
             {"chassis_number": {"$regex": search, "$options": "i"}},
+            {"engine_number":  {"$regex": search, "$options": "i"}},
             {"vehicle_number": {"$regex": search, "$options": "i"}},
             {"color":          {"$regex": search, "$options": "i"}},
         ]
@@ -1492,8 +1494,8 @@ async def list_parts(
     current_user=Depends(verify_token),
 ):
     query: dict = {}
-    if category: query["category"] = category
-    if brand:    query["brand"]    = brand
+    if category: query["category"] = {"$regex": f"^{category}$", "$options": "i"}
+    if brand:    query["brand"]    = {"$regex": f"^{brand}$", "$options": "i"}
     if low_stock:
         query["$expr"] = {"$and":[{"$gt":["$stock",0]},{"$lte":["$stock","$reorder_level"]}]}
     if out_of_stock:
