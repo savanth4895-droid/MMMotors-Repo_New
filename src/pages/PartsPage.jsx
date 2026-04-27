@@ -72,11 +72,59 @@ function PartForm({ initial = {}, onSave, onCancel, saving }) {
 
 // ── Parts Order Modal (low stock) ────────────────────────────────────
 function PartsOrderModal({ onClose }) {
+  const qc = useQueryClient();
   const { data, isLoading } = useQuery({
     queryKey: ['parts-low-stock-order'],
     queryFn: () => partsApi.lowStock().then(r => r.data),
   });
   const lowParts = Array.isArray(data) ? data : [];
+
+  // inline edit state: { [partId]: { reorder_level: number } }
+  const [editing, setEditing] = useState({});
+  const [saving, setSaving]   = useState({});
+  const [adding, setAdding]   = useState(false);
+  const [newPart, setNewPart] = useState({ part_number:'', name:'', brand:'', category:'', stock:0, reorder_level:5, purchase_price:0, selling_price:0, gst_rate:18, hsn_code:'' });
+
+  const startEdit = (p) => setEditing(prev => ({ ...prev, [p.id]: { reorder_level: p.reorder_level } }));
+  const cancelEdit = (id) => setEditing(prev => { const n={...prev}; delete n[id]; return n; });
+
+  const saveEdit = async (p) => {
+    setSaving(prev => ({ ...prev, [p.id]: true }));
+    try {
+      await partsApi.update(p.id, { reorder_level: Number(editing[p.id].reorder_level) });
+      qc.invalidateQueries(['parts-low-stock-order']);
+      qc.invalidateQueries(['parts']);
+      toast.success('Reorder level updated');
+      cancelEdit(p.id);
+    } catch(e) { toast.error('Failed to update'); }
+    finally { setSaving(prev => ({ ...prev, [p.id]: false })); }
+  };
+
+  const deletePart = async (p) => {
+    if (!window.confirm(`Remove "${p.name}" from the reorder list? This deletes the part entirely.`)) return;
+    try {
+      await partsApi.delete(p.id);
+      qc.invalidateQueries(['parts-low-stock-order']);
+      qc.invalidateQueries(['parts']);
+      qc.invalidateQueries(['parts-stats']);
+      toast.success('Part deleted');
+    } catch(e) { toast.error('Failed to delete'); }
+  };
+
+  const addPart = async () => {
+    if (!newPart.part_number || !newPart.name) return toast.error('Part number and name required');
+    try {
+      await partsApi.create(newPart);
+      qc.invalidateQueries(['parts-low-stock-order']);
+      qc.invalidateQueries(['parts']);
+      qc.invalidateQueries(['parts-stats']);
+      toast.success('Part added');
+      setAdding(false);
+      setNewPart({ part_number:'', name:'', brand:'', category:'', stock:0, reorder_level:5, purchase_price:0, selling_price:0, gst_rate:18, hsn_code:'' });
+    } catch(e) { toast.error(errMsg(e,'Failed to add')); }
+  };
+
+  const inp = { background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:3, padding:'3px 6px', color:'var(--text)', fontSize:11, fontFamily:'IBM Plex Sans,sans-serif', width:'100%', outline:'none' };
 
   const handlePrint = () => {
     const rows = lowParts.map(p => `
@@ -107,24 +155,47 @@ function PartsOrderModal({ onClose }) {
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.6)', zIndex:200, display:'flex', alignItems:'center', justifyContent:'center' }}
       onClick={onClose}>
-      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:8, width:680, maxWidth:'96vw', maxHeight:'88vh', display:'flex', flexDirection:'column' }}
+      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:8, width:820, maxWidth:'96vw', maxHeight:'90vh', display:'flex', flexDirection:'column' }}
         onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
         <div style={{ background:'#141414', padding:'16px 20px', borderRadius:'8px 8px 0 0', display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0 }}>
           <div>
             <div style={{ fontSize:14, fontWeight:700 }}>Parts Reorder List</div>
             <div style={{ fontSize:11, color:'var(--muted)', marginTop:2 }}>Parts below reorder level — needs restocking</div>
           </div>
           <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+            <button onClick={() => setAdding(v => !v)}
+              style={{ padding:'7px 14px', background:'rgba(34,197,94,.1)', border:'1px solid rgba(34,197,94,.35)', borderRadius:4, color:'#22c55e', fontSize:11, cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif', fontWeight:600 }}>
+              + Add Part
+            </button>
             {lowParts.length > 0 && (
               <button onClick={handlePrint}
                 style={{ padding:'7px 14px', background:'rgba(184,134,11,.15)', border:'1px solid rgba(184,134,11,.4)', borderRadius:4, color:'var(--accent)', fontSize:11, cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif', fontWeight:600 }}>
-                🖨 Print Order List
+                Print Order List
               </button>
             )}
             <button onClick={onClose} style={{ background:'transparent', border:'none', color:'var(--muted)', fontSize:20, cursor:'pointer' }}>×</button>
           </div>
         </div>
 
+        {/* Add Part Form */}
+        {adding && (
+          <div style={{ padding:'14px 20px', background:'rgba(34,197,94,.05)', borderBottom:'1px solid var(--border)', display:'grid', gridTemplateColumns:'repeat(5,1fr) auto', gap:8, alignItems:'end', flexShrink:0 }}>
+            {[['Part No.','part_number','text'],['Name','name','text'],['Brand','brand','text'],['Stock','stock','number'],['Reorder Lvl','reorder_level','number']].map(([label,key,type])=>(
+              <div key={key}>
+                <div style={{ fontSize:9, color:'var(--muted)', marginBottom:3, letterSpacing:'.05em', textTransform:'uppercase' }}>{label}</div>
+                <input type={type} value={newPart[key]} onChange={e=>setNewPart(p=>({...p,[key]:type==='number'?Number(e.target.value):e.target.value}))} style={inp} />
+              </div>
+            ))}
+            <div style={{ display:'flex', gap:6 }}>
+              <button onClick={addPart} style={{ padding:'5px 12px', background:'#22c55e', border:'none', borderRadius:3, color:'#000', fontSize:11, fontWeight:700, cursor:'pointer' }}>Add</button>
+              <button onClick={()=>setAdding(false)} style={{ padding:'5px 10px', background:'transparent', border:'1px solid var(--border)', borderRadius:3, color:'var(--muted)', fontSize:11, cursor:'pointer' }}>Cancel</button>
+            </div>
+          </div>
+        )}
+
+        {/* Table */}
         <div style={{ overflowY:'auto', flex:1 }}>
           {isLoading ? (
             <div style={{ padding:24, color:'var(--muted)', fontSize:12 }}>Loading…</div>
@@ -137,29 +208,63 @@ function PartsOrderModal({ onClose }) {
             <table style={{ width:'100%', borderCollapse:'collapse' }}>
               <thead>
                 <tr style={{ borderBottom:'1px solid var(--border)' }}>
-                  {['Part No.','Name','Brand','Category','Stock','Reorder','Suggested Order'].map(h => (
+                  {['Part No.','Name','Brand','Category','Stock','Reorder','Suggested Order','Actions'].map(h => (
                     <th key={h} style={{ padding:'9px 16px', textAlign:'left', fontSize:9, letterSpacing:'.06em', color:'var(--dim)', fontWeight:600, textTransform:'uppercase' }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {lowParts.map(p => (
-                  <tr key={p.id} style={{ borderBottom:'1px solid var(--border)' }}>
-                    <td className="mono" style={{ padding:'10px 16px', fontSize:10, color:'var(--blue)' }}>{p.part_number}</td>
-                    <td style={{ padding:'10px 16px', fontSize:11, fontWeight:600 }}>{p.name}</td>
-                    <td style={{ padding:'10px 16px', fontSize:10, color:'var(--muted)' }}>{p.brand||'—'}</td>
-                    <td style={{ padding:'10px 16px', fontSize:10, color:'var(--muted)' }}>{p.category||'—'}</td>
-                    <td style={{ padding:'10px 16px' }}>
-                      <span style={{ fontSize:14, fontWeight:800, color:p.stock===0?'var(--red)':'#fbbf24' }}>{p.stock}</span>
-                    </td>
-                    <td style={{ padding:'10px 16px', fontSize:11, color:'var(--muted)' }}>{p.reorder_level}</td>
-                    <td style={{ padding:'10px 16px' }}>
-                      <span style={{ fontSize:12, fontWeight:700, color:'var(--accent)' }}>
-                        {Math.max((p.reorder_level||5) - p.stock + 10, 10)} units
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                {lowParts.map(p => {
+                  const isEditing = !!editing[p.id];
+                  return (
+                    <tr key={p.id} style={{ borderBottom:'1px solid var(--border)', background: isEditing ? 'rgba(184,134,11,.05)' : 'transparent' }}>
+                      <td className="mono" style={{ padding:'10px 16px', fontSize:10, color:'var(--blue)' }}>{p.part_number}</td>
+                      <td style={{ padding:'10px 16px', fontSize:11, fontWeight:600 }}>{p.name}</td>
+                      <td style={{ padding:'10px 16px', fontSize:10, color:'var(--muted)' }}>{p.brand||'—'}</td>
+                      <td style={{ padding:'10px 16px', fontSize:10, color:'var(--muted)' }}>{p.category||'—'}</td>
+                      <td style={{ padding:'10px 16px' }}>
+                        <span style={{ fontSize:14, fontWeight:800, color:p.stock===0?'var(--red)':'#fbbf24' }}>{p.stock}</span>
+                      </td>
+                      <td style={{ padding:'10px 16px', fontSize:11, color:'var(--muted)' }}>
+                        {isEditing ? (
+                          <input type="number" min="1" value={editing[p.id].reorder_level}
+                            onChange={e => setEditing(prev => ({ ...prev, [p.id]: { ...prev[p.id], reorder_level: e.target.value } }))}
+                            style={{ ...inp, width:60 }} autoFocus />
+                        ) : p.reorder_level}
+                      </td>
+                      <td style={{ padding:'10px 16px' }}>
+                        <span style={{ fontSize:12, fontWeight:700, color:'var(--accent)' }}>
+                          {Math.max((p.reorder_level||5) - p.stock + 10, 10)} units
+                        </span>
+                      </td>
+                      <td style={{ padding:'10px 12px', whiteSpace:'nowrap' }}>
+                        {isEditing ? (
+                          <div style={{ display:'flex', gap:5 }}>
+                            <button onClick={() => saveEdit(p)} disabled={saving[p.id]}
+                              style={{ padding:'3px 10px', background:'var(--accent)', border:'none', borderRadius:3, color:'#000', fontSize:10, fontWeight:700, cursor:'pointer' }}>
+                              {saving[p.id] ? '…' : 'Save'}
+                            </button>
+                            <button onClick={() => cancelEdit(p.id)}
+                              style={{ padding:'3px 8px', background:'transparent', border:'1px solid var(--border)', borderRadius:3, color:'var(--muted)', fontSize:10, cursor:'pointer' }}>
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <div style={{ display:'flex', gap:5 }}>
+                            <button onClick={() => startEdit(p)}
+                              style={{ padding:'3px 10px', background:'rgba(184,134,11,.12)', border:'1px solid rgba(184,134,11,.3)', borderRadius:3, color:'var(--accent)', fontSize:10, cursor:'pointer' }}>
+                              Edit
+                            </button>
+                            <button onClick={() => deletePart(p)}
+                              style={{ padding:'3px 8px', background:'rgba(239,68,68,.08)', border:'1px solid rgba(239,68,68,.25)', borderRadius:3, color:'var(--red,#ef4444)', fontSize:10, cursor:'pointer' }}>
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
