@@ -81,7 +81,7 @@ async def verify_token(
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 async def require_admin(current_user: dict = Depends(verify_token)) -> dict:
-    if current_user.get("role") != "owner":
+    if current_user.get("role", "").lower() != "owner":
         raise HTTPException(status_code=403, detail="Owner access required")
     return current_user
 
@@ -144,7 +144,7 @@ def calc_gst_line(price: float, qty: int, gst_rate: float) -> dict:
     taxable = round(total / (1 + gst_rate / 100), 2) if gst_rate else total
     gst_amt = round(total - taxable, 2)
     cgst    = round(gst_amt / 2, 2)
-    sgst = round(gst_amt - cgst, 2)
+    sgst    = round(gst_amt / 2, 2)
     return {
         "taxable": taxable, "cgst": cgst, "sgst": sgst,
         "gst_total": gst_amt, "total": total,
