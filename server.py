@@ -1438,15 +1438,29 @@ async def delete_service_bill(bill_id: str, current_user=Depends(require_admin))
     bill = await db.service_bills.find_one({"_id": obj_id(bill_id)})
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
+
     # Restore stock for all parts used in this bill
     for item in bill.get("items", []):
         part_number = item.get("part_number", "").strip()
         qty = item.get("qty", 0)
-        if part_number and qty > 0:
-            await db.spare_parts.update_one(
-                {"part_number": part_number},
-                {"$inc": {"stock": qty}}
+        if not part_number or qty <= 0:
+            continue
+        part = await db.spare_parts.find_one({"part_number": part_number})
+        if not part:
+            # try case-insensitive fallback
+            part = await db.spare_parts.find_one(
+                {"part_number": {"$regex": f"^{part_number}$", "$options": "i"}}
             )
+        if part:
+            new_stock = (part.get("stock") or 0) + qty
+            await db.spare_parts.update_one(
+                {"_id": part["_id"]},
+                {"$set": {"stock": new_stock}, "$push": {"stock_log": {
+                    "qty": qty, "action": "add", "reason": "service_bill_deleted",
+                    "new_stock": new_stock, "date": datetime.utcnow().isoformat(),
+                }}}
+            )
+
     await db.service_bills.delete_one({"_id": obj_id(bill_id)})
     await db.service_jobs.update_one(
         {"_id": obj_id(bill["job_id"])},
