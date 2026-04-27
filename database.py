@@ -32,6 +32,23 @@ BRANDS = [
 ]
 GST_RATES = [5, 12, 18]
 
+# ── Normalizers — enforce canonical formats at write time ───────────────────────
+def norm_status(s: str) -> str:
+    """'IN STOCK' | 'Instock' | 'in-stock' → 'in_stock'"""
+    return s.strip().lower().replace(" ", "_").replace("-", "_")
+
+def norm_role(s: str) -> str:
+    """'OWNER' | 'Owner' → 'owner'"""
+    return s.strip().lower()
+
+def norm_type(s: str) -> str:
+    """'NEW' | 'New' → 'new'"""
+    return s.strip().lower()
+
+def norm_brand(s: str) -> str:
+    """'yamaha' | 'Yamaha' → 'YAMAHA'"""
+    return s.strip().upper()
+
 # Fail fast if JWT secret missing — never run with empty secret
 if not JWT_SECRET_KEY:
     print("[MM Motors] FATAL: JWT_SECRET_KEY env var is not set.", file=sys.stderr)
@@ -81,7 +98,7 @@ async def verify_token(
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 async def require_admin(current_user: dict = Depends(verify_token)) -> dict:
-    if current_user.get("role", "").lower() != "owner":
+    if norm_role(current_user.get("role", "")) != "owner":
         raise HTTPException(status_code=403, detail="Owner access required")
     return current_user
 
