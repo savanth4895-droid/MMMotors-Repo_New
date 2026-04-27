@@ -69,7 +69,7 @@ function VehicleForm({ initial = {}, onSave, onCancel, saving }) {
   const [f, setF] = useState({
     type: 'new', brand: '', model: '', variant: '', color: '',
     chassis_number: '', engine_number: '', vehicle_number: '', key_number: '',
-    purchase_price: '', status: 'Instock',
+    purchase_price: '', status: 'in_stock',
     inbound_date: '', location: '', outbound_date: '', outbound_location: '',
     ...initial
   });
@@ -121,9 +121,9 @@ function VehicleForm({ initial = {}, onSave, onCancel, saving }) {
         <Field label="Purchase price (₹)"><input type="number" value={f.purchase_price} onChange={se('purchase_price')} placeholder="0" /></Field>
         <Field label="Status *">
           <select value={f.status} onChange={se('status')} style={selStyle}>
-            <option value="Instock">In Stock</option>
-            <option value="Sold">Sold</option>
-            <option value="Returned">Returned</option>
+            <option value="in_stock">In Stock</option>
+            <option value="sold">Sold</option>
+            <option value="returned">Returned</option>
           </select>
         </Field>
       </div>
@@ -133,7 +133,7 @@ function VehicleForm({ initial = {}, onSave, onCancel, saving }) {
         <Field label="Location"><input value={f.location} onChange={se('location')} placeholder="Warehouse / Showroom..." /></Field>
       </div>
 
-      {f.status === 'Returned' && (
+      {f.status === 'returned' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, padding: '12px', background: 'rgba(220,38,38,.05)', border: '1px dashed rgba(220,38,38,.3)', borderRadius: 4 }}>
           <Field label="Return Date"><input type="date" value={f.outbound_date} onChange={se('outbound_date')} style={{ ...selStyle, padding: '7px 10px' }} /></Field>
           <Field label="Return Location / Vendor"><input value={f.outbound_location} onChange={se('outbound_location')} placeholder="Returned to vendor..." /></Field>
