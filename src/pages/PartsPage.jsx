@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { partsApi, partsSalesApi, errMsg} from '../api/client';
 import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError, useSortable } from '../components/ui';
 import toast from 'react-hot-toast';
 import { PartsBillModal } from './ServicePage';
@@ -307,7 +306,7 @@ function NewBillForm({ parts, onCancel, onDone }) {
     if (!cart.length) return toast.error('Add at least one part');
     setSaving(true);
     try {
-      await partsSalesApi.create({
+      await partsApi.createBill({
         customer_name:   customer.name,
         customer_mobile: customer.mobile,
         items: cart.map(({part,qty})=>({ part_id:part.id, part_number:part.part_number, name:part.name, hsn_code:part.hsn_code||'', qty, unit_price:part.selling_price, gst_rate:part.gst_rate })),
