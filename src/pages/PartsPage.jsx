@@ -262,24 +262,40 @@ function NewBillForm({ parts, onCancel, onDone }) {
           </div>
           {cart.length>0 && (
             <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:3, overflow:'hidden' }}>
-              <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', fontSize:10, color:'var(--muted)', letterSpacing:'.06em', textTransform:'uppercase' }}>Cart — {cart.length} item{cart.length>1?'s':''}</div>
-              {cart.map(({part,qty})=>(
-                <div key={part.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', borderBottom:'1px solid var(--border)' }}>
-                  <div style={{ flex:1 }}>
-                    <div style={{ fontSize:11, fontWeight:500 }}>{part.name}</div>
-                    <div style={{ fontSize:10, color:'var(--muted)' }}>₹{part.selling_price.toLocaleString('en-IN')} incl. {part.gst_rate}% GST</div>
-                  </div>
-                  <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-                    <button onClick={()=>updateQty(part.id,qty-1)} style={{ width:24, height:24, background:'var(--surface2)', border:'1px solid var(--border2)', borderRadius:2, cursor:'pointer', fontSize:14, fontFamily:'inherit' }}>−</button>
-                    <span style={{ fontSize:12, fontWeight:600, width:24, textAlign:'center' }}>{qty}</span>
-                    <button onClick={()=>updateQty(part.id,qty+1)} style={{ width:24, height:24, background:'var(--surface2)', border:'1px solid var(--border2)', borderRadius:2, cursor:'pointer', fontSize:14, fontFamily:'inherit' }}>+</button>
-                  </div>
-                  <div style={{ textAlign:'right', minWidth:70 }}>
-                    <div style={{ fontSize:12, fontWeight:700, color:'var(--accent)' }}>₹{Math.round(part.selling_price*qty).toLocaleString('en-IN')}</div>
-                    <div style={{ fontSize:10, color:'var(--dim)' }}>incl. GST</div>
-                  </div>
-                </div>
-              ))}
+              <table style={{ width:'100%', borderCollapse:'collapse' }}>
+                <thead>
+                  <tr style={{ background:'var(--surface2)', borderBottom:'1px solid var(--border)' }}>
+                    {['Part Name','Qty','Unit Price','GST%','CGST%','SGST%','Amount',''].map((h,i)=>(
+                      <th key={i} style={{ padding:'8px 10px', fontSize:10, fontWeight:600, color:'var(--muted)', letterSpacing:'.05em', textAlign:i>=1?'center':'left', whiteSpace:'nowrap' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {cart.map(({part,qty},idx)=>{
+                    const half = (part.gst_rate/2).toFixed(1).replace('.0','');
+                    return (
+                      <tr key={part.id} style={{ borderBottom:'1px solid var(--border)', background:idx%2===0?'transparent':'var(--surface2)' }}>
+                        <td style={{ padding:'8px 10px', fontSize:11, fontWeight:500 }}>{part.name}<div className="mono" style={{ fontSize:9, color:'var(--muted)', marginTop:1 }}>{part.part_number}</div></td>
+                        <td style={{ padding:'8px 6px', textAlign:'center' }}>
+                          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:4 }}>
+                            <button onClick={()=>updateQty(part.id,qty-1)} style={{ width:22, height:22, background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:2, cursor:'pointer', fontSize:13, fontFamily:'inherit' }}>−</button>
+                            <span style={{ fontSize:12, fontWeight:600, width:22, textAlign:'center' }}>{qty}</span>
+                            <button onClick={()=>updateQty(part.id,qty+1)} style={{ width:22, height:22, background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:2, cursor:'pointer', fontSize:13, fontFamily:'inherit' }}>+</button>
+                          </div>
+                        </td>
+                        <td style={{ padding:'8px 10px', textAlign:'center', fontSize:11 }}>₹{part.selling_price.toLocaleString('en-IN')}</td>
+                        <td style={{ padding:'8px 10px', textAlign:'center', fontSize:11, color:'var(--muted)' }}>{part.gst_rate}%</td>
+                        <td style={{ padding:'8px 10px', textAlign:'center', fontSize:11, color:'var(--muted)' }}>{half}%</td>
+                        <td style={{ padding:'8px 10px', textAlign:'center', fontSize:11, color:'var(--muted)' }}>{half}%</td>
+                        <td style={{ padding:'8px 10px', textAlign:'center', fontSize:12, fontWeight:700, color:'var(--accent)' }}>₹{Math.round(part.selling_price*qty).toLocaleString('en-IN')}</td>
+                        <td style={{ padding:'8px 6px', textAlign:'center' }}>
+                          <button onClick={()=>setCart(p=>p.filter(i=>i.part.id!==part.id))} style={{ background:'transparent', border:'none', color:'var(--red,#ef4444)', cursor:'pointer', fontSize:16, padding:0 }}>×</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
         </div>
