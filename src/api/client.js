@@ -148,6 +148,7 @@ export const partsApi = {
   createBill:           (data)       => api.post('/parts-bills', data),
   listBills:            (params)     => api.get('/parts-bills', { params }),
   deleteBill:           (id)         => api.delete(`/parts-bills/${id}`),
+  updateBill:  (id, d)  => api.put(`/parts-bills/${id}`, d),
 };
 
 // ── Dashboard & Reports ─────────────────────────────────────────────
