@@ -61,6 +61,7 @@ from database import (
     next_sequence, _sync_counter,
     oid, oids, obj_id, paginate_params, now,
     calc_gst_line, calc_bill_totals, amount_in_words,
+    norm_status, norm_role, norm_type, norm_brand,
 )
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 
@@ -688,9 +689,9 @@ async def list_vehicles(
     current_user=Depends(verify_token),
 ):
     query: dict = {}
-    if brand:  query["brand"]  = {"$regex": f"^{brand}$", "$options": "i"}
-    if status: query["status"] = {"$regex": f"^{status}$", "$options": "i"}
-    if type:   query["type"]   = {"$regex": f"^{type}$", "$options": "i"}
+    if brand:  query["brand"]  = norm_brand(brand)
+    if status: query["status"] = norm_status(status)
+    if type:   query["type"]   = norm_type(type)
     if search:
         query["$or"] = [
             {"brand":          {"$regex": search, "$options": "i"}},
@@ -711,7 +712,9 @@ async def create_vehicle(body: VehicleCreate, current_user=Depends(verify_token)
         raise HTTPException(status_code=409, detail=f"Chassis number {chassis} already exists")
     doc = body.dict()
     doc["chassis_number"] = chassis
-    doc["brand"]          = doc["brand"].upper()
+    doc["brand"]          = norm_brand(doc.get("brand", ""))
+    doc["status"]         = norm_status(doc.get("status", "in_stock"))
+    doc["type"]           = norm_type(doc.get("type", "new"))
     doc["created_at"]     = datetime.utcnow().isoformat()
     result = await db.vehicles.insert_one(doc)
     doc["id"] = str(result.inserted_id); doc.pop("_id", None)
@@ -743,8 +746,9 @@ async def update_vehicle(veh_id: str, body: VehicleUpdate, current_user=Depends(
     update = {k: v for k, v in body.dict().items() if v is not None}
     if "chassis_number" in update:
         update["chassis_number"] = update["chassis_number"].strip().upper()
-    if "brand" in update:
-        update["brand"] = update["brand"].upper()
+    if "brand"  in update: update["brand"]  = norm_brand(update["brand"])
+    if "status" in update: update["status"] = norm_status(update["status"])
+    if "type"   in update: update["type"]   = norm_type(update["type"])
     await db.vehicles.update_one({"_id": obj_id(veh_id)}, {"$set": update})
     return oid(await db.vehicles.find_one({"_id": obj_id(veh_id)}))
 
@@ -1494,8 +1498,8 @@ async def list_parts(
     current_user=Depends(verify_token),
 ):
     query: dict = {}
-    if category: query["category"] = {"$regex": f"^{category}$", "$options": "i"}
-    if brand:    query["brand"]    = {"$regex": f"^{brand}$", "$options": "i"}
+    if category: query["category"] = category.strip()
+    if brand:    query["brand"]    = norm_brand(brand)
     if low_stock:
         query["$expr"] = {"$and":[{"$gt":["$stock",0]},{"$lte":["$stock","$reorder_level"]}]}
     if out_of_stock:
@@ -2275,7 +2279,7 @@ async def import_vehicles(request: Request, file: UploadFile = File(...), mode: 
             if not chassis: skipped.append({"row":rn,"reason":"Missing chassis_number"}); continue
             if not brand:   skipped.append({"row":rn,"reason":"Missing brand"});          continue
             if not model:   skipped.append({"row":rn,"reason":"Missing model"});          continue
-            doc = {"brand":brand,"model":model,"variant":safe(row.get("variant")),"color":safe(row.get("color")),"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"key_number":safe(row.get("key_number")),"type":safe(row.get("type","new")).lower() or "new","status":safe(row.get("status","in_stock")).lower() or "in_stock","inbound_date":safe(row.get("inbound_date","")),"inbound_location":safe(row.get("inbound_location","")),"return_date":safe(row.get("return_date","")),"returned_location":safe(row.get("returned_location","")),"created_at":datetime.utcnow().isoformat()}
+            doc = {"brand":norm_brand(brand),"model":model,"variant":safe(row.get("variant")),"color":safe(row.get("color")),"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"key_number":safe(row.get("key_number")),"type":norm_type(safe(row.get("type","new")) or "new"),"status":norm_status(safe(row.get("status","in_stock")) or "in_stock"),"inbound_date":safe(row.get("inbound_date","")),"inbound_location":safe(row.get("inbound_location","")),"return_date":safe(row.get("return_date","")),"returned_location":safe(row.get("returned_location","")),"created_at":datetime.utcnow().isoformat()}
             if chassis in existing_chassis:
                 if mode=="overwrite": to_update.append(doc)
                 else: skipped.append({"row":rn,"reason":f"Chassis {chassis} already imported"})
@@ -2983,6 +2987,33 @@ async def profit_and_loss(
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Full Data Backup Export
 # ═══════════════════════════════════════════════════════════════════════════════
+
+@api_router.post("/admin/normalize-fields")
+async def normalize_fields(current_user=Depends(require_admin)):
+    """One-time migration: normalize status/type/brand/role across all collections."""
+    counts = {}
+    # Vehicles
+    veh_fixed = 0
+    async for v in db.vehicles.find({}):
+        upd = {}
+        if norm_brand(v.get("brand",""))  != v.get("brand",""):  upd["brand"]  = norm_brand(v["brand"])
+        if norm_status(v.get("status","")) != v.get("status",""): upd["status"] = norm_status(v["status"])
+        if norm_type(v.get("type",""))    != v.get("type",""):    upd["type"]   = norm_type(v["type"])
+        if upd:
+            await db.vehicles.update_one({"_id": v["_id"]}, {"$set": upd})
+            veh_fixed += 1
+    counts["vehicles"] = veh_fixed
+    # Users
+    usr_fixed = 0
+    async for u in db.users.find({}):
+        upd = {}
+        if norm_role(u.get("role","")) != u.get("role",""): upd["role"] = norm_role(u["role"])
+        if upd:
+            await db.users.update_one({"_id": u["_id"]}, {"$set": upd})
+            usr_fixed += 1
+    counts["users"] = usr_fixed
+    return {"message": "Normalization complete", "fixed": counts}
+
 
 @api_router.get("/backup/export")
 async def export_backup(current_user=Depends(require_admin)):
