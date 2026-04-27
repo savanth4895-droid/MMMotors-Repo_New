@@ -598,7 +598,6 @@ function PartForm({ initial = {}, onSave, onCancel, saving }) {
         <GhostBtn onClick={onCancel}>Cancel</GhostBtn>
         <Btn disabled={!f.name||!f.selling_price||saving} onClick={()=>onSave({
           ...f,
-          part_number: f.part_number.trim() === '' ? undefined : f.part_number,
           stock:          parseInt(f.stock)||0,
           reorder_level:  parseInt(f.reorder_level)||5,
           purchase_price: parseFloat(f.purchase_price)||0,
