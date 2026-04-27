@@ -573,7 +573,7 @@ function PartForm({ initial = {}, onSave, onCancel, saving }) {
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:14, maxWidth:680 }}>
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-        <Field label="Part number *"><input value={f.part_number}    onChange={s('part_number')}    placeholder="30050-KWB-901" className="mono" /></Field>
+        <Field label="Part number"><input value={f.part_number}    onChange={s('part_number')}    placeholder="Leave blank to auto-generate" className="mono" /></Field>
         <Field label="Name *">       <input value={f.name}           onChange={s('name')}           placeholder="Spark Plug (Iridium)" /></Field>
         <Field label="Category">
           <select value={f.category} onChange={s('category')} style={selStyle}>
@@ -596,8 +596,9 @@ function PartForm({ initial = {}, onSave, onCancel, saving }) {
       </div>
       <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
         <GhostBtn onClick={onCancel}>Cancel</GhostBtn>
-        <Btn disabled={!f.part_number||!f.name||!f.selling_price||saving} onClick={()=>onSave({
+        <Btn disabled={!f.name||!f.selling_price||saving} onClick={()=>onSave({
           ...f,
+          part_number: f.part_number.trim() === '' ? undefined : f.part_number,
           stock:          parseInt(f.stock)||0,
           reorder_level:  parseInt(f.reorder_level)||5,
           purchase_price: parseFloat(f.purchase_price)||0,
