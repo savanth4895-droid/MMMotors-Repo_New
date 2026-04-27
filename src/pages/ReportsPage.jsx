@@ -196,9 +196,9 @@ export default function ReportsPage() {
       map[key] = { label: MONTHS[i], sales: 0, service: 0, parts: 0 };
     });
     // _id is "YYYY-MM" string returned directly from backend (no oids() rename)
-    (revenue.sales||[]).forEach(d   => { if (map[d._id]) map[d._id].sales   = d.sales||0; });
-    (revenue.service||[]).forEach(d => { if (map[d._id]) map[d._id].service = d.service||0; });
-    (revenue.parts||[]).forEach(d   => { if (map[d._id]) map[d._id].parts   = d.parts||0; });
+    (revenue.sales||[]).forEach(d   => { const k = d.id||d._id; if (map[k]) map[k].sales   = d.sales||0; });
+    (revenue.service||[]).forEach(d => { const k = d.id||d._id; if (map[k]) map[k].service = d.service||0; });
+    (revenue.parts||[]).forEach(d   => { const k = d.id||d._id; if (map[k]) map[k].parts   = d.parts||0; });
     return Object.keys(map).sort().map(key => ({
       month:   map[key].label,
       sales:   Math.round(map[key].sales),
