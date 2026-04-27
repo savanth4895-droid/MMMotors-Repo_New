@@ -768,7 +768,7 @@ def _generate_sale_pdf(sale: dict) -> bytes:
     STRIPE      = colors.HexColor('#F7F7F4')
     WHITE       = colors.white
     PAGE_BG     = colors.HexColor('#FDFCF8')
-    RS          = '₹'
+    RS          = 'Rs.'
     W, H = A4
     ML = 16*mm; MR = W - 16*mm; TW = MR - ML
     buf = io.BytesIO()
@@ -794,23 +794,58 @@ def _generate_sale_pdf(sale: dict) -> bytes:
     def sec_label(x, y, text):
         c.setFont('Sans-Bold', 6.5); c.setFillColor(GOLD); c.drawString(x, y, text.upper())
         c.setStrokeColor(GOLD); c.setLineWidth(0.35); c.line(x, y - 1*mm, x + 38*mm, y - 1*mm)
-    def irow(x, y, label, val, mono=False):
+    def irow(x, y, label, val, mono=False, max_w=None):
         c.setFont('Sans', 7); c.setFillColor(DIM); c.drawString(x, y, label)
         c.setFont('Mono' if mono else 'Sans-Bold', 7); c.setFillColor(DARK)
-        c.drawString(x + 24*mm, y, str(val) if val else '—')
+        text = str(val) if val else '—'
+        # Strip rupee unicode — use "Rs." instead so Liberation Sans renders it
+        text = text.replace('₹', 'Rs.')
+        if max_w:
+            # Truncate with ellipsis if text exceeds column width
+            while c.stringWidth(text, 'Mono' if mono else 'Sans-Bold', 7) > max_w and len(text) > 4:
+                text = text[:-2] + '…'
+        c.drawString(x + 24*mm, y, text)
+    def irow_wrap(x, y, label, val, max_w, line_h=4.5*mm):
+        """Like irow but wraps long values across multiple lines."""
+        c.setFont('Sans', 7); c.setFillColor(DIM); c.drawString(x, y, label)
+        c.setFont('Sans-Bold', 7); c.setFillColor(DARK)
+        text = str(val) if val else '—'
+        words = text.split()
+        line = ''; lines = []
+        for w in words:
+            test = (line + ' ' + w).strip()
+            if c.stringWidth(test, 'Sans-Bold', 7) <= max_w:
+                line = test
+            else:
+                if line: lines.append(line)
+                line = w
+        if line: lines.append(line)
+        for li, ln in enumerate(lines[:3]):  # max 3 lines
+            c.drawString(x + 24*mm, y - li * line_h, ln)
     COL1 = ML; COL2 = W/2 + 2*mm; RH = 5*mm
+    COL1_MAX = (W/2 - 2*mm) - (ML + 24*mm)   # max text width for COL1 values
+    COL2_MAX = MR - (COL2 + 24*mm)            # max text width for COL2 values
     INFO_Y = DIV_Y - 6*mm
     nominee = sale.get('nominee', {}) or {}
     sec_label(COL1, INFO_Y, 'Customer Details')
-    for i, (l, v) in enumerate([('Name', sale.get('customer_name','')), ('C/O', sale.get('care_of','')), ('Mobile', sale.get('customer_mobile','')), ('Address', sale.get('customer_address','')), ('Payment', sale.get('payment_mode',''))]):
-        irow(COL1, INFO_Y - (i+1.6)*RH, l, v)
+    # Address uses wrap; others use single-line with truncation guard
+    irow(COL1, INFO_Y - 1.6*RH, 'Name',    sale.get('customer_name',''),   max_w=COL1_MAX)
+    irow(COL1, INFO_Y - 2.6*RH, 'C/O',     sale.get('care_of',''),          max_w=COL1_MAX)
+    irow(COL1, INFO_Y - 3.6*RH, 'Mobile',  sale.get('customer_mobile',''),  max_w=COL1_MAX)
+    irow_wrap(COL1, INFO_Y - 4.6*RH, 'Address', sale.get('customer_address',''), max_w=COL1_MAX)
+    irow(COL1, INFO_Y - 6.8*RH, 'Payment', sale.get('payment_mode',''),     max_w=COL1_MAX)
     sec_label(COL2, INFO_Y, 'Vehicle Details')
     for i, (l, v) in enumerate([('Brand', sale.get('vehicle_brand','')), ('Model', sale.get('vehicle_model','')), ('Variant', sale.get('vehicle_variant','')), ('Colour', sale.get('vehicle_color','')), ('Financier', sale.get('financier',''))]):
-        irow(COL2, INFO_Y - (i+1.6)*RH, l, v)
-    SEC2_Y = INFO_Y - 7.8*RH
+        irow(COL2, INFO_Y - (i+1.6)*RH, l, v, max_w=COL2_MAX)
+    SEC2_Y = INFO_Y - 8.8*RH   # extra row for wrapped address
     sec_label(COL1, SEC2_Y, 'Registration / Chassis')
-    for i, (l, v, m) in enumerate([('Vehicle No', sale.get('vehicle_number',''), False), ('Chassis No', sale.get('chassis_number',''), True), ('Engine No', sale.get('engine_number',''), True)]):
-        irow(COL1, SEC2_Y - (i+1.6)*RH, l, v, mono=m)
+    for i, (l, v, m) in enumerate([
+        ('Vehicle No', sale.get('vehicle_number',''), False),
+        ('RTO',        sale.get('rto',''),            False),
+        ('Chassis No', sale.get('chassis_number',''), True),
+        ('Engine No',  sale.get('engine_number',''),  True),
+    ]):
+        irow(COL1, SEC2_Y - (i+1.6)*RH, l, v, mono=m, max_w=COL1_MAX)
     sec_label(COL2, SEC2_Y, 'Nominee (Insurance)')
     for i, (l, v) in enumerate([('Name', nominee.get('name','')), ('Relation', nominee.get('relation','')), ('Age', nominee.get('age','')), ('Mobile', nominee.get('number',''))]):
         irow(COL2, SEC2_Y - (i+1.6)*RH, l, v)
@@ -874,22 +909,22 @@ def _generate_sale_pdf(sale: dict) -> bytes:
         c.setFont('Sans-Bold', 7); c.setFillColor(GOLD); c.drawString(SC2, ry + 2*mm, stype)
         c.setFont('Sans', 7); c.setFillColor(DARK); c.drawString(SC3, ry + 2*mm, sched)
     c.setStrokeColor(RULE); c.setLineWidth(0.5)
-    c.rect(ML, TH_Y - 4*SRH, TW, 6.5*mm + 13.5*mm + 8*mm + 4*SRH, fill=0, stroke=1)
+    c.rect(ML, TH_Y - 4*SRH - 1, TW, 6.5*mm + 13.5*mm + 8*mm + 4*SRH + 1, fill=0, stroke=1)
     NOTE_Y = TH_Y - 4*SRH - 6.5*mm
     c.setFillColor(GOLD_LIGHT); c.setStrokeColor(GOLD); c.setLineWidth(0.5)
     c.roundRect(ML, NOTE_Y - 0.5*mm, TW, 6*mm, 1*mm, fill=1, stroke=1)
     c.setFont('Sans-Bold', 7.5); c.setFillColor(colors.HexColor('#7A5800'))
-    c.drawCentredString(W/2, NOTE_Y + 1.8*mm, '⚠  IMPORTANT: Follow whichever milestone comes first (kilometers or days)')
+    c.drawCentredString(W/2, NOTE_Y + 1.8*mm, 'IMPORTANT: Follow whichever milestone comes first (km or days)')
     THANKS_Y = NOTE_Y - 17*mm
     c.setFillColor(STRIPE); c.setStrokeColor(RULE); c.setLineWidth(0.5)
     c.roundRect(ML, THANKS_Y - 1*mm, TW, 28*mm, 2*mm, fill=1, stroke=1)
     c.setFillColor(GOLD); c.rect(ML, THANKS_Y + 26*mm, TW, 1.5*mm, fill=1, stroke=0)
-    for label, x in [('🏆  Trusted Dealer', ML + 6*mm), ('🕑  24/7 Service Support', W/2 - 22*mm), ('✅  Quality Guaranteed', MR - 50*mm)]:
+    for label, x in [('* Trusted Dealer', ML + 6*mm), ('* 24/7 Service Support', W/2 - 22*mm), ('* Quality Guaranteed', MR - 50*mm)]:
         c.setFont('Sans', 7); c.setFillColor(MID); c.drawString(x, THANKS_Y + 20.5*mm, label)
     c.setStrokeColor(RULE); c.setLineWidth(0.4); c.line(ML + 4*mm, THANKS_Y + 18.5*mm, MR - 4*mm, THANKS_Y + 18.5*mm)
     c.setFont('Sans-Bold', 12); c.setFillColor(DARK); c.drawCentredString(W/2, THANKS_Y + 13*mm, 'Thank You for Choosing M M Motors!')
     c.setFont('Sans-Italic', 7.5); c.setFillColor(DIM); c.drawCentredString(W/2, THANKS_Y + 8.5*mm, 'Your trust drives our excellence in two-wheeler sales and service.')
-    c.setFont('Sans', 7.5); c.setFillColor(MID); c.drawCentredString(W/2, THANKS_Y + 4.5*mm, '🌟  Premium Quality  •  ⚡  Expert Service  •  🤝  Customer First')
+    c.setFont('Sans', 7.5); c.setFillColor(MID); c.drawCentredString(W/2, THANKS_Y + 4.5*mm, '* Premium Quality   *  Expert Service   *  Customer First')
     c.setFillColor(DARK); c.rect(0, 0, W, 7.5*mm, fill=1, stroke=0)
     c.setFillColor(GOLD); c.rect(0, 7.5*mm, W, 1*mm, fill=1, stroke=0)
     c.setFont('Sans', 6); c.setFillColor(colors.HexColor('#888888'))
@@ -1175,13 +1210,22 @@ async def service_due(
     """
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
 
-    # Aggregate: latest job per vehicle_number
+    # Aggregate: latest job per vehicle_number, sorted by actual check_in_date
     pipeline = [
-        # Only delivered/completed jobs
         {"$match": {"status": "delivered"}},
-        # Sort so $first picks the most recent per vehicle
+        # Parse check_in_date into a real date for reliable sorting
+        {"$addFields": {
+            "parsed_checkin": {
+                "$cond": [
+                    {"$ne": ["$created_at", None]},
+                    {"$dateFromString": {"dateString": "$created_at", "onError": None, "onNull": None}},
+                    None
+                ]
+            }
+        }},
+        # Sort by most recent service first
         {"$sort": {"created_at": -1}},
-        # Group by vehicle_number — keep latest job fields
+        # Group: one record per vehicle, keep the most recent job's fields
         {"$group": {
             "_id": "$vehicle_number",
             "job_id":          {"$first": "$_id"},
@@ -1195,9 +1239,9 @@ async def service_due(
             "check_in_date":   {"$first": "$check_in_date"},
             "created_at":      {"$first": "$created_at"},
         }},
-        # Filter: last service older than cutoff
+        # Only include vehicles whose last service is older than the cutoff
         {"$match": {"created_at": {"$lt": cutoff}}},
-        # Sort by most overdue first
+        # Most overdue first
         {"$sort": {"created_at": 1}},
         {"$limit": 500},
     ]
@@ -1207,15 +1251,14 @@ async def service_due(
     now = datetime.utcnow()
     result = []
     for d in docs:
-        d["id"] = str(d.pop("job_id", d.get("_id","")))
+        d["id"] = str(d.pop("job_id", d.get("_id", "")))
         d.pop("_id", None)
-        # Compute days since last service
+        # days_since based on created_at (which import now sets from check_in_date)
         try:
             last = datetime.fromisoformat(d["created_at"])
             d["days_since"] = (now - last).days
         except Exception:
             d["days_since"] = None
-        # Urgency bucket
         ds = d.get("days_since") or 0
         d["urgency"] = "overdue" if ds >= days else "due_soon" if ds >= days - 30 else "ok"
         result.append(d)
@@ -1859,6 +1902,40 @@ async def daily_closing_report(date: Optional[str] = Query(None), current_user=D
     result.sort(key=lambda x: 0 if x["payment_mode"]=="Cash" else 1)
     return {"date":target_date,"breakdown":result,"grand_total":sum(r["total"] for r in result)}
 
+@api_router.post("/migrations/backfill-service-dates")
+async def backfill_service_dates(current_user=Depends(require_admin)):
+    """
+    One-time migration: sets created_at = parsed check_in_date for imported service jobs
+    where created_at is today (import artifact). Fixes Service Due calculations.
+    """
+    updated = 0; skipped = 0; errors = 0
+    today_prefix = datetime.utcnow().strftime("%Y-%m-%dT")
+
+    async for job in db.service_jobs.find(
+        {"_imported": True, "check_in_date": {"$exists": True, "$ne": ""}},
+        {"_id": 1, "check_in_date": 1, "created_at": 1}
+    ):
+        check_in = job.get("check_in_date", "")
+        try:
+            for fmt in ("%d/%m/%Y", "%d %b %Y", "%Y-%m-%d"):
+                try:
+                    parsed = datetime.strptime(check_in, fmt); break
+                except ValueError:
+                    continue
+            else:
+                skipped += 1; continue
+            await db.service_jobs.update_one(
+                {"_id": job["_id"]},
+                {"$set": {"created_at": parsed.isoformat()}}
+            )
+            updated += 1
+        except Exception:
+            errors += 1
+
+    return {"updated": updated, "skipped": skipped, "errors": errors,
+            "message": f"✅ {updated} service jobs backfilled with correct dates. Run once only."}
+
+
 @api_router.post("/migrations/backfill-sale-addresses")
 async def backfill_sale_addresses(current_user=Depends(require_admin)):
     """
@@ -2416,7 +2493,19 @@ async def import_service(request: Request, file: UploadFile = File(...), mode: s
             status = safe(row.get("status","delivered")).lower()
             if status not in ("pending","in_progress","ready","delivered"): status = "delivered"
             job_no = await next_sequence("job")
-            to_insert.append({"job_number":job_no,"customer_id":cust_id,"customer_name":name or "","customer_mobile":mobile or "","vehicle_number":veh_no or "","brand":safe(row.get("brand","")).upper(),"model":safe(row.get("model","")),"odometer_km":safe_int(row.get("odometer_km",0)),"complaint":complaint,"technician":safe(row.get("technician","")),"check_in_date":check_in,"status":status,"grand_total":amount,"notes":safe(row.get("notes","")),"created_at":datetime.utcnow().isoformat(),"_imported":True})
+            # Parse check_in_date → ISO for created_at so service_due uses real date
+            try:
+                parsed_checkin = datetime.strptime(check_in, "%d/%m/%Y")
+            except ValueError:
+                try:
+                    parsed_checkin = datetime.strptime(check_in, "%d %b %Y")
+                except ValueError:
+                    try:
+                        parsed_checkin = datetime.strptime(check_in, "%Y-%m-%d")
+                    except ValueError:
+                        parsed_checkin = datetime.utcnow()
+            created_iso = parsed_checkin.isoformat()
+            to_insert.append({"job_number":job_no,"customer_id":cust_id,"customer_name":name or "","customer_mobile":mobile or "","vehicle_number":veh_no or "","brand":safe(row.get("brand","")).upper(),"model":safe(row.get("model","")),"odometer_km":safe_int(row.get("odometer_km",0)),"complaint":complaint,"technician":safe(row.get("technician","")),"check_in_date":check_in,"status":status,"grand_total":amount,"notes":safe(row.get("notes","")),"created_at":created_iso,"_imported":True})
             if veh_no: existing_keys.add(dedup_key)
         except Exception as e:
             errors.append({"row":rn,"error":str(e)})
