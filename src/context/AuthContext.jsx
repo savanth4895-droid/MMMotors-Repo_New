@@ -29,12 +29,17 @@ export function AuthProvider({ children }) {
 
   const login = useCallback(async (username, password) => {
     const res = await authApi.login({ username, password });
-    const { access_token } = res.data;
+    const { user: u, access_token } = res.data;
     if (access_token) localStorage.setItem('mm_token', access_token);
-    // Fetch full user doc (includes allowed_pages) instead of using login response subset
-    const meRes = await authApi.me();
-    setUser(meRes.data);
-    return meRes.data;
+    // Fetch full profile to get allowed_pages (login response is a subset)
+    try {
+      const meRes = await authApi.me();
+      setUser(meRes.data);
+      return meRes.data;
+    } catch {
+      setUser(u);
+      return u;
+    }
   }, []);
 
   const logout = useCallback(async () => {
