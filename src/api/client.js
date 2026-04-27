@@ -150,14 +150,6 @@ export const partsApi = {
   deleteBill:           (id)         => api.delete(`/parts-bills/${id}`),
 };
 
-// ── Parts Sales ─────────────────────────────────────────────────────
-export const partsSalesApi = {
-  list:   (params) => api.get('/parts-sales', { params }),
-  get:    (id)     => api.get(`/parts-sales/${id}`),
-  create: (data)   => api.post('/parts-sales', data),
-  delete: (id)     => api.delete(`/parts-sales/${id}`),
-};
-
 // ── Dashboard & Reports ─────────────────────────────────────────────
 export const dashboardApi = {
   stats:          () => api.get('/dashboard/stats'),
