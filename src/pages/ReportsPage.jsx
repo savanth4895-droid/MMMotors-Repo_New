@@ -198,10 +198,11 @@ export default function ReportsPage() {
     const map = {};
     MONTHS.forEach((_, i) => {
       const key = `${year}-${String(i + 1).padStart(2, '0')}`;
-      map[key] = { label: MONTHS[i], sales: 0, service: 0, parts: 0 };
+      map[key] = { label: MONTHS[i], sales: 0, service: 0, parts: 0, units: 0 };
     });
     // _id is "YYYY-MM" string returned directly from backend (no oids() rename)
     (revenue.sales||[]).forEach(d   => { const k = d.id||d._id; if (map[k]) map[k].sales   = d.sales||0; });
+    (revenue.sales||[]).forEach(d => { const k = d.id||d._id; if (map[k]) map[k].sales = d.sales || 0; map[k].units = d.count || 0; });
     (revenue.service||[]).forEach(d => { const k = d.id||d._id; if (map[k]) map[k].service = d.service||0; });
     (revenue.parts||[]).forEach(d   => { const k = d.id||d._id; if (map[k]) map[k].parts   = d.parts||0; });
     return Object.keys(map).sort().map(key => ({
@@ -210,6 +211,7 @@ export default function ReportsPage() {
       service: Math.round(map[key].service),
       parts:   Math.round(map[key].parts),
       total:   Math.round(map[key].sales + map[key].service + map[key].parts),
+      units:   map[key].units || 0,
     }));
   })();
 
@@ -413,7 +415,7 @@ export default function ReportsPage() {
             </tr>
           </thead>
           <tbody>
-            {monthlyData.filter(d => d.units > 0).map(d => (
+            {monthlyData.filter(d => d.sales > 0).map(d => (
               <tr key={d.month} style={{ borderBottom:'1px solid var(--border)' }}>
                 <td style={{ padding:'8px 0', color:'var(--text)' }}>{d.month} {year}</td>
                 <td style={{ padding:'8px 0', textAlign:'right', color:'var(--text)' }}>{d.units}</td>
