@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid, Cell, PieChart, Pie, Legend,
+  ComposedChart, Line, Legend,
+  ResponsiveContainer, CartesianGrid, Cell, PieChart, Pie,
 } from 'recharts';
 import { reportsApi, dashboardApi, vehiclesApi, partsApi, serviceApi, salesApi, expensesApi } from '../api/client';
 import { Skeleton, ApiError } from '../components/ui';
