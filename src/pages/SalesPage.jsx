@@ -641,7 +641,7 @@ const createMut = useMutation({
           <table style={{ width:'100%', borderCollapse:'collapse' }}>
             <thead>
               <tr style={{ borderBottom:'1px solid var(--border)' }}>
-                {[['Invoice #','invoice_number'],['Date','sale_date'],['Customer','customer_name'],['Vehicle','vehicle_model'],['Amount','total_amount'],['Payment','payment_mode'],['Status','status'],['','']].map(([h,f])=>(
+                {[['Invoice #','invoice_number'],['Date','sale_date'],['Customer','customer_name'],['Mobile Number','customer_mobile']['Vehicle','vehicle_model'],['Vehicle','vehicle_model'],['Amount','total_amount'],['Payment','payment_mode'],['Status','status'],['','']].map(([h,f])=>(
                   <SalesTh key={h} field={f||null} style={{ padding:'9px 16px', textAlign:'left', fontSize:9, letterSpacing:'.07em', color:'var(--dim)', fontWeight:500, textTransform:'uppercase' }}>{h}</SalesTh>
                 ))}
               </tr>
@@ -652,6 +652,8 @@ const createMut = useMutation({
                   <td className="mono" style={{ padding:'12px 16px', fontSize:11, color:'var(--blue)' }}>{s.invoice_number}</td>
                   <td style={{ padding:'12px 16px', fontSize:11, color:'var(--muted)' }}>{s.sale_date?.slice(0,11)}</td>
                   <td style={{ padding:'12px 16px', fontSize:12, fontWeight:500 }}>{s.customer_name}</td>
+                  <td style={{ padding:'12px 16px', fontSize:12, fontWeight:500 }}>{s.customer_number}</td>td>
+                  <td style={{ padding:'12px 16px', fontSize:11, fontFamily:'IBM Plex Mono,monospace', color:'var(--text)' }}>{s.vehicle_number || '—'}</td>
                   <td style={{ padding:'12px 16px', fontSize:11, color:'var(--muted)' }}>{s.vehicle_brand} {s.vehicle_model}</td>
                   <td className="mono" style={{ padding:'12px 16px', fontSize:12, fontWeight:600, color:'var(--accent)' }}>₹{s.total_amount?.toLocaleString('en-IN')||0}</td>
                   <td style={{ padding:'12px 16px', fontSize:11 }}>{s.payment_mode}</td>
