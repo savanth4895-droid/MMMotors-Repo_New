@@ -641,7 +641,7 @@ const createMut = useMutation({
           <table style={{ width:'100%', borderCollapse:'collapse' }}>
             <thead>
               <tr style={{ borderBottom:'1px solid var(--border)' }}>
-                {[['Invoice #','invoice_number'],['Date','sale_date'],['Customer','customer_name'],['Mobile','customer_mobile']['Vehicle','vehicle_model'],['Vehicle','vehicle_model'],['Amount','total_amount'],['Payment','payment_mode'],['Status','status'],['','']].map(([h,f])=>(
+                {[['Invoice #','invoice_number'],['Date','sale_date'],['Customer','customer_name'],['Mobile','customer_mobile'],['Vehicle','vehicle_model'],['Vehicle','vehicle_model'],['Amount','total_amount'],['Payment','payment_mode'],['Status','status'],['','']].map(([h,f])=>(
                   <SalesTh key={h} field={f||null} style={{ padding:'9px 16px', textAlign:'left', fontSize:9, letterSpacing:'.07em', color:'var(--dim)', fontWeight:500, textTransform:'uppercase' }}>{h}</SalesTh>
                 ))}
               </tr>
