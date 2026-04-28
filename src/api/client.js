@@ -173,6 +173,7 @@ export const backupApi = {
 export const reportsApi = {
   revenue:      (params) => api.get('/reports/revenue', { params }),
   brandSales:   (params) => api.get('/reports/brand-sales', { params }),
+  brandMonthly: (params) => api.get('/reports/brand-monthly', { params }),
   topParts:     (params) => api.get('/reports/top-parts', { params }),
   dailyClosing: (date)   => api.get('/reports/daily-closing', { params: { date } }),
 };
