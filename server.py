@@ -1852,9 +1852,18 @@ async def recent_activity(limit: int = Query(10, le=50), current_user=Depends(ve
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @api_router.get("/reports/revenue")
-async def revenue_report(months: int = Query(6, ge=1, le=24), current_user=Depends(require_admin)):
+async def revenue_report(months: int = Query(6, ge=1, le=24), year:   Optional[int] = Query(None), current_user=Depends(require_admin)):
     # sale_date can be: "08 Apr 2026", "2026-04-24", "2024-07-01 00:00:00", "01/04/2026"
     # Strategy: try multiple formats, fall back to created_at substring
+  # If year given, return all 12 months of that year
+    if year:
+        match_prefix = str(year)
+        month_filter = {"month_key": {"$regex": f"^{year}-"}}
+        limit = 12
+    else:
+        month_filter = {}
+        limit = months
+      
     pipeline = [
         {"$addFields": {
             # Try "DD Mon YYYY" e.g. "08 Apr 2026"
@@ -1876,9 +1885,22 @@ async def revenue_report(months: int = Query(6, ge=1, le=24), current_user=Depen
                 {"$substr": ["$created_at", 0, 7]}
             ]}
         }},
+        *([ {"$match": month_filter} ] if year else []),
         {"$group": {"_id": "$month_key", "sales": {"$sum": "$total_amount"}, "count": {"$sum": 1}}},
-        {"$sort": {"_id": -1}}, {"$limit": months},
+        {"$sort": {"_id": -1}}, {"$limit": limit},
     ]
+  
+    # Service and parts use created_at — simpler filter
+    def svc_pipeline(field, col):
+        f = [
+            {"$addFields": {"month_key": {"$substr": [f"${col}", 0, 7]}}},
+            *([ {"$match": {"month_key": {"$regex": f"^{year}-"}}} ] if year else []),
+            {"$group": {"_id": "$month_key", field: {"$sum": "$grand_total"}}},
+            {"$sort": {"_id": -1}},
+            {"$limit": limit},
+        ]
+        return f
+      
     sales_by_month = await db.sales.aggregate(pipeline).to_list(months)
     svc_pipeline   = [{"$addFields":{"month_key":{"$substr":["$created_at",0,7]}}},{"$group":{"_id":"$month_key","service":{"$sum":"$grand_total"}}},{"$sort":{"_id":-1}},{"$limit":months}]
     svc_by_month   = await db.service_bills.aggregate(svc_pipeline).to_list(months)
@@ -2982,6 +3004,47 @@ async def profit_and_loss(
             "expense_by_category": cat_map,
         })
     return result
+
+@api_router.get("/reports/brand-monthly")
+async def brand_monthly_report(year: int = Query(None), current_user=Depends(require_admin)):
+    import datetime as _dt
+    y = year or _dt.datetime.utcnow().year
+    pipeline = [
+        {"$addFields": {
+            "p1": {"$dateFromString": {"dateString": "$sale_date", "format": "%d %b %Y", "onError": None, "onNull": None}},
+            "p2": {"$dateFromString": {"dateString": {"$substr": ["$sale_date", 0, 10]}, "format": "%Y-%m-%d", "onError": None, "onNull": None}},
+            "p3": {"$dateFromString": {"dateString": "$sale_date", "format": "%d/%m/%Y", "onError": None, "onNull": None}},
+        }},
+        {"$addFields": {
+            "parsed_date": {"$ifNull": ["$p1", {"$ifNull": ["$p2", {"$ifNull": ["$p3", None]}]}]}
+        }},
+        {"$addFields": {
+            "month_key": {"$cond": [
+                {"$ne": ["$parsed_date", None]},
+                {"$dateToString": {"format": "%Y-%m", "date": "$parsed_date"}},
+                {"$substr": ["$created_at", 0, 7]}
+            ]}
+        }},
+        {"$match": {"month_key": {"$regex": f"^{y}-"}}},
+        {"$group": {"_id": {"month": "$month_key", "brand": "$vehicle_brand"}, "units": {"$sum": 1}}},
+        {"$sort": {"_id.month": 1}},
+    ]
+    rows = await db.sales.aggregate(pipeline).to_list(None)
+
+    # Pivot into {month, HERO: n, HONDA: n, ...}
+    MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+    month_map = {}
+    brands = set()
+    for row in rows:
+        m = row["_id"]["month"]
+        b = (row["_id"]["brand"] or "Unknown").upper()
+        brands.add(b)
+        if m not in month_map:
+            month_map[m] = {"month": MONTHS[int(m[5:7]) - 1]}
+        month_map[m][b] = row["units"]
+
+    result = [month_map[k] for k in sorted(month_map)]
+    return {"months": result, "brands": sorted(brands)}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
