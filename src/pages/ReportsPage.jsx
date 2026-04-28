@@ -357,6 +357,122 @@ export default function ReportsPage() {
           )}
         </Section>
 
+        {/* ── Monthly Sales Performance — combo chart ── */}
+<Section title="Monthly Sales Performance" sub="Sales count and revenue trends over time">
+  <div style={{ display:'flex', justifyContent:'flex-end', gap:6, marginBottom:16 }}>
+    <select value={year} onChange={e => setYear(Number(e.target.value))} style={{
+      padding:'5px 10px', border:'1px solid var(--border)', borderRadius:3,
+      background:'var(--surface)', color:'var(--text)', fontSize:11, cursor:'pointer',
+      fontFamily:'IBM Plex Sans,sans-serif',
+    }}>
+      {yearOptions.map(y => <option key={y} value={y}>{y}</option>)}
+    </select>
+  </div>
+
+  {monthlyData.every(d => !d.units && !d.sales) ? (
+    <div style={{ height:240, display:'flex', alignItems:'center', justifyContent:'center', color:'var(--dim)', fontSize:12 }}>
+      No data for {year}
+    </div>
+  ) : (
+    <>
+      <ResponsiveContainer width="100%" height={240}>
+        <ComposedChart data={monthlyData} barSize={20}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+          <XAxis dataKey="month" tick={axisStyle} axisLine={false} tickLine={false} />
+          <YAxis yAxisId="left"  tick={axisStyle} axisLine={false} tickLine={false} allowDecimals={false} width={28} />
+          <YAxis yAxisId="right" orientation="right" tick={axisStyle} axisLine={false} tickLine={false}
+            tickFormatter={v => v >= 1_00_000 ? '₹'+(v/1_00_000).toFixed(1)+'L' : '₹'+v} width={64} />
+          <Tooltip
+            {...tooltipStyle}
+            formatter={(v, name) =>
+              name === 'Revenue (₹)'
+                ? ['₹' + Math.round(v).toLocaleString('en-IN'), name]
+                : [v + ' units', name]
+            }
+            cursor={{ fill:'rgba(200,148,10,.06)' }}
+          />
+          <Legend iconType="square" iconSize={8}
+            wrapperStyle={{ fontSize:10, color:'var(--muted)', paddingTop:12 }} />
+          <Bar    yAxisId="left"  dataKey="units" name="Sales Count" fill="#60a5fa" radius={[2,2,0,0]} />
+          <Line   yAxisId="right" dataKey="sales" name="Revenue (₹)" type="monotone"
+            stroke="#f87171" strokeWidth={2} dot={{ r:3, fill:'#f87171' }} activeDot={{ r:5 }} />
+        </ComposedChart>
+      </ResponsiveContainer>
+
+      {/* Monthly summary table */}
+      <div style={{ marginTop:20 }}>
+        <div style={{ fontSize:12, fontWeight:600, marginBottom:10 }}>Monthly Sales Summary</div>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11 }}>
+          <thead>
+            <tr style={{ borderBottom:'1px solid var(--border)' }}>
+              {['Month','Sales','Revenue'].map(h => (
+                <th key={h} style={{ padding:'6px 0', textAlign: h==='Month'?'left':'right',
+                  color:'var(--muted)', fontWeight:500, fontSize:10 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {monthlyData.filter(d => d.units > 0).map(d => (
+              <tr key={d.month} style={{ borderBottom:'1px solid var(--border)' }}>
+                <td style={{ padding:'8px 0', color:'var(--text)' }}>{d.month} {year}</td>
+                <td style={{ padding:'8px 0', textAlign:'right', color:'var(--text)' }}>{d.units}</td>
+                <td style={{ padding:'8px 0', textAlign:'right', color:'var(--accent)', fontFamily:'IBM Plex Mono,monospace' }}>
+                  ₹{d.sales.toLocaleString('en-IN')}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  )}
+</Section>
+
+{/* ── Brand-wise Sales Distribution ── */}
+<Section title="Brand-wise Sales Distribution" sub="Sales count by vehicle brands" loading={brandLoading} error={brandError}>
+  {!brandData?.length ? (
+    <div style={{ height:220, display:'flex', alignItems:'center', justifyContent:'center', color:'var(--dim)', fontSize:12 }}>No sales data yet</div>
+  ) : (
+    <>
+      <ResponsiveContainer width="100%" height={240}>
+        <BarChart data={brandData} barSize={28}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+          <XAxis dataKey="brand" tick={axisStyle} axisLine={false} tickLine={false} />
+          <YAxis tick={axisStyle} axisLine={false} tickLine={false} allowDecimals={false}
+            label={{ value:'Sales Count', angle:-90, position:'insideLeft', style:{...axisStyle, fontSize:9}, offset:10 }} width={48} />
+          <Tooltip {...tooltipStyle} formatter={(v, n) => [v + ' units', n]} cursor={{ fill:'rgba(74,222,128,.06)' }} />
+          <Legend iconType="square" iconSize={8} wrapperStyle={{ fontSize:10, color:'var(--muted)', paddingTop:12 }} />
+          <Bar dataKey="units" name="Sales Count" fill="#4ade80" radius={[3,3,0,0]} />
+        </BarChart>
+      </ResponsiveContainer>
+
+      {/* Brand performance table */}
+      <div style={{ marginTop:20 }}>
+        <div style={{ fontSize:12, fontWeight:600, marginBottom:4 }}>Brand Performance Summary</div>
+        <div style={{ fontSize:10, color:'var(--muted)', marginBottom:10 }}>Sales breakdown by source (Direct vs Imported)</div>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11 }}>
+          <thead>
+            <tr style={{ borderBottom:'1px solid var(--border)' }}>
+              {['Brand','Total Sales'].map(h => (
+                <th key={h} style={{ padding:'6px 0', textAlign:h==='Brand'?'left':'right',
+                  color:'var(--muted)', fontWeight:500, fontSize:10 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {brandData.map(b => (
+              <tr key={b.brand} style={{ borderBottom:'1px solid var(--border)' }}>
+                <td style={{ padding:'8px 0', color:'var(--text)', fontWeight:500 }}>{b.brand || 'Unknown'}</td>
+                <td style={{ padding:'8px 0', textAlign:'right', color:'var(--text)', fontFamily:'IBM Plex Mono,monospace' }}>{b.units}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  )}
+</Section>
+
         {/* Top parts */}
         <Section title="Top-selling parts" sub="By quantity sold" loading={partsLoading} error={partsError}>
           {!topParts?.length ? (
