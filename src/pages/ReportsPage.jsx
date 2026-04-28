@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid, Cell, PieChart, Pie,
+  ResponsiveContainer, CartesianGrid, Cell, PieChart, Pie, Legend,
 } from 'recharts';
 import { reportsApi, dashboardApi, vehiclesApi, partsApi, serviceApi, salesApi, expensesApi } from '../api/client';
 import { Skeleton, ApiError } from '../components/ui';
@@ -107,7 +107,7 @@ function DailyClosingSection() {
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '.05em' }}>
               <th style={{ paddingBottom: 8, fontWeight: 500 }}>Payment Mode</th>
-              <th style={{ paddingBottom: 8, fontWeight: 500 }}>Vehicles</th>
+              <th style={{ paddingBottom: 8, fontWeight: 500 }}></th>
               <th style={{ paddingBottom: 8, fontWeight: 500 }}>Service</th>
               <th style={{ paddingBottom: 8, fontWeight: 500 }}>Parts</th>
               <th style={{ paddingBottom: 8, fontWeight: 500, color: 'var(--red, #ef4444)' }}>Expenses</th>
@@ -159,6 +159,10 @@ export default function ReportsPage() {
   const { data:brandData, isLoading:brandLoading, error:brandError } = useQuery({
     queryKey:['reports-brand'],
     queryFn: ()=>reportsApi.brandSales().then(r=>r.data),
+  });
+  const { data: brandMonthly, isLoading: bmLoading } = useQuery({
+  queryKey: ['reports-brand-monthly', year],
+  queryFn: () => reportsApi.brandMonthly({ year }).then(r => r.data),
   });
   const { data:topParts, isLoading:partsLoading, error:partsError } = useQuery({
     queryKey:['reports-top-parts'],
@@ -289,6 +293,37 @@ export default function ReportsPage() {
 
       {/* Brand sales + Top parts side by side */}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:20 }}>
+
+        {/* Brand-wise monthly sales */}
+        <Section title="Brand-wise monthly sales" sub="Units sold per brand per month" loading={bmLoading}>
+          {!brandMonthly?.months?.length ? (
+            <div style={{ height:220, display:'flex', alignItems:'center', justifyContent:'center', color:'var(--dim)', fontSize:12 }}>
+              No sales data for {year}
+            </div>
+          ) : (
+            <>
+              <ResponsiveContainer width="100%" height={240}>
+                <BarChart data={brandMonthly.months} barSize={12} barGap={2} barCategoryGap="28%">
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                  <XAxis dataKey="month" tick={axisStyle} axisLine={false} tickLine={false} />
+                  <YAxis tick={axisStyle} axisLine={false} tickLine={false} allowDecimals={false} width={28} />
+                  <Tooltip
+                    {...tooltipStyle}
+                    formatter={(v, name) => [`${v} units`, name]}
+                    cursor={{ fill: 'rgba(200,148,10,.06)' }}
+                  />
+                  <Legend
+                    iconType="square" iconSize={8}
+                    wrapperStyle={{ fontSize:10, color:'var(--muted)', paddingTop:12 }}
+                  />
+                  {(brandMonthly.brands || []).map((brand, i) => (
+                    <Bar key={brand} dataKey={brand} stackId="a" fill={COLORS[i % COLORS.length]} radius={i === brandMonthly.brands.length - 1 ? [2,2,0,0] : [0,0,0,0]} />
+                  ))}
+                </BarChart>
+              </ResponsiveContainer>
+           </>
+         )}
+       </Section>
 
         {/* Brand sales */}
         <Section title="Sales by brand" sub="Units sold and revenue" loading={brandLoading} error={brandError}>
