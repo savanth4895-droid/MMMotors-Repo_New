@@ -252,7 +252,7 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
     enabled: vehSearch.length >= 1,
   });
   const vehResults = Array.isArray(vehData)
-    ? vehData.filter(v => ['instock','in_stock','in stock'].includes((v.status||'').toLowerCase().replace(/-/g,'')) || v.id === initial.vehicle_id)
+    ? vehData.filter(v => v.status === 'Instock' || v.status === 'in_stock' || v.id === initial.vehicle_id)
     : [];
 
   const [f, setF] = useState({
@@ -476,8 +476,8 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
           </div>
 
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop: '8px' }}>
-            <FileUpload label="Upload HSRP Front Photo" onUploadSuccess={(fileId) => setF(p => ({ ...p, hsrp_front_id: fileId }))} />
-            <FileUpload label="Upload HSRP Back Photo" onUploadSuccess={(fileId) => setF(p => ({ ...p, hsrp_back_id: fileId }))} />
+            <FileUpload label="Upload HSRP Front Photo" existingFileId={f.hsrp_front_id || null} onUploadSuccess={(fileId) => setF(p => ({ ...p, hsrp_front_id: fileId }))} />
+            <FileUpload label="Upload HSRP Back Photo" existingFileId={f.hsrp_back_id || null} onUploadSuccess={(fileId) => setF(p => ({ ...p, hsrp_back_id: fileId }))} />
           </div>
 
           {/* NEW: HSRP Notes */}
@@ -641,7 +641,7 @@ const createMut = useMutation({
           <table style={{ width:'100%', borderCollapse:'collapse' }}>
             <thead>
               <tr style={{ borderBottom:'1px solid var(--border)' }}>
-                {[['Invoice #','invoice_number'],['Date','sale_date'],['Customer','customer_name'],['Mobile','customer_mobile'],['Vehicle','vehicle_model'],['Vehicle','vehicle_model'],['Amount','total_amount'],['Payment','payment_mode'],['Status','status'],['','']].map(([h,f])=>(
+                {[['Invoice #','invoice_number'],['Date','sale_date'],['Customer','customer_name'],['Vehicle','vehicle_model'],['Amount','total_amount'],['Payment','payment_mode'],['Status','status'],['','']].map(([h,f])=>(
                   <SalesTh key={h} field={f||null} style={{ padding:'9px 16px', textAlign:'left', fontSize:9, letterSpacing:'.07em', color:'var(--dim)', fontWeight:500, textTransform:'uppercase' }}>{h}</SalesTh>
                 ))}
               </tr>
@@ -652,8 +652,6 @@ const createMut = useMutation({
                   <td className="mono" style={{ padding:'12px 16px', fontSize:11, color:'var(--blue)' }}>{s.invoice_number}</td>
                   <td style={{ padding:'12px 16px', fontSize:11, color:'var(--muted)' }}>{s.sale_date?.slice(0,11)}</td>
                   <td style={{ padding:'12px 16px', fontSize:12, fontWeight:500 }}>{s.customer_name}</td>
-                  <td style={{ padding:'12px 16px', fontSize:11, fontWeight:500 }}>{s.customer_mobile}</td>
-                  <td style={{ padding:'12px 16px', fontSize:11, fontWeight:500 }}>{s.vehicle_number || '—'}</td>
                   <td style={{ padding:'12px 16px', fontSize:11, color:'var(--muted)' }}>{s.vehicle_brand} {s.vehicle_model}</td>
                   <td className="mono" style={{ padding:'12px 16px', fontSize:12, fontWeight:600, color:'var(--accent)' }}>₹{s.total_amount?.toLocaleString('en-IN')||0}</td>
                   <td style={{ padding:'12px 16px', fontSize:11 }}>{s.payment_mode}</td>
@@ -674,237 +672,8 @@ const createMut = useMutation({
                     <div style={{ display:'flex', gap:6, alignItems: 'center' }}>
                       <GhostBtn sm onClick={()=>setSelSale(s)}>View</GhostBtn>
                       <button onClick={() => {
-                        const RS = 'Rs.';
-                        const fmt = n => Number(n||0).toLocaleString('en-IN');
-                        const total = s.total_amount || 0;
-
-                        // Amount in words
-                        const ones = ['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen'];
-                        const tens = ['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];
-                        function numToWords(n) {
-                          n = Math.round(n);
-                          if (n === 0) return 'Zero';
-                          let w = '';
-                          if (n >= 10000000) { w += numToWords(Math.floor(n/10000000)) + ' Crore '; n %= 10000000; }
-                          if (n >= 100000)   { w += numToWords(Math.floor(n/100000))   + ' Lakh ';  n %= 100000; }
-                          if (n >= 1000)     { w += numToWords(Math.floor(n/1000))     + ' Thousand '; n %= 1000; }
-                          if (n >= 100)      { w += ones[Math.floor(n/100)] + ' Hundred '; n %= 100; }
-                          if (n >= 20)       { w += tens[Math.floor(n/10)] + ' '; n %= 10; }
-                          if (n > 0)         { w += ones[n] + ' '; }
-                          return w.trim();
-                        }
-                        const amtWords = numToWords(total) + ' Rupees Only';
-
-                        const exShowroom  = s.ex_showroom_price || total;
-                        const rto         = s.rto         || 0;
-                        const insurance   = s.insurance   || 0;
-                        const accessories = s.accessories || 0;
-                        const discount    = s.discount    || 0;
-
-                        const descRow = `
-                          <tr>
-                            <td style="padding:10px 12px;border-bottom:1px solid #e8e0d0">
-                              <div style="font-weight:700;font-size:12px">${s.vehicle_brand||''} ${s.vehicle_model||''}</div>
-                              ${s.vehicle_color ? `<div style="font-size:10px;color:#888;margin-top:2px">· ${s.vehicle_color}</div>` : ''}
-                            </td>
-                            <td style="padding:10px 12px;border-bottom:1px solid #e8e0d0;font-size:11px;font-family:monospace">${s.chassis_number||'—'}</td>
-                            <td style="padding:10px 12px;border-bottom:1px solid #e8e0d0;font-size:11px">${s.payment_mode||'Cash'}</td>
-                            <td style="padding:10px 12px;border-bottom:1px solid #e8e0d0;font-size:11px">${s.payment_type||'Full Payment'}</td>
-                            <td style="padding:10px 12px;border-bottom:1px solid #e8e0d0;text-align:right;font-weight:700;color:#B8860B;font-size:13px">${RS}${fmt(exShowroom)}</td>
-                          </tr>`;
-
-                        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
-<title>Invoice — ${s.invoice_number}</title>
-<style>
-  *{margin:0;padding:0;box-sizing:border-box}
-  body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#1a1a1a;background:#fff}
-  .page{max-width:794px;margin:0 auto;padding:28px 32px}
-  /* Header */
-  .hdr{display:flex;align-items:flex-start;justify-content:space-between;border-bottom:3px solid #B8860B;padding-bottom:14px;margin-bottom:18px}
-  .hdr-left{display:flex;align-items:center;gap:14px}
-  
-  .co-name{font-size:24px;font-weight:900;color:#1a1a1a;letter-spacing:-.3px;line-height:1}
-  .co-sub{font-size:9px;color:#888;letter-spacing:.12em;text-transform:uppercase;margin-top:4px}
-  .hdr-right{text-align:right}
-  .inv-label{font-size:9px;font-weight:700;letter-spacing:.15em;color:#B8860B;text-transform:uppercase}
-  .inv-num{font-size:26px;font-weight:900;color:#1a1a1a;letter-spacing:-.5px;margin-top:2px}
-  .inv-date{font-size:10px;color:#888;margin-top:3px}
-  /* Section label */
-  .sec-label{font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#B8860B;border-bottom:1.5px solid #B8860B;padding-bottom:4px;margin-bottom:10px}
-  /* Grid */
-  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:18px}
-  .info-row{display:flex;padding:4px 0;font-size:11px}
-  .info-key{color:#888;width:80px;flex-shrink:0;font-size:10px}
-  .info-val{font-weight:600;color:#1a1a1a}
-  /* Items table */
-  .tbl{width:100%;border-collapse:collapse;margin-bottom:0}
-  .tbl thead tr{background:#1a1a1a}
-  .tbl thead th{padding:8px 12px;font-size:9px;font-weight:700;color:#fff;text-align:left;letter-spacing:.08em;text-transform:uppercase}
-  .tbl tfoot tr{background:#f5f0e8}
-  .tbl tfoot td{padding:10px 12px;font-size:13px;font-weight:800}
-  .words-row td{padding:6px 12px;font-size:10px;font-style:italic;color:#888;border-bottom:1px solid #e8e0d0}
-  /* Signatures */
-  .sig-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin:20px 0 16px;padding-top:16px;border-top:1px solid #e0d8cc}
-  .sig-line{border-top:1px solid #555;padding-top:6px;font-size:10px;color:#555}
-  .sig-name{font-size:12px;font-weight:800;margin-top:4px;text-transform:uppercase}
-  /* Service schedule */
-  .svc-box{background:#f5f0e8;border:1px solid #e0d4b8;border-radius:4px;margin-top:18px;overflow:hidden}
-  .svc-hdr{background:#2a2a2a;color:#fff;padding:10px 16px;font-size:11px;font-weight:700;letter-spacing:.05em}
-  .svc-intro{padding:10px 16px;font-size:10px;color:#555;border-bottom:1px solid #e0d4b8}
-  .svc-tbl{width:100%;border-collapse:collapse}
-  .svc-tbl thead tr{background:#3a3a3a}
-  .svc-tbl thead th{padding:8px 16px;font-size:9px;font-weight:700;color:#B8860B;text-transform:uppercase;letter-spacing:.08em;text-align:left}
-  .svc-tbl tbody tr{border-bottom:1px solid #e8e0d0}
-  .svc-tbl tbody td{padding:9px 16px;font-size:11px}
-  .svc-date{color:#888;font-family:monospace}
-  .svc-type{font-weight:700;color:#B8860B}
-  /* Trust footer */
-  .trust-bar{display:flex;justify-content:space-around;padding:8px 16px;background:#f9f6f0;border-top:1px solid #e0d4b8;font-size:9px;color:#888;letter-spacing:.04em}
-  .thank-box{text-align:center;padding:14px 16px 16px;border-top:1px solid #e0d4b8}
-  .thank-title{font-size:16px;font-weight:800;color:#1a1a1a;margin-bottom:4px}
-  .thank-sub{font-size:10px;color:#888;font-style:italic;margin-bottom:6px}
-  .thank-tags{font-size:9px;color:#aaa;letter-spacing:.04em}
-  /* Page footer */
-  .page-footer{margin-top:18px;padding-top:10px;border-top:1px solid #e0d8cc;display:flex;justify-content:space-between;font-size:9px;color:#bbb}
-  @media print{body{background:#fff}.page{padding:16px}}
-</style></head><body>
-<div class="page">
-
-  <!-- HEADER -->
-  <div class="hdr">
-    <div class="hdr-left">
-      
-      <div>
-        <div class="co-name">MM MOTORS</div>
-        <div class="co-sub">Multi-Brand Dealership &middot; Malur</div>
-      </div>
-    </div>
-    <div class="hdr-right">
-      <div class="inv-label">Sale &nbsp; Invoice</div>
-      <div class="inv-num">${s.invoice_number}</div>
-      <div class="inv-date">Date: ${s.sale_date || new Date().toLocaleDateString('en-IN')}</div>
-    </div>
-  </div>
-
-  <!-- CUSTOMER + VEHICLE -->
-  <div class="grid2">
-    <div>
-      <div class="sec-label">Customer Details</div>
-      <div class="info-row"><span class="info-key">Name</span><span class="info-val">${s.customer_name||'—'}</span></div>
-      ${s.customer_care_of||s.care_of ? `<div class="info-row"><span class="info-key">C/O</span><span class="info-val">${s.customer_care_of||s.care_of}</span></div>` : ''}
-      <div class="info-row"><span class="info-key">Mobile</span><span class="info-val">${s.customer_mobile||'—'}</span></div>
-      <div class="info-row"><span class="info-key">Address</span><span class="info-val" style="line-height:1.5">${s.customer_address||'—'}</span></div>
-      <div class="info-row"><span class="info-key">Payment</span><span class="info-val">${s.payment_mode||'Cash'}</span></div>
-    </div>
-    <div>
-      <div class="sec-label">Vehicle Details</div>
-      <div class="info-row"><span class="info-key">Brand</span><span class="info-val">${s.vehicle_brand||'—'}</span></div>
-      <div class="info-row"><span class="info-key">Model</span><span class="info-val">${s.vehicle_model||'—'}</span></div>
-      <div class="info-row"><span class="info-key">Variant</span><span class="info-val">${s.vehicle_variant||'—'}</span></div>
-      <div class="info-row"><span class="info-key">Colour</span><span class="info-val">${s.vehicle_color||'—'}</span></div>
-      <div class="info-row"><span class="info-key">Financier</span><span class="info-val">${s.financier||'—'}</span></div>
-    </div>
-  </div>
-
-  <!-- CHASSIS + NOMINEE -->
-  <div class="grid2">
-    <div>
-      <div class="sec-label">Registration / Chassis</div>
-      <div class="info-row"><span class="info-key">Vehicle No.</span><span class="info-val" style="font-family:monospace">${s.vehicle_number||'—'}</span></div>
-      <div class="info-row"><span class="info-key">RTO</span><span class="info-val">${s.rto ? 'Rs.'+fmt(s.rto) : '—'}</span></div>
-      <div class="info-row"><span class="info-key">Chassis No.</span><span class="info-val" style="font-family:monospace;font-size:10px">${s.chassis_number||'—'}</span></div>
-      <div class="info-row"><span class="info-key">Engine No.</span><span class="info-val" style="font-family:monospace;font-size:10px">${s.engine_number||'—'}</span></div>
-    </div>
-    <div>
-      <div class="sec-label">Nominee (Insurance)</div>
-      <div class="info-row"><span class="info-key">Name</span><span class="info-val">${s.nominee?.name||'—'}</span></div>
-      <div class="info-row"><span class="info-key">Relation</span><span class="info-val">${s.nominee?.relation||'—'}</span></div>
-      <div class="info-row"><span class="info-key">Age</span><span class="info-val">${s.nominee?.age||'—'}</span></div>
-      <div class="info-row"><span class="info-key">Mobile</span><span class="info-val">${s.nominee?.number||'—'}</span></div>
-    </div>
-  </div>
-
-  <!-- ITEMS TABLE -->
-  <table class="tbl">
-    <thead>
-      <tr>
-        <th>Description</th>
-        <th>Chassis / Details</th>
-        <th>Payment</th>
-        <th>Mode</th>
-        <th style="text-align:right">Amount</th>
-      </tr>
-    </thead>
-    <tbody>${descRow}</tbody>
-    <tbody>
-      <tr class="words-row"><td colspan="5"><em>${amtWords}</em></td></tr>
-    </tbody>
-    <tfoot>
-      <tr>
-        <td colspan="3" style="font-style:italic;font-size:10px;color:#888;font-weight:400"></td>
-        <td style="color:#888;font-size:11px;font-weight:600">TOTAL AMOUNT</td>
-        <td style="text-align:right;color:#B8860B;font-size:16px">${RS}${fmt(total)}</td>
-      </tr>
-    </tfoot>
-  </table>
-
-  <!-- SIGNATURES -->
-  <div class="sig-row">
-    <div>
-      <div class="sig-line">Customer's Signature</div>
-      <div class="sig-name">${s.customer_name||''}</div>
-    </div>
-    <div style="text-align:center">
-      <div class="sig-line" style="border-top-color:transparent"></div>
-      <div style="font-size:10px;color:#888;margin-top:4px">Sold by:</div>
-    </div>
-    <div style="text-align:right">
-      <div class="sig-line" style="border-top-color:#555">Authorised Signatory</div>
-      <div class="sig-name">MM MOTORS</div>
-    </div>
-  </div>
-
-  <!-- SERVICE SCHEDULE -->
-  <div class="svc-box">
-    <div class="svc-hdr">SERVICE SCHEDULE</div>
-    <div class="svc-intro">
-      <strong>DEAR VALUED CUSTOMER,</strong><br/>
-      We thank you for choosing our world-class vehicle. To ensure optimal performance and longevity,
-      please follow the service schedule below for a pleasant riding experience at all times.
-    </div>
-    <table class="svc-tbl">
-      <thead>
-        <tr><th>Service Date</th><th>Service Type</th><th>Recommended Schedule</th></tr>
-      </thead>
-      <tbody>
-        <tr><td class="svc-date">__/__/____</td><td class="svc-type">FIRST SERVICE</td><td>500–700 kms or 15–30 days</td></tr>
-        <tr><td class="svc-date">__/__/____</td><td class="svc-type">SECOND SERVICE</td><td>3000–3500 kms or 30–90 days</td></tr>
-        <tr><td class="svc-date">__/__/____</td><td class="svc-type">THIRD SERVICE</td><td>6000–6500 kms or 90–180 days</td></tr>
-        <tr><td class="svc-date">__/__/____</td><td class="svc-type">FOURTH SERVICE</td><td>9000–9500 kms or 180–270 days</td></tr>
-      </tbody>
-    </table>
-    <div class="trust-bar">
-      <span>* Trusted Dealer</span><span>* 24/7 Service Support</span><span>* Quality Guaranteed</span>
-    </div>
-    <div class="thank-box">
-      <div class="thank-title">Thank You for Choosing M M Motors!</div>
-      <div class="thank-sub">Your trust drives our excellence in two-wheeler sales and service.</div>
-      <div class="thank-tags">* Premium Quality &nbsp;&nbsp; * Expert Service &nbsp;&nbsp; * Customer First</div>
-    </div>
-  </div>
-
-  <!-- PAGE FOOTER -->
-  <div class="page-footer">
-    <span>This is a computer-generated document. No signature required if digitally authenticated.</span>
-    <span>MM Motors &middot; Malur &middot; Multi-brand Dealership</span>
-  </div>
-
-</div>
-<script>window.onload=()=>window.print()</script>
-</body></html>`;
-                        const w = window.open('', '_blank');
-                        w.document.write(html);
-                        w.document.close();
+                        const base = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+                        window.open(`${base}/api/sales/${s.id}/pdf`, '_blank');
                       }} style={{ padding:'5px 10px', background:'rgba(184,134,11,.1)', border:'1px solid rgba(184,134,11,.3)', borderRadius:3, color:'#7A5800', cursor:'pointer', fontSize:10, fontFamily:'IBM Plex Sans,sans-serif' }}>PDF</button>
                       <GhostBtn sm onClick={()=>setEditSale(s)}>Edit</GhostBtn>
                       
