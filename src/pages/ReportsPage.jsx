@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
-  ComposedChart, Line, Legend,
   ResponsiveContainer, CartesianGrid, Cell, PieChart, Pie,
 } from 'recharts';
 import { reportsApi, dashboardApi, vehiclesApi, partsApi, serviceApi, salesApi, expensesApi } from '../api/client';
@@ -70,25 +69,42 @@ function RevenueTooltip({ active, payload, label }) {
 
 // ── NEW: Daily Closing Component ────────────────────────────────────
 function DailyClosingSection() {
-  const [date, setDate] = useState(new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }));
+  const todayIso = new Date().toISOString().split('T')[0];
+  const [isoDate, setIsoDate] = useState(todayIso);
+
+  const toApiDate = (iso) => {
+    const d = new Date(iso + 'T00:00:00');
+    return d.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' });
+  };
+  const apiDate = toApiDate(isoDate);
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ['dailyClosing', date],
-    queryFn: () => reportsApi.dailyClosing(date).then(r => r.data)
+    queryKey: ['dailyClosing', isoDate],
+    queryFn: () => reportsApi.dailyClosing(apiDate).then(r => r.data)
   });
 
-  const dateInput = (
-    <input
-      type="text"
-      placeholder="DD Mon YYYY"
-      defaultValue={date}
-      onBlur={(e) => setDate(e.target.value)}
-      style={{
-        padding: '4px 8px', fontSize: 11, background: 'var(--surface2)',
-        border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)',
-        fontFamily: 'IBM Plex Sans,sans-serif', width: 100, textAlign: 'right'
-      }}
-    />
+  // Service revenue broken down by payment mode
+  const svcByMode = {};
+  (data?.breakdown || []).forEach(row => {
+    if (row.Service) svcByMode[row.payment_mode] = row.Service;
+  });
+  const totalSvcRevenue = Object.values(svcByMode).reduce((s, v) => s + v, 0);
+
+  const calendarAction = (
+    <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+      <span style={{ fontSize:11, color:'var(--muted)' }}>{apiDate}</span>
+      <input
+        type="date"
+        value={isoDate}
+        max={todayIso}
+        onChange={e => setIsoDate(e.target.value)}
+        style={{
+          padding:'4px 8px', fontSize:11, background:'var(--surface2)',
+          border:'1px solid var(--border)', borderRadius:4, color:'var(--text)',
+          fontFamily:'IBM Plex Sans,sans-serif', cursor:'pointer', outline:'none',
+        }}
+      />
+    </div>
   );
 
   return (
@@ -97,73 +113,96 @@ function DailyClosingSection() {
       sub="Cash, UPI, and Bank transfer tally for the day"
       loading={isLoading}
       error={error}
-      action={dateInput}
+      action={calendarAction}
     >
-      {!data?.breakdown?.length ? (
-        <div style={{ height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--dim)', fontSize: 12 }}>
-          No transactions recorded for {data?.date || date}.
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 280px', gap:24 }}>
+
+        {/* Left: full breakdown table */}
+        <div>
+          {!data?.breakdown?.length ? (
+            <div style={{ height:120, display:'flex', alignItems:'center', justifyContent:'center', color:'var(--dim)', fontSize:12 }}>
+              No transactions recorded for {apiDate}.
+            </div>
+          ) : (
+            <table style={{ width:'100%', textAlign:'left', borderCollapse:'collapse', fontSize:12 }}>
+              <thead>
+                <tr style={{ borderBottom:'1px solid var(--border)', color:'var(--muted)', fontSize:10, textTransform:'uppercase', letterSpacing:'.05em' }}>
+                  <th style={{ paddingBottom:8, fontWeight:500 }}>Payment Mode</th>
+                  <th style={{ paddingBottom:8, fontWeight:500 }}>Vehicles</th>
+                  <th style={{ paddingBottom:8, fontWeight:500 }}>Service</th>
+                  <th style={{ paddingBottom:8, fontWeight:500 }}>Parts</th>
+                  <th style={{ paddingBottom:8, fontWeight:500, color:'var(--red,#ef4444)' }}>Expenses</th>
+                  <th style={{ paddingBottom:8, fontWeight:500 }}>Net Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.breakdown.map((row) => (
+                  <tr key={row.payment_mode} style={{ borderBottom:'1px solid var(--border)' }}>
+                    <td style={{ fontWeight:600, padding:'12px 0' }}>{row.payment_mode}</td>
+                    <td className="mono" style={{ color:'var(--muted)' }}>₹{(row.Vehicles||0).toLocaleString('en-IN')}</td>
+                    <td className="mono" style={{ color:'var(--muted)' }}>₹{(row.Service||0).toLocaleString('en-IN')}</td>
+                    <td className="mono" style={{ color:'var(--muted)' }}>₹{(row.Parts||0).toLocaleString('en-IN')}</td>
+                    <td className="mono" style={{ color:'var(--red,#ef4444)' }}>
+                      {row.Expenses ? `−₹${(row.Expenses||0).toLocaleString('en-IN')}` : '—'}
+                    </td>
+                    <td className="display" style={{ color:row.total>=0?'var(--accent)':'var(--red,#ef4444)', fontSize:14 }}>
+                      ₹{Math.abs(row.total).toLocaleString('en-IN')}{row.total<0?' (−)':''}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colSpan={5} style={{ textAlign:'right', padding:'16px 16px 0 0', fontWeight:600, color:'var(--muted)', fontSize:11, textTransform:'uppercase' }}>Grand Total</td>
+                  <td className="display" style={{ padding:'16px 0 0 0', fontSize:18, color:'var(--text)' }}>₹{data.grand_total.toLocaleString('en-IN')}</td>
+                </tr>
+              </tfoot>
+            </table>
+          )}
         </div>
-      ) : (
-        <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: 12 }}>
-          <thead>
-            <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '.05em' }}>
-              <th style={{ paddingBottom: 8, fontWeight: 500 }}>Payment Mode</th>
-              <th style={{ paddingBottom: 8, fontWeight: 500 }}></th>
-              <th style={{ paddingBottom: 8, fontWeight: 500 }}>Service</th>
-              <th style={{ paddingBottom: 8, fontWeight: 500 }}>Parts</th>
-              <th style={{ paddingBottom: 8, fontWeight: 500, color: 'var(--red, #ef4444)' }}>Expenses</th>
-              <th style={{ paddingBottom: 8, fontWeight: 500 }}>Net Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.breakdown.map((row) => (
-              <tr key={row.payment_mode} style={{ borderBottom: '1px solid var(--border)' }}>
-                <td style={{ fontWeight: 600, padding: '12px 0' }}>{row.payment_mode}</td>
-                <td className="mono" style={{ color: 'var(--muted)' }}>₹{(row.Vehicles||0).toLocaleString('en-IN')}</td>
-                <td className="mono" style={{ color: 'var(--muted)' }}>₹{(row.Service||0).toLocaleString('en-IN')}</td>
-                <td className="mono" style={{ color: 'var(--muted)' }}>₹{(row.Parts||0).toLocaleString('en-IN')}</td>
-                <td className="mono" style={{ color: 'var(--red, #ef4444)' }}>
-                  {row.Expenses ? `−₹${(row.Expenses||0).toLocaleString('en-IN')}` : '—'}
-                </td>
-                <td className="display" style={{ color: row.total >= 0 ? 'var(--accent)' : 'var(--red, #ef4444)', fontSize: 14 }}>
-                  ₹{Math.abs(row.total).toLocaleString('en-IN')}{row.total < 0 ? ' (−)' : ''}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <tr>
-              <td colSpan={5} style={{ textAlign: 'right', padding: '16px 16px 0 0', fontWeight: 600, color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase' }}>Grand Total</td>
-              <td className="display" style={{ padding: '16px 0 0 0', fontSize: 18, color: 'var(--text)' }}>₹{data.grand_total.toLocaleString('en-IN')}</td>
-            </tr>
-          </tfoot>
-        </table>
-      )}
+
+        {/* Right: Service revenue by payment mode */}
+        <div style={{ borderLeft:'1px solid var(--border)', paddingLeft:24, display:'flex', flexDirection:'column', gap:12 }}>
+          <div style={{ fontSize:11, fontWeight:600, letterSpacing:'.04em', textTransform:'uppercase', color:'var(--muted)', marginBottom:4 }}>
+            Service Revenue
+          </div>
+          {totalSvcRevenue === 0 ? (
+            <div style={{ fontSize:11, color:'var(--dim)', paddingTop:8 }}>No service bills for {apiDate}.</div>
+          ) : (
+            <>
+              {Object.entries(svcByMode).map(([mode, amt]) => (
+                <div key={mode} style={{ background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:6, padding:'12px 14px' }}>
+                  <div style={{ fontSize:9, color:'var(--dim)', letterSpacing:'.06em', textTransform:'uppercase', marginBottom:4 }}>{mode}</div>
+                  <div className="display" style={{ fontSize:22, color:'var(--accent)', letterSpacing:'-.02em' }}>₹{amt.toLocaleString('en-IN')}</div>
+                </div>
+              ))}
+              <div style={{ borderTop:'1px solid var(--border)', paddingTop:10, marginTop:4 }}>
+                <div style={{ fontSize:9, color:'var(--dim)', letterSpacing:'.06em', textTransform:'uppercase', marginBottom:4 }}>Total Service</div>
+                <div className="display" style={{ fontSize:26, color:'var(--text)' }}>₹{totalSvcRevenue.toLocaleString('en-IN')}</div>
+              </div>
+            </>
+          )}
+        </div>
+
+      </div>
     </Section>
   );
 }
 
 
+
 // ── Main page ────────────────────────────────────────────────────────
 export default function ReportsPage() {
-  const currentYear = new Date().getFullYear();
-  const [year, setYear] = useState(currentYear);
-  const START_YEAR = 2024;
-  const yearOptions = [];
-  for (let y = START_YEAR; y <= currentYear; y++) yearOptions.push(y);
+  const [months, setMonths] = useState(6);
 
   // Data fetches
   const { data:revenue, isLoading:revLoading, error:revError } = useQuery({
-    queryKey:['reports-revenue', year],
-    queryFn: ()=>reportsApi.revenue({ year }).then(r=>r.data),
+    queryKey:['reports-revenue', months],
+    queryFn: ()=>reportsApi.revenue({ months }).then(r=>r.data),
   });
   const { data:brandData, isLoading:brandLoading, error:brandError } = useQuery({
     queryKey:['reports-brand'],
     queryFn: ()=>reportsApi.brandSales().then(r=>r.data),
-  });
-  const { data: brandMonthly, isLoading: bmLoading } = useQuery({
-  queryKey: ['reports-brand-monthly', year],
-  queryFn: () => reportsApi.brandMonthly({ year }).then(r => r.data),
   });
   const { data:topParts, isLoading:partsLoading, error:partsError } = useQuery({
     queryKey:['reports-top-parts'],
@@ -193,26 +232,19 @@ export default function ReportsPage() {
   // Build merged monthly revenue data
   const monthlyData = (() => {
     if (!revenue) return [];
-    const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    // Pre-fill all 12 months with 0 so empty months still appear
     const map = {};
-    MONTHS.forEach((_, i) => {
-      const key = `${year}-${String(i + 1).padStart(2, '0')}`;
-      map[key] = { label: MONTHS[i], sales: 0, service: 0, parts: 0, units: 0 };
-    });
-    // _id is "YYYY-MM" string returned directly from backend (no oids() rename)
-    (revenue.sales||[]).forEach(d   => { const k = d.id||d._id; if (map[k]) map[k].sales   = d.sales||0; });
-    (revenue.sales||[]).forEach(d => { const k = d.id||d._id; if (map[k]) map[k].sales = d.sales || 0; map[k].units = d.count || 0; });
-    (revenue.service||[]).forEach(d => { const k = d.id||d._id; if (map[k]) map[k].service = d.service||0; });
-    (revenue.parts||[]).forEach(d   => { const k = d.id||d._id; if (map[k]) map[k].parts   = d.parts||0; });
-    return Object.keys(map).sort().map(key => ({
-      month:   map[key].label,
-      sales:   Math.round(map[key].sales),
-      service: Math.round(map[key].service),
-      parts:   Math.round(map[key].parts),
-      total:   Math.round(map[key].sales + map[key].service + map[key].parts),
-      units:   map[key].units || 0,
-    }));
+    (revenue.sales||[]).forEach(d => { map[d._id] = { ...map[d._id], month:d._id, sales: d.sales||0 }; });
+    (revenue.service||[]).forEach(d => { map[d._id] = { ...map[d._id], month:d._id, service: d.service||0 }; });
+    (revenue.parts||[]).forEach(d  => { map[d._id] = { ...map[d._id], month:d._id, parts: d.parts||0 }; });
+    return Object.values(map)
+      .sort((a,b)=>a.month.localeCompare(b.month))
+      .map(d => ({
+        month: d.month?.slice(0,7) || '',
+        sales:   Math.round(d.sales   || 0),
+        service: Math.round(d.service || 0),
+        parts:   Math.round(d.parts   || 0),
+        total:   Math.round((d.sales||0)+(d.service||0)+(d.parts||0)),
+      }));
   })();
 
   const totalRevenue = monthlyData.reduce((s,d)=>s+d.total,0);
@@ -252,13 +284,14 @@ export default function ReportsPage() {
         error={revError}
       >
         <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:16 }}>
-          <select value={year} onChange={e => setYear(Number(e.target.value))} style={{
-            padding:'5px 10px', border:'1px solid var(--border)', borderRadius:3,
-            background:'var(--surface)', color:'var(--text)', fontSize:11,
-            cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif',
-          }}>
-            {yearOptions.map(y => <option key={y} value={y}>{y}</option>)}
-          </select>
+          {[3,6,12].map(m => (
+            <button key={m} onClick={()=>setMonths(m)} style={{
+              padding:'5px 12px', background:months===m?'var(--surface2)':'transparent',
+              border:`1px solid ${months===m?'var(--accent)':'var(--border)'}`,
+              borderRadius:3, color:months===m?'var(--accent)':'var(--muted)',
+              cursor:'pointer', fontSize:10, letterSpacing:'.06em', fontFamily:'IBM Plex Sans,sans-serif',
+            }}>{m}M</button>
+          ))}
           <span style={{ marginLeft:'auto', fontSize:11, color:'var(--muted)' }}>
             Period total: <span className="display" style={{ fontSize:16, color:'var(--accent)' }}>{fmt(totalRevenue)}</span>
           </span>
@@ -297,37 +330,6 @@ export default function ReportsPage() {
       {/* Brand sales + Top parts side by side */}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:20 }}>
 
-        {/* Brand-wise monthly sales */}
-        <Section title="Brand-wise monthly sales" sub="Units sold per brand per month" loading={bmLoading}>
-          {!brandMonthly?.months?.length ? (
-            <div style={{ height:220, display:'flex', alignItems:'center', justifyContent:'center', color:'var(--dim)', fontSize:12 }}>
-              No sales data for {year}
-            </div>
-          ) : (
-            <>
-              <ResponsiveContainer width="100%" height={240}>
-                <BarChart data={brandMonthly.months} barSize={12} barGap={2} barCategoryGap="28%">
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-                  <XAxis dataKey="month" tick={axisStyle} axisLine={false} tickLine={false} />
-                  <YAxis tick={axisStyle} axisLine={false} tickLine={false} allowDecimals={false} width={28} />
-                  <Tooltip
-                    {...tooltipStyle}
-                    formatter={(v, name) => [`${v} units`, name]}
-                    cursor={{ fill: 'rgba(200,148,10,.06)' }}
-                  />
-                  <Legend
-                    iconType="square" iconSize={8}
-                    wrapperStyle={{ fontSize:10, color:'var(--muted)', paddingTop:12 }}
-                  />
-                  {(brandMonthly.brands || []).map((brand, i) => (
-                    <Bar key={brand} dataKey={brand} stackId="a" fill={COLORS[i % COLORS.length]} radius={i === brandMonthly.brands.length - 1 ? [2,2,0,0] : [0,0,0,0]} />
-                  ))}
-                </BarChart>
-              </ResponsiveContainer>
-           </>
-         )}
-       </Section>
-
         {/* Brand sales */}
         <Section title="Sales by brand" sub="Units sold and revenue" loading={brandLoading} error={brandError}>
           {!brandData?.length ? (
@@ -359,122 +361,6 @@ export default function ReportsPage() {
             </>
           )}
         </Section>
-
-        {/* ── Monthly Sales Performance — combo chart ── */}
-<Section title="Monthly Sales Performance" sub="Sales count and revenue trends over time">
-  <div style={{ display:'flex', justifyContent:'flex-end', gap:6, marginBottom:16 }}>
-    <select value={year} onChange={e => setYear(Number(e.target.value))} style={{
-      padding:'5px 10px', border:'1px solid var(--border)', borderRadius:3,
-      background:'var(--surface)', color:'var(--text)', fontSize:11, cursor:'pointer',
-      fontFamily:'IBM Plex Sans,sans-serif',
-    }}>
-      {yearOptions.map(y => <option key={y} value={y}>{y}</option>)}
-    </select>
-  </div>
-
-  {monthlyData.every(d => !d.units && !d.sales) ? (
-    <div style={{ height:240, display:'flex', alignItems:'center', justifyContent:'center', color:'var(--dim)', fontSize:12 }}>
-      No data for {year}
-    </div>
-  ) : (
-    <>
-      <ResponsiveContainer width="100%" height={240}>
-        <ComposedChart data={monthlyData} barSize={20}>
-          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-          <XAxis dataKey="month" tick={axisStyle} axisLine={false} tickLine={false} />
-          <YAxis yAxisId="left"  tick={axisStyle} axisLine={false} tickLine={false} allowDecimals={false} width={28} />
-          <YAxis yAxisId="right" orientation="right" tick={axisStyle} axisLine={false} tickLine={false}
-            tickFormatter={v => v >= 1_00_000 ? '₹'+(v/1_00_000).toFixed(1)+'L' : '₹'+v} width={64} />
-          <Tooltip
-            {...tooltipStyle}
-            formatter={(v, name) =>
-              name === 'Revenue (₹)'
-                ? ['₹' + Math.round(v).toLocaleString('en-IN'), name]
-                : [v + ' units', name]
-            }
-            cursor={{ fill:'rgba(200,148,10,.06)' }}
-          />
-          <Legend iconType="square" iconSize={8}
-            wrapperStyle={{ fontSize:10, color:'var(--muted)', paddingTop:12 }} />
-          <Bar    yAxisId="left"  dataKey="units" name="Sales Count" fill="#60a5fa" radius={[2,2,0,0]} />
-          <Line   yAxisId="right" dataKey="sales" name="Revenue (₹)" type="monotone"
-            stroke="#f87171" strokeWidth={2} dot={{ r:3, fill:'#f87171' }} activeDot={{ r:5 }} />
-        </ComposedChart>
-      </ResponsiveContainer>
-
-      {/* Monthly summary table */}
-      <div style={{ marginTop:20 }}>
-        <div style={{ fontSize:12, fontWeight:600, marginBottom:10 }}>Monthly Sales Summary</div>
-        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11 }}>
-          <thead>
-            <tr style={{ borderBottom:'1px solid var(--border)' }}>
-              {['Month','Sales','Revenue'].map(h => (
-                <th key={h} style={{ padding:'6px 0', textAlign: h==='Month'?'left':'right',
-                  color:'var(--muted)', fontWeight:500, fontSize:10 }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {monthlyData.filter(d => d.sales > 0).map(d => (
-              <tr key={d.month} style={{ borderBottom:'1px solid var(--border)' }}>
-                <td style={{ padding:'8px 0', color:'var(--text)' }}>{d.month} {year}</td>
-                <td style={{ padding:'8px 0', textAlign:'right', color:'var(--text)' }}>{d.units}</td>
-                <td style={{ padding:'8px 0', textAlign:'right', color:'var(--accent)', fontFamily:'IBM Plex Mono,monospace' }}>
-                  ₹{d.sales.toLocaleString('en-IN')}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
-  )}
-</Section>
-
-{/* ── Brand-wise Sales Distribution ── */}
-<Section title="Brand-wise Sales Distribution" sub="Sales count by vehicle brands" loading={brandLoading} error={brandError}>
-  {!brandData?.length ? (
-    <div style={{ height:220, display:'flex', alignItems:'center', justifyContent:'center', color:'var(--dim)', fontSize:12 }}>No sales data yet</div>
-  ) : (
-    <>
-      <ResponsiveContainer width="100%" height={240}>
-        <BarChart data={brandData} barSize={28}>
-          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-          <XAxis dataKey="brand" tick={axisStyle} axisLine={false} tickLine={false} />
-          <YAxis tick={axisStyle} axisLine={false} tickLine={false} allowDecimals={false}
-            label={{ value:'Sales Count', angle:-90, position:'insideLeft', style:{...axisStyle, fontSize:9}, offset:10 }} width={48} />
-          <Tooltip {...tooltipStyle} formatter={(v, n) => [v + ' units', n]} cursor={{ fill:'rgba(74,222,128,.06)' }} />
-          <Legend iconType="square" iconSize={8} wrapperStyle={{ fontSize:10, color:'var(--muted)', paddingTop:12 }} />
-          <Bar dataKey="units" name="Sales Count" fill="#4ade80" radius={[3,3,0,0]} />
-        </BarChart>
-      </ResponsiveContainer>
-
-      {/* Brand performance table */}
-      <div style={{ marginTop:20 }}>
-        <div style={{ fontSize:12, fontWeight:600, marginBottom:4 }}>Brand Performance Summary</div>
-        <div style={{ fontSize:10, color:'var(--muted)', marginBottom:10 }}>Sales breakdown by source (Direct vs Imported)</div>
-        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11 }}>
-          <thead>
-            <tr style={{ borderBottom:'1px solid var(--border)' }}>
-              {['Brand','Total Sales'].map(h => (
-                <th key={h} style={{ padding:'6px 0', textAlign:h==='Brand'?'left':'right',
-                  color:'var(--muted)', fontWeight:500, fontSize:10 }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {brandData.map(b => (
-              <tr key={b.brand} style={{ borderBottom:'1px solid var(--border)' }}>
-                <td style={{ padding:'8px 0', color:'var(--text)', fontWeight:500 }}>{b.brand || 'Unknown'}</td>
-                <td style={{ padding:'8px 0', textAlign:'right', color:'var(--text)', fontFamily:'IBM Plex Mono,monospace' }}>{b.units}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
-  )}
-</Section>
 
         {/* Top parts */}
         <Section title="Top-selling parts" sub="By quantity sold" loading={partsLoading} error={partsError}>
