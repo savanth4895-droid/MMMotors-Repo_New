@@ -2,9 +2,9 @@ import { useState } from 'react';
 import toast from 'react-hot-toast';
 import { filesApi } from '../api/client';
 
-  export default function FileUpload({ label, onUploadSuccess }) {
+  export default function FileUpload({ label, onUploadSuccess, existingFileId = null }) {
   const [uploading, setUploading] = useState(false);
-  const [previewId, setPreviewId] = useState(null);
+  const [previewId, setPreviewId] = useState(existingFileId);
 
   const handleFileChange = async (e) => {
     const file = e.target.files[0];
@@ -44,14 +44,22 @@ import { filesApi } from '../api/client';
       </div>
 
       {previewId && (
-        <div style={{ marginTop: '10px' }}>
-          <a href={filesApi.getFileUrl(previewId)} target="_blank" rel="noreferrer">
-             <img 
-               src={filesApi.getFileUrl(previewId)} 
-               alt="Preview" 
-               style={{ height: '80px', borderRadius: '4px', border: '1px solid var(--border)', objectFit: 'cover' }} 
-             />
+        <div style={{ marginTop: '10px', display:'flex', alignItems:'flex-start', gap:10 }}>
+          <a href={filesApi.getFileUrl(previewId)} target="_blank" rel="noreferrer" style={{ display:'block' }}>
+            <img
+              src={filesApi.getFileUrl(previewId)}
+              alt="Preview"
+              style={{ height:90, width:90, borderRadius:4, border:'1px solid var(--border)', objectFit:'cover', display:'block' }}
+            />
           </a>
+          <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+            <span style={{ fontSize:10, color:'var(--muted)' }}>Uploaded</span>
+            <button
+              type="button"
+              onClick={() => { setPreviewId(null); if (onUploadSuccess) onUploadSuccess(null); }}
+              style={{ fontSize:10, padding:'2px 8px', background:'rgba(239,68,68,.08)', border:'1px solid rgba(239,68,68,.25)', borderRadius:3, color:'var(--red,#ef4444)', cursor:'pointer' }}
+            >Remove</button>
+          </div>
         </div>
       )}
     </div>
