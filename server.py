@@ -61,7 +61,6 @@ from database import (
     next_sequence, _sync_counter,
     oid, oids, obj_id, paginate_params, now,
     calc_gst_line, calc_bill_totals, amount_in_words,
-    norm_status, norm_role, norm_type, norm_brand,
 )
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 
@@ -250,7 +249,7 @@ class VehicleCreate(BaseModel):
     location:          Optional[str] = ""
     outbound_date:     Optional[str] = ""
     outbound_location: Optional[str] = ""
-    status:            Optional[str] = "in_stock"
+    status:            Optional[str] = "Instock"
     type:           Optional[str] = "new"
     notes:          Optional[str] = ""
 
@@ -518,12 +517,11 @@ async def login(body: LoginIn):
     await db.login_attempts.delete_many({"username": username})
     token = create_token({"sub": str(user["_id"]), "role": user["role"]})
     user_data = {
-        "id":            str(user["_id"]),
-        "username":      user["username"],
-        "name":          user["name"],
-        "role":          user["role"],
-        "mobile":        user.get("mobile", ""),
-        "allowed_pages": user.get("allowed_pages", []),
+        "id":       str(user["_id"]),
+        "username": user["username"],
+        "name":     user["name"],
+        "role":     user["role"],
+        "mobile":   user.get("mobile", ""),
     }
     response = JSONResponse(content={"access_token": token, "token_type": "bearer", "user": user_data})
     response.set_cookie(
@@ -689,15 +687,13 @@ async def list_vehicles(
     current_user=Depends(verify_token),
 ):
     query: dict = {}
-    if brand:  query["brand"]  = norm_brand(brand)
-    if status: query["status"] = norm_status(status)
-    if type:   query["type"]   = norm_type(type)
+    if brand:  query["brand"]  = brand.upper()
+    if status: query["status"] = status
+    if type:   query["type"]   = type
     if search:
         query["$or"] = [
-            {"brand":          {"$regex": search, "$options": "i"}},
             {"model":          {"$regex": search, "$options": "i"}},
             {"chassis_number": {"$regex": search, "$options": "i"}},
-            {"engine_number":  {"$regex": search, "$options": "i"}},
             {"vehicle_number": {"$regex": search, "$options": "i"}},
             {"color":          {"$regex": search, "$options": "i"}},
         ]
@@ -712,9 +708,7 @@ async def create_vehicle(body: VehicleCreate, current_user=Depends(verify_token)
         raise HTTPException(status_code=409, detail=f"Chassis number {chassis} already exists")
     doc = body.dict()
     doc["chassis_number"] = chassis
-    doc["brand"]          = norm_brand(doc.get("brand", ""))
-    doc["status"]         = norm_status(doc.get("status", "in_stock"))
-    doc["type"]           = norm_type(doc.get("type", "new"))
+    doc["brand"]          = doc["brand"].upper()
     doc["created_at"]     = datetime.utcnow().isoformat()
     result = await db.vehicles.insert_one(doc)
     doc["id"] = str(result.inserted_id); doc.pop("_id", None)
@@ -746,9 +740,8 @@ async def update_vehicle(veh_id: str, body: VehicleUpdate, current_user=Depends(
     update = {k: v for k, v in body.dict().items() if v is not None}
     if "chassis_number" in update:
         update["chassis_number"] = update["chassis_number"].strip().upper()
-    if "brand"  in update: update["brand"]  = norm_brand(update["brand"])
-    if "status" in update: update["status"] = norm_status(update["status"])
-    if "type"   in update: update["type"]   = norm_type(update["type"])
+    if "brand" in update:
+        update["brand"] = update["brand"].upper()
     await db.vehicles.update_one({"_id": obj_id(veh_id)}, {"$set": update})
     return oid(await db.vehicles.find_one({"_id": obj_id(veh_id)}))
 
@@ -1077,7 +1070,7 @@ async def update_sale(sale_id: str, body: SaleUpdate, current_user=Depends(verif
     if body.nominee is not None:
         update["nominee"] = body.nominee.dict()
     if body.vehicle_id is not None and body.vehicle_id != sale.get("vehicle_id",""):
-        if current_user.get("role", "").lower() != "owner":
+        if current_user.get("role") != "owner":
             raise HTTPException(status_code=403, detail="Only owner can change vehicle on a sale")
         new_vehicle = await db.vehicles.find_one({"_id": obj_id(body.vehicle_id)})
         if not new_vehicle:
@@ -1383,10 +1376,11 @@ async def create_service_bill(body: ServiceBillCreate, current_user=Depends(veri
         })
 
     totals  = calc_bill_totals([{"unit_price": i["unit_price"], "qty": i["qty"], "gst_rate": i["gst_rate"]} for i in items_out])
-    bill_no = await next_sequence("job")
+    # Bill number derives from job number — no separate counter consumed
+    bill_no = job.get("job_number", "").replace("SRV", "SRV-B")
 
     doc = {
-        "bill_number":    bill_no.replace("SRV", "SRV-B"),
+        "bill_number":    bill_no,
         "job_id":         body.job_id,
         "job_number":     job.get("job_number",""),
         "customer_id":    job.get("customer_id",""),
@@ -1498,8 +1492,8 @@ async def list_parts(
     current_user=Depends(verify_token),
 ):
     query: dict = {}
-    if category: query["category"] = category.strip()
-    if brand:    query["brand"]    = norm_brand(brand)
+    if category: query["category"] = category
+    if brand:    query["brand"]    = brand
     if low_stock:
         query["$expr"] = {"$and":[{"$gt":["$stock",0]},{"$lte":["$stock","$reorder_level"]}]}
     if out_of_stock:
@@ -1852,18 +1846,9 @@ async def recent_activity(limit: int = Query(10, le=50), current_user=Depends(ve
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @api_router.get("/reports/revenue")
-async def revenue_report(months: int = Query(6, ge=1, le=24), year:   Optional[int] = Query(None), current_user=Depends(require_admin)):
+async def revenue_report(months: int = Query(6, ge=1, le=24), current_user=Depends(require_admin)):
     # sale_date can be: "08 Apr 2026", "2026-04-24", "2024-07-01 00:00:00", "01/04/2026"
     # Strategy: try multiple formats, fall back to created_at substring
-  # If year given, return all 12 months of that year
-    if year:
-        match_prefix = str(year)
-        month_filter = {"month_key": {"$regex": f"^{year}-"}}
-        limit = 12
-    else:
-        month_filter = {}
-        limit = months
-      
     pipeline = [
         {"$addFields": {
             # Try "DD Mon YYYY" e.g. "08 Apr 2026"
@@ -1885,22 +1870,9 @@ async def revenue_report(months: int = Query(6, ge=1, le=24), year:   Optional[i
                 {"$substr": ["$created_at", 0, 7]}
             ]}
         }},
-        *([ {"$match": month_filter} ] if year else []),
         {"$group": {"_id": "$month_key", "sales": {"$sum": "$total_amount"}, "count": {"$sum": 1}}},
-        {"$sort": {"_id": -1}}, {"$limit": limit},
+        {"$sort": {"_id": -1}}, {"$limit": months},
     ]
-  
-    # Service and parts use created_at — simpler filter
-    def svc_pipeline(field, col):
-        f = [
-            {"$addFields": {"month_key": {"$substr": [f"${col}", 0, 7]}}},
-            *([ {"$match": {"month_key": {"$regex": f"^{year}-"}}} ] if year else []),
-            {"$group": {"_id": "$month_key", field: {"$sum": "$grand_total"}}},
-            {"$sort": {"_id": -1}},
-            {"$limit": limit},
-        ]
-        return f
-      
     sales_by_month = await db.sales.aggregate(pipeline).to_list(months)
     svc_pipeline   = [{"$addFields":{"month_key":{"$substr":["$created_at",0,7]}}},{"$group":{"_id":"$month_key","service":{"$sum":"$grand_total"}}},{"$sort":{"_id":-1}},{"$limit":months}]
     svc_by_month   = await db.service_bills.aggregate(svc_pipeline).to_list(months)
@@ -2301,7 +2273,7 @@ async def import_vehicles(request: Request, file: UploadFile = File(...), mode: 
             if not chassis: skipped.append({"row":rn,"reason":"Missing chassis_number"}); continue
             if not brand:   skipped.append({"row":rn,"reason":"Missing brand"});          continue
             if not model:   skipped.append({"row":rn,"reason":"Missing model"});          continue
-            doc = {"brand":norm_brand(brand),"model":model,"variant":safe(row.get("variant")),"color":safe(row.get("color")),"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"key_number":safe(row.get("key_number")),"type":norm_type(safe(row.get("type","new")) or "new"),"status":norm_status(safe(row.get("status","in_stock")) or "in_stock"),"inbound_date":safe(row.get("inbound_date","")),"inbound_location":safe(row.get("inbound_location","")),"return_date":safe(row.get("return_date","")),"returned_location":safe(row.get("returned_location","")),"created_at":datetime.utcnow().isoformat()}
+            doc = {"brand":brand,"model":model,"variant":safe(row.get("variant")),"color":safe(row.get("color")),"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"key_number":safe(row.get("key_number")),"type":safe(row.get("type","new")).lower() or "new","status":safe(row.get("status","in_stock")).lower() or "in_stock","inbound_date":safe(row.get("inbound_date","")),"inbound_location":safe(row.get("inbound_location","")),"return_date":safe(row.get("return_date","")),"returned_location":safe(row.get("returned_location","")),"created_at":datetime.utcnow().isoformat()}
             if chassis in existing_chassis:
                 if mode=="overwrite": to_update.append(doc)
                 else: skipped.append({"row":rn,"reason":f"Chassis {chassis} already imported"})
@@ -3005,83 +2977,10 @@ async def profit_and_loss(
         })
     return result
 
-@api_router.get("/reports/brand-monthly")
-async def brand_monthly_report(year: int = Query(None), current_user=Depends(require_admin)):
-    import datetime as _dt
-    y = year or _dt.datetime.utcnow().year
-    pipeline = [
-        {"$addFields": {
-            "p1": {"$dateFromString": {"dateString": "$sale_date", "format": "%d %b %Y", "onError": None, "onNull": None}},
-            "p2": {"$dateFromString": {"dateString": {"$substr": ["$sale_date", 0, 10]}, "format": "%Y-%m-%d", "onError": None, "onNull": None}},
-            "p3": {"$dateFromString": {"dateString": "$sale_date", "format": "%d/%m/%Y", "onError": None, "onNull": None}},
-        }},
-        {"$addFields": {
-            "parsed_date": {"$ifNull": ["$p1", {"$ifNull": ["$p2", {"$ifNull": ["$p3", None]}]}]}
-        }},
-        {"$addFields": {
-            "month_key": {"$cond": [
-                {"$ne": ["$parsed_date", None]},
-                {"$dateToString": {"format": "%Y-%m", "date": "$parsed_date"}},
-                {"$substr": ["$created_at", 0, 7]}
-            ]}
-        }},
-        {"$match": {"month_key": {"$regex": f"^{y}-"}}},
-        {"$group": {"_id": {"month": "$month_key", "brand": "$vehicle_brand"}, "units": {"$sum": 1}}},
-        {"$sort": {"_id.month": 1}},
-    ]
-    rows = await db.sales.aggregate(pipeline).to_list(None)
-
-    # Pivot into {month, HERO: n, HONDA: n, ...}
-    MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-    month_map = {}
-    brands = set()
-    for row in rows:
-        m = row["_id"]["month"]
-        b = (row["_id"]["brand"] or "Unknown").upper()
-        brands.add(b)
-        if m not in month_map:
-            month_map[m] = {"month": MONTHS[int(m[5:7]) - 1]}
-        month_map[m][b] = row["units"]
-
-    result = [month_map[k] for k in sorted(month_map)]
-    return {"months": result, "brands": sorted(brands)}
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Full Data Backup Export
 # ═══════════════════════════════════════════════════════════════════════════════
-
-@api_router.get("/health")
-async def health():
-    return {"status": "ok", "ts": datetime.utcnow().isoformat()}
-
-
-@api_router.post("/admin/normalize-fields")
-async def normalize_fields(current_user=Depends(require_admin)):
-    """One-time migration: normalize status/type/brand/role across all collections."""
-    counts = {}
-    # Vehicles
-    veh_fixed = 0
-    async for v in db.vehicles.find({}):
-        upd = {}
-        if norm_brand(v.get("brand",""))  != v.get("brand",""):  upd["brand"]  = norm_brand(v["brand"])
-        if norm_status(v.get("status","")) != v.get("status",""): upd["status"] = norm_status(v["status"])
-        if norm_type(v.get("type",""))    != v.get("type",""):    upd["type"]   = norm_type(v["type"])
-        if upd:
-            await db.vehicles.update_one({"_id": v["_id"]}, {"$set": upd})
-            veh_fixed += 1
-    counts["vehicles"] = veh_fixed
-    # Users
-    usr_fixed = 0
-    async for u in db.users.find({}):
-        upd = {}
-        if norm_role(u.get("role","")) != u.get("role",""): upd["role"] = norm_role(u["role"])
-        if upd:
-            await db.users.update_one({"_id": u["_id"]}, {"$set": upd})
-            usr_fixed += 1
-    counts["users"] = usr_fixed
-    return {"message": "Normalization complete", "fixed": counts}
-
 
 @api_router.get("/backup/export")
 async def export_backup(current_user=Depends(require_admin)):
