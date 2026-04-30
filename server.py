@@ -522,6 +522,7 @@ async def login(body: LoginIn):
         "name":     user["name"],
         "role":     user["role"],
         "mobile":   user.get("mobile", ""),
+        "allowed_pages": user.get("allowed_pages", None),
     }
     response = JSONResponse(content={"access_token": token, "token_type": "bearer", "user": user_data})
     response.set_cookie(
