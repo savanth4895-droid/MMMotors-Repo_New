@@ -71,9 +71,7 @@ function PagePermissions({ selectedPages, onChange, role }) {
           Page Access — {selectedPages.length} of {ALL_PAGES.length} pages
         </div>
         <div style={{ marginLeft:'auto', display:'flex', gap:6 }}>
-          <button onClick={useDefaults} style={{ padding:'3px 10px', background:'rgba(184,134,11,.12)', border:'1px solid rgba(184,134,11,.3)', borderRadius:3, color:'var(--accent)', fontSize:10, cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif', fontWeight:600 }}>
-            Role defaults
-          </button>
+
           <button onClick={selectAll} style={{ padding:'3px 10px', background:'transparent', border:'1px solid var(--border)', borderRadius:3, color:'var(--muted)', fontSize:10, cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif' }}>
             All
           </button>
@@ -120,7 +118,7 @@ function StaffProfile({ staff, onBack }) {
   const [tab,    setTab]  = useState('info');
   const [form,   setForm] = useState({
     ...staff,
-    allowed_pages: staff.allowed_pages || ROLE_DEFAULTS[staff.role] || [],
+    allowed_pages: staff.allowed_pages || [],
   });
   const [pw,     setPw]   = useState({ new_password:'', confirm:'' });
   const [saved,  setSaved] = useState(false);
@@ -178,7 +176,7 @@ function StaffProfile({ staff, onBack }) {
               <Field label="Role">
                 <select value={form.role} onChange={e => {
                   const newRole = e.target.value;
-                  setForm(p => ({ ...p, role: newRole, allowed_pages: ROLE_DEFAULTS[newRole] || [] }));
+                  setForm(p => ({ ...p, role: newRole }));
                 }} style={selStyle}>
                   {ROLES.map(r=><option key={r.value} value={r.value}>{r.label}</option>)}
                 </select>
@@ -244,7 +242,7 @@ function StaffProfile({ staff, onBack }) {
 function AddStaffForm({ onSave, onCancel, saving }) {
   const [f, setF] = useState({
     name:'', mobile:'', email:'', username:'', role:'sales', salary:'',
-    allowed_pages: ROLE_DEFAULTS['sales'],
+    allowed_pages: [],
   });
   const s = k => e => setF(p=>({...p,[k]:e.target.value}));
 
@@ -258,7 +256,7 @@ function AddStaffForm({ onSave, onCancel, saving }) {
         <Field label="Role *">
           <select value={f.role} onChange={e => {
             const role = e.target.value;
-            setF(p => ({ ...p, role, allowed_pages: ROLE_DEFAULTS[role] || [] }));
+            setF(p => ({ ...p, role }));
           }} style={selStyle}>
             {ROLES.map(r=><option key={r.value} value={r.value}>{r.label}</option>)}
           </select>
