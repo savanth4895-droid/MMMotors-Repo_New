@@ -605,7 +605,6 @@ function PartForm({ initial = {}, onSave, onCancel, saving }) {
           placeholder="e.g. TVS Jupiter, Honda Activa, Hero Splendor"
         />
       </Field>
-  </div>
       <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
         <GhostBtn onClick={onCancel}>Cancel</GhostBtn>
         <Btn disabled={!f.name||!f.selling_price||saving} onClick={()=>onSave({
