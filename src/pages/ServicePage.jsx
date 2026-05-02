@@ -401,6 +401,10 @@ function EditJobModal({ job, onClose }) {
             <label style={labelSt}>Est. Delivery</label>
             <input type="date" value={form.estimated_delivery} onChange={upd('estimated_delivery')} style={inp} />
           </div>
+          <div>
+            <label style={labelSt}>Check-in Date</label>
+            <input value={job.check_in_date || '—'} readOnly style={{ ...inp, color:'var(--muted)', cursor:'default' }} />
+          </div>
         </div>
         <div style={{ marginBottom:12 }}>
           <label style={labelSt}>Complaint / Work Required</label>
@@ -725,8 +729,7 @@ function printBill(job, bill, rows, total, taxable, cgst, sgst) {
     <div class="header">
       <div>
         <div class="brand">MM MOTORS</div>
-        <div class="brand-sub">Authorised Multi-Brand Service Centre · Malur</div>
-        <div class="brand-sub" style="margin-top:3px;font-weight:700;color:#B8860B;letter-spacing:.04em">GSTIN: 29CUJPM6814P1ZQ</div>
+        <div class="brand-sub">Authorised Multi-Brand Service Centre</div>
       </div>
       <div class="bill-meta">
         <div class="bill-no">TAX INVOICE</div>
