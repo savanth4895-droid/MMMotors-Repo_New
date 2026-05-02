@@ -357,6 +357,8 @@ class ServiceJobUpdate(BaseModel):
     odometer_km:        Optional[int] = None
     odometer_out:       Optional[int] = None
     vehicle_photo_id:   Optional[str] = None
+    check_in_date:      Optional[str] = None
+    created_at:         Optional[str] = None   # correcting imported service dates
 
 # ── Service Bills ─────────────────────────────────────────────────────────────
 class BillLineItem(BaseModel):
