@@ -561,8 +561,9 @@ function stockStyle(p) {
 function PartForm({ initial = {}, onSave, onCancel, saving }) {
   const [f, setF] = useState({
     part_number:'', name:'', category:'', brand:'', stock:'0', reorder_level:'5',
-    purchase_price:'', selling_price:'', gst_rate:'18', hsn_code:'', location:'',
+    purchase_price:'', selling_price:'', gst_rate:'18', hsn_code:'', location:'', compatible_with:[],
     ...initial,
+    compatible_with: initial.compatible_with || [],
     stock: String(initial.stock ?? 0),
     reorder_level: String(initial.reorder_level ?? 5),
     purchase_price: String(initial.purchase_price ?? ''),
@@ -596,6 +597,41 @@ function PartForm({ initial = {}, onSave, onCancel, saving }) {
         <Field label="HSN code"><input value={f.hsn_code}  onChange={s('hsn_code')}  placeholder="8511"  className="mono" /></Field>
         <Field label="Location">  <input value={f.location}  onChange={s('location')}  placeholder="A1-R2" className="mono" /></Field>
       </div>
+      <div>
+        <div style={{ fontSize:10, letterSpacing:'.07em', color:'var(--muted)', fontWeight:600, textTransform:'uppercase', marginBottom:8 }}>
+          Compatible Models — {(f.compatible_with||[]).length} selected
+     </div>
+     <div style={{ display:'flex', flexWrap:'wrap', gap:8 }}>
+       {['HERO','HONDA','BAJAJ','TVS','YAMAHA','SUZUKI','ROYAL ENFIELD','KTM','PIAGGIO','APRILIA','TRIUMPH'].map(brand => {
+         const selected = (f.compatible_with||[]).includes(brand);
+         return (
+           <button key={brand} type="button"
+            onClick={() => setF(p => ({
+              ...p,
+              compatible_with: selected
+                ? (p.compatible_with||[]).filter(b => b !== brand)
+                : [...(p.compatible_with||[]), brand]
+            }))}
+            style={{
+              padding:'5px 12px', fontSize:11, fontFamily:'IBM Plex Sans,sans-serif',
+              borderRadius:20, cursor:'pointer',
+              border: `1.5px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+              background: selected ? 'rgba(184,134,11,.12)' : 'transparent',
+              color: selected ? 'var(--accent)' : 'var(--muted)',
+              fontWeight: selected ? 600 : 400,
+            }}>
+            {brand}
+          </button>
+        );
+      })}
+    </div>
+    {(f.compatible_with||[]).length > 0 && (
+      <button type="button" onClick={() => setF(p => ({ ...p, compatible_with: [] }))}
+        style={{ marginTop:6, fontSize:10, color:'var(--dim)', background:'none', border:'none', cursor:'pointer', padding:0 }}>
+        Clear all
+      </button>
+    )}
+  </div>
       <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
         <GhostBtn onClick={onCancel}>Cancel</GhostBtn>
         <Btn disabled={!f.name||!f.selling_price||saving} onClick={()=>onSave({
@@ -605,7 +641,7 @@ function PartForm({ initial = {}, onSave, onCancel, saving }) {
           purchase_price: parseFloat(f.purchase_price)||0,
           selling_price:  parseFloat(f.selling_price)||0,
           gst_rate:       parseFloat(f.gst_rate)||18,
-          compatible_with:[],
+          compatible_with: f.compatible_with || [],
         })}>
           {saving?'Saving…':'Save part'}
         </Btn>
