@@ -597,40 +597,14 @@ function PartForm({ initial = {}, onSave, onCancel, saving }) {
         <Field label="HSN code"><input value={f.hsn_code}  onChange={s('hsn_code')}  placeholder="8511"  className="mono" /></Field>
         <Field label="Location">  <input value={f.location}  onChange={s('location')}  placeholder="A1-R2" className="mono" /></Field>
       </div>
-      <div>
-        <div style={{ fontSize:10, letterSpacing:'.07em', color:'var(--muted)', fontWeight:600, textTransform:'uppercase', marginBottom:8 }}>
-          Compatible Models — {(f.compatible_with||[]).length} selected
-     </div>
-     <div style={{ display:'flex', flexWrap:'wrap', gap:8 }}>
-       {['HERO','HONDA','BAJAJ','TVS','YAMAHA','SUZUKI','ROYAL ENFIELD','KTM','PIAGGIO','APRILIA','TRIUMPH'].map(brand => {
-         const selected = (f.compatible_with||[]).includes(brand);
-         return (
-           <button key={brand} type="button"
-            onClick={() => setF(p => ({
-              ...p,
-              compatible_with: selected
-                ? (p.compatible_with||[]).filter(b => b !== brand)
-                : [...(p.compatible_with||[]), brand]
-            }))}
-            style={{
-              padding:'5px 12px', fontSize:11, fontFamily:'IBM Plex Sans,sans-serif',
-              borderRadius:20, cursor:'pointer',
-              border: `1.5px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
-              background: selected ? 'rgba(184,134,11,.12)' : 'transparent',
-              color: selected ? 'var(--accent)' : 'var(--muted)',
-              fontWeight: selected ? 600 : 400,
-            }}>
-            {brand}
-          </button>
-        );
-      })}
-    </div>
-    {(f.compatible_with||[]).length > 0 && (
-      <button type="button" onClick={() => setF(p => ({ ...p, compatible_with: [] }))}
-        style={{ marginTop:6, fontSize:10, color:'var(--dim)', background:'none', border:'none', cursor:'pointer', padding:0 }}>
-        Clear all
-      </button>
-    )}
+      {/* Compatible models — free text */}
+      <Field label="Compatible Models">
+        <input
+          value={(f.compatible_with||[]).join(', ')}
+          onChange={e => setF(p => ({ ...p, compatible_with: e.target.value.split(',').map(s => s.trim()).filter(Boolean) }))}
+          placeholder="e.g. TVS Jupiter, Honda Activa, Hero Splendor"
+        />
+      </Field>
   </div>
       <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
         <GhostBtn onClick={onCancel}>Cancel</GhostBtn>
