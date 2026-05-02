@@ -333,12 +333,21 @@ function EditJobModal({ job, onClose }) {
     status:             job.status             || 'pending',
     complaint:          job.complaint          || '',
     estimated_delivery: job.estimated_delivery || '',
+    check_in_date:      job.check_in_date      || '',
     notes:              job.notes              || '',
   });
   const upd = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
 
   const editMut = useMutation({
-    mutationFn: () => serviceApi.update(job._id || job.id, form),
+    mutationFn: () => {
+      const payload = { ...form };
+      // Convert created_date (YYYY-MM-DD) to ISO string for created_at
+      if (payload.created_date) {
+        payload.created_at = payload.created_date + 'T00:00:00';
+        delete payload.created_date;
+      }
+      return serviceApi.update(job._id || job.id, payload);
+    },
     onSuccess: () => {
       toast.success('Job updated');
       qc.invalidateQueries(['service-jobs']);
@@ -403,7 +412,27 @@ function EditJobModal({ job, onClose }) {
           </div>
           <div>
             <label style={labelSt}>Check-in Date</label>
-            <input value={job.check_in_date || '—'} readOnly style={{ ...inp, color:'var(--muted)', cursor:'default' }} />
+            <div style={{ position:'relative' }}>
+              <input
+                type="date"
+                value={form.check_in_date}
+                onChange={upd('check_in_date')}
+                style={{ ...inp, paddingRight:32 }}
+              />
+              <span style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', fontSize:14, pointerEvents:'none', color:'var(--muted)' }}>📅</span>
+            </div>
+          </div>
+          <div>
+            <label style={labelSt}>Created Date</label>
+            <div style={{ position:'relative' }}>
+              <input
+                type="date"
+                value={form.created_date || (job.created_at ? job.created_at.slice(0,10) : '')}
+                onChange={e => setForm(p => ({ ...p, created_date: e.target.value }))}
+                style={{ ...inp, paddingRight:32 }}
+              />
+              <span style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', fontSize:14, pointerEvents:'none', color:'var(--muted)' }}>📅</span>
+            </div>
           </div>
         </div>
         <div style={{ marginBottom:12 }}>
