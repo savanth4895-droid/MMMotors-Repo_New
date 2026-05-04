@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -39,7 +40,10 @@ function AppLayout() {
 
   // Derive active page from URL — fallback to 'dashboard'
   const active    = location.pathname.replace('/', '').replace(/\//g, '') || 'dashboard';
-  const setActive = (page) => navigate('/' + page);
+  const setActive = (page) => { navigate('/' + page); setSidebarOpen(false); };
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Close sidebar on route change
+  useEffect(() => { setSidebarOpen(false); }, [location.pathname]);
 
   if (loading) return (
     <div style={{ height:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:12, color:'var(--muted)', fontSize:12 }}>
@@ -52,9 +56,11 @@ function AppLayout() {
 
   return (
     <div style={{ display:'flex', height:'100vh', overflow:'hidden' }}>
-      <Sidebar active={active} setActive={setActive} />
+      {/* Mobile overlay */}
+      <div className={`sidebar-overlay${sidebarOpen ? ' open' : ''}`} onClick={() => setSidebarOpen(false)} />
+      <Sidebar active={active} setActive={setActive} isOpen={sidebarOpen} />
       <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }} className="main-content">
-        <Topbar active={active} />
+        <Topbar active={active} onMenuToggle={() => setSidebarOpen(o => !o)} />
         <div style={{ flex:1, overflowY:'auto' }}>
           <ErrorBoundary>
             <Routes>
