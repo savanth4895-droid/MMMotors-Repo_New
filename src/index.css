@@ -93,3 +93,95 @@ input[type=number] { -moz-appearance: textfield; }
 /* ── Smooth transitions ────────────────────────────────────────────── */
 button { transition: opacity .15s, background .15s, border-color .15s; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ═══════════════════════════════════════════════════════════
+   MOBILE RESPONSIVE — MM Motors
+   ═══════════════════════════════════════════════════════════ */
+
+/* Touch-friendly base */
+@media (max-width: 768px) {
+  html { font-size: 14px; }
+
+  /* Tables scroll horizontally instead of overflowing */
+  table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; white-space: nowrap; }
+
+  /* Modals go full-screen on mobile */
+  .modal-shell, [class*="ModalShell"] {
+    width: 100vw !important; max-width: 100vw !important;
+    height: 100vh !important; max-height: 100vh !important;
+    border-radius: 0 !important; margin: 0 !important;
+  }
+
+  /* Forms: single column on mobile */
+  .form-grid-2col { grid-template-columns: 1fr !important; }
+
+  /* Touch target minimum */
+  button, input[type="checkbox"], input[type="radio"] { min-height: 36px; }
+
+  /* Prevent zoom on input focus (iOS) */
+  input, select, textarea { font-size: 16px !important; }
+}
+
+@media (max-width: 480px) {
+  /* Stats pills stack vertically */
+  .stats-bar { grid-template-columns: 1fr 1fr !important; }
+}
+
+/* Sidebar drawer styles — controlled by JS */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.5);
+  z-index: 199;
+  backdrop-filter: blur(2px);
+}
+.sidebar-overlay.open { display: block; }
+
+@media (max-width: 768px) {
+  .sidebar-nav {
+    position: fixed !important;
+    left: -220px !important;
+    top: 0 !important;
+    height: 100vh !important;
+    z-index: 200 !important;
+    transition: left .25s ease !important;
+    box-shadow: none;
+  }
+  .sidebar-nav.open {
+    left: 0 !important;
+    box-shadow: 4px 0 24px rgba(0,0,0,.2) !important;
+  }
+  .hamburger-btn { display: flex !important; }
+  .topbar-left { gap: 8px !important; }
+}
+
+/* Hamburger button — hidden on desktop */
+.hamburger-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px; height: 36px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.hamburger-btn span {
+  display: block;
+  width: 18px; height: 2px;
+  background: var(--text);
+  position: relative;
+  transition: .2s;
+}
+.hamburger-btn span::before,
+.hamburger-btn span::after {
+  content: '';
+  position: absolute;
+  width: 18px; height: 2px;
+  background: var(--text);
+  transition: .2s;
+}
+.hamburger-btn span::before { top: -5px; }
+.hamburger-btn span::after  { top:  5px; }
