@@ -12,7 +12,7 @@ const TICKER_ITEMS = [
   'SUZUKI · Access 125 · ₹88,000',
 ];
 
-export default function Topbar({ active }) {
+export default function Topbar({ active, onMenuToggle }) {
   const { user } = useAuth();
   const ticker = TICKER_ITEMS.join('  ·  ') + '  ·  ';
   const dateStr = new Date().toLocaleDateString('en-IN', {
@@ -56,7 +56,11 @@ export default function Topbar({ active }) {
         padding: '0 24px', height: 46,
         background: 'var(--surface)', borderBottom: '1px solid var(--border)',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+        <div className="topbar-left" style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          {/* Hamburger — visible only on mobile via CSS */}
+          <button className="hamburger-btn" onClick={onMenuToggle} aria-label="Open menu">
+            <span />
+          </button>
           <span style={{ fontSize: 13, fontWeight: 600, letterSpacing: '-.01em' }}>
             {PAGE_LABELS[active] || 'Dashboard'}
           </span>
