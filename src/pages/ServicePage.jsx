@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { serviceApi, partsApi, customersApi, billsApi, salesApi, errMsg} from '../api/client';
 import { useSortable } from '../components/ui';
@@ -837,9 +837,82 @@ export function ServiceBillModal({ job, onClose }) {
   const rawBill = billData?.data;
   const existingBill = Array.isArray(rawBill) ? rawBill[0] : rawBill || null;
 
-  const [rows, setRows]       = useState([emptyRow()]);
-  const [payMode, setPayMode] = useState('Cash');
-  const [inited, setInited]   = useState(false);
+  const [rows, setRows]         = useState([emptyRow()]);
+  const [payMode, setPayMode]   = useState('Cash');
+  const [inited, setInited]     = useState(false);
+  const [barcodeVal, setBarcodeVal] = useState('');
+  const [scanning, setScanning]     = useState(false);
+  const [camError, setCamError]     = useState('');
+  const videoRef  = useRef(null);
+  const streamRef = useRef(null);
+  const detectorRef = useRef(null);
+  const scanLoopRef = useRef(null);
+
+  // Barcode scanner input — physical scanner sends barcode + Enter
+  const handleBarcodeKey = e => {
+    if (e.key === 'Enter' && barcodeVal.trim()) {
+      addPartByBarcode(barcodeVal.trim());
+      setBarcodeVal('');
+    }
+  };
+
+  const addPartByBarcode = (code) => {
+    const part = allParts.find(p =>
+      p.part_number?.toLowerCase() === code.toLowerCase() ||
+      p.barcode === code
+    );
+    if (part) {
+      fillFromPart(part);
+      toast.success(`Added: ${part.name}`);
+    } else {
+      // No part found — add as manual line with the scanned code
+      addRow();
+      toast(`Part "${code}" not found — added as manual line`);
+    }
+    setBarcodeVal('');
+  };
+
+  // Camera barcode scanning via BarcodeDetector API
+  const startCamera = async () => {
+    setCamError('');
+    if (!('BarcodeDetector' in window)) {
+      setCamError('Barcode scanning not supported in this browser. Use Chrome on Android or desktop.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode:'environment' } });
+      streamRef.current = stream;
+      setScanning(true);
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play();
+        }
+      }, 100);
+      detectorRef.current = new window.BarcodeDetector({ formats:['qr_code','ean_13','ean_8','code_128','code_39','upc_a','upc_e','itf'] });
+      const scan = async () => {
+        if (!videoRef.current || !detectorRef.current) return;
+        try {
+          const barcodes = await detectorRef.current.detect(videoRef.current);
+          if (barcodes.length > 0) {
+            stopCamera();
+            addPartByBarcode(barcodes[0].rawValue);
+            return;
+          }
+        } catch {}
+        scanLoopRef.current = requestAnimationFrame(scan);
+      };
+      scanLoopRef.current = requestAnimationFrame(scan);
+    } catch(err) {
+      setCamError('Camera access denied. Allow camera permission and try again.');
+    }
+  };
+
+  const stopCamera = () => {
+    setScanning(false);
+    if (scanLoopRef.current) cancelAnimationFrame(scanLoopRef.current);
+    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
+  };
 
   if (!loadingBill && !inited) {
     if (existingBill?.items?.length > 0) {
@@ -958,9 +1031,47 @@ export function ServiceBillModal({ job, onClose }) {
               </tbody>
             </table>
           </div>
-          <button onClick={addRow} style={{ ...btnGhost, fontSize:11, padding:'5px 12px', marginBottom:16 }}>
-            + Add line item
-          </button>
+          <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:16, flexWrap:'wrap' }}>
+            <button onClick={addRow} style={{ ...btnGhost, fontSize:11, padding:'5px 12px' }}>
+              + Add line item
+            </button>
+            {/* Physical barcode scanner input */}
+            <input
+              value={barcodeVal}
+              onChange={e => setBarcodeVal(e.target.value)}
+              onKeyDown={handleBarcodeKey}
+              placeholder="Scan barcode or type part no. + Enter"
+              style={{ background:C.s2, border:`1px solid ${C.border}`, borderRadius:3, padding:'5px 10px',
+                color:C.text, fontSize:11, fontFamily:'IBM Plex Mono,monospace', width:240, outline:'none' }}
+            />
+            {/* Camera scan button */}
+            <button onClick={scanning ? stopCamera : startCamera}
+              style={{ ...btnGhost, fontSize:11, padding:'5px 12px',
+                border: scanning ? '1px solid rgba(239,68,68,.5)' : undefined,
+                color: scanning ? 'var(--red,#ef4444)' : undefined }}>
+              {scanning ? '⏹ Stop Camera' : '📷 Scan Barcode'}
+            </button>
+          </div>
+          {camError && (
+            <div style={{ fontSize:11, color:'var(--red,#ef4444)', marginBottom:8, padding:'6px 10px',
+              background:'rgba(239,68,68,.08)', border:'1px solid rgba(239,68,68,.2)', borderRadius:3 }}>
+              {camError}
+            </div>
+          )}
+          {/* Camera viewfinder */}
+          {scanning && (
+            <div style={{ marginBottom:12, position:'relative', display:'inline-block' }}>
+              <video ref={videoRef} autoPlay playsInline muted
+                style={{ width:300, height:200, objectFit:'cover', borderRadius:4,
+                  border:'2px solid var(--accent)', display:'block' }} />
+              <div style={{ position:'absolute', inset:0, border:'2px solid rgba(184,134,11,.6)',
+                borderRadius:4, pointerEvents:'none', boxShadow:'inset 0 0 0 40px rgba(0,0,0,.25)' }} />
+              <div style={{ position:'absolute', bottom:8, left:0, right:0, textAlign:'center',
+                fontSize:10, color:'#fff', textShadow:'0 1px 2px rgba(0,0,0,.8)' }}>
+                Point camera at barcode
+              </div>
+            </div>
+          )}
           <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:16 }}>
             <div style={{ minWidth:260 }}>
               <TotRow label="Taxable Amount" val={`${RS}${fmt(taxable)}`} />
