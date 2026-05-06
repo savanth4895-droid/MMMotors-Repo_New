@@ -384,7 +384,7 @@ class ServiceBillUpdate(BaseModel):
 
 # ── Spare Parts ───────────────────────────────────────────────────────────────
 class SparePartCreate(BaseModel):
-    part_number:     str
+    part_number:     Optional[str] = ""
     name:            str
     category:        Optional[str] = ""
     brand:           Optional[str] = ""
@@ -1513,10 +1513,14 @@ async def list_parts(
 
 @api_router.post("/parts", status_code=201)
 async def create_part(body: SparePartCreate, current_user=Depends(verify_token)):
-    if await db.spare_parts.find_one({"part_number": body.part_number.strip()}):
-        raise HTTPException(status_code=409, detail="Part number already exists")
     doc = body.dict()
-    doc["part_number"] = doc["part_number"].strip()
+    pn = (doc.get("part_number") or "").strip()
+    if not pn:
+        pn = await next_sequence("part")
+    else:
+        if await db.spare_parts.find_one({"part_number": pn}):
+            raise HTTPException(status_code=409, detail="Part number already exists")
+    doc["part_number"] = pn
     doc["created_at"]  = datetime.utcnow().isoformat()
     result = await db.spare_parts.insert_one(doc)
     doc["id"] = str(result.inserted_id); doc.pop("_id", None)
