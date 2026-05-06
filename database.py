@@ -110,7 +110,7 @@ async def require_roles(*roles):
     return checker
 
 # ── Sequential counters ─────────────────────────────────────────────────────────
-_PREFIX = {"invoice": ("INV", 6), "job": ("SRV", 6), "part_bill": ("PRT", 6)}
+_PREFIX = {"invoice": ("INV", 6), "job": ("SRV", 6), "part_bill": ("PRT", 6), "part": ("PT", 6)}
 
 async def next_sequence(name: str) -> str:
     prefix, pad = _PREFIX[name]
