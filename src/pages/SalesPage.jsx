@@ -55,13 +55,13 @@ function InvoiceModal({ sale, onClose }) {
       accessories ? ['Accessories',accessories]: null,
       discount    ? ['Discount', -discount]    : null,
     ].filter(Boolean).map(([l,v],i) =>
-      \`<tr style="background:\${i%2?'#fafafa':'#fff'}">
+      `<tr style="background:\${i%2?'#fafafa':'#fff'}">
         <td style="padding:7px 14px;font-size:11px;color:#555;border-bottom:1px solid #eee">\${l}</td>
         <td style="padding:7px 14px;font-size:11px;text-align:right;border-bottom:1px solid #eee">\${v<0?'− ':''}\${RS}\${fmt(Math.abs(v))}</td>
-      </tr>\`
+      </tr>`
     ).join('');
 
-    const html = \`<!DOCTYPE html><html><head><meta charset="utf-8"/>
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
     <title>Invoice \${sale.invoice_number}</title>
     <style>
       *{margin:0;padding:0;box-sizing:border-box}
@@ -255,7 +255,7 @@ function InvoiceModal({ sale, onClose }) {
       </div>
     </div>
     <script>window.onload=()=>{window.print();}</script>
-    </body></html>\`;
+    </body></html>`;
 
     const w = window.open('', '_blank');
     w.document.write(html);
