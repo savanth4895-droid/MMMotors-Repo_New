@@ -16,6 +16,7 @@ const ALL_PAGES = [
   { id:'customers',   label:'Customers',      desc:'Customer records, history, tags' },
   { id:'debt',        label:'Debt Ledger',    desc:'Outstanding payments from customers' },
   { id:'expenses',    label:'Expenses',       desc:'Showroom expense tracking' },
+  { id:'accident-estimate', label:'Accident Estimate', desc:'Create repair estimates for accidental vehicles' },
   { id:'reports',     label:'Reports',        desc:'Revenue, P&L, brand analytics' },
   { id:'staff',       label:'Staff',          desc:'Staff management (owner only recommended)' },
   { id:'import',      label:'Import data',    desc:'Bulk import customers, vehicles, parts' },
@@ -25,7 +26,7 @@ const ALL_PAGES = [
 const ROLE_DEFAULTS = {
   owner:           ALL_PAGES.map(p => p.id),
   sales:           ['dashboard','sales','vehicles','customers','debt'],
-  service_advisor: ['dashboard','service','service-due','customers'],
+  service_advisor: ['dashboard','service','service-due','customers','accident-estimate'],
   parts_counter:   ['dashboard','parts'],
   technician:      ['dashboard','service'],
 };
