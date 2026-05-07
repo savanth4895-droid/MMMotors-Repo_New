@@ -124,7 +124,7 @@ function SeverityBadge({ value, onClick }) {
 function printEstimate(data) {
   const { vehicle, customer, incident, parts, labour, additional, notes } = data;
 
-  const partsTotal = parts.reduce((s, p) => s + (p.qty * p.unit_price * (1 + p.gst / 100)), 0);
+  const partsTotal = parts.reduce((s, p) => s + (p.qty * p.unit_price), 0);
   const labourTotal = labour.reduce((s, l) => s + (l.hours * l.rate), 0);
   const subTotal = partsTotal + labourTotal + Number(additional.misc || 0) + Number(additional.towing || 0) + Number(additional.inspection || 0);
   const discount = Number(additional.discount || 0);
@@ -132,7 +132,6 @@ function printEstimate(data) {
 
   const partRows = parts.map(p => {
     const amt = p.qty * p.unit_price;
-    const gst = amt * p.gst / 100;
     return `<tr>
       <td>${p.part_name}</td>
       <td style="font-family:monospace;font-size:10px">${p.part_number || '—'}</td>
@@ -140,7 +139,7 @@ function printEstimate(data) {
       <td style="text-align:center">${p.qty}</td>
       <td style="text-align:right">${RS}${fmt(p.unit_price)}</td>
       <td style="text-align:center">${p.gst}%</td>
-      <td style="text-align:right">${RS}${fmt(amt + gst)}</td>
+      <td style="text-align:right">${RS}${fmt(amt)}</td>
     </tr>`;
   }).join('');
 
@@ -335,7 +334,7 @@ export default function AccidentEstimatePage() {
   const [activeTab, setActiveTab] = useState('vehicle');
 
   // Calculations
-  const partsTotal  = parts.reduce((s, p)  => s + (Number(p.qty||0) * Number(p.unit_price||0) * (1 + Number(p.gst||0)/100)), 0);
+  const partsTotal  = parts.reduce((s, p)  => s + (Number(p.qty||0) * Number(p.unit_price||0)), 0);
   const labourTotal = labour.reduce((s, l) => s + (Number(l.hours||0) * Number(l.rate||0)), 0);
   const subTotal    = partsTotal + labourTotal + Number(additional.towing||0) + Number(additional.inspection||0) + Number(additional.misc||0);
   const grandTotal  = subTotal - Number(additional.discount||0);
@@ -513,7 +512,7 @@ export default function AccidentEstimatePage() {
             ))}
           </div>
           {parts.map(p => {
-            const amt = Number(p.qty||0) * Number(p.unit_price||0) * (1 + Number(p.gst||0)/100);
+            const amt = Number(p.qty||0) * Number(p.unit_price||0);
             return (
               <div key={p._key} style={{ display: 'grid', gridTemplateColumns: '2fr 1.2fr 1.2fr 70px 110px 80px 110px 36px', gap: 6, marginBottom: 6, alignItems: 'center' }}>
                 <input style={inp} value={p.part_name} onChange={e => updatePart(p._key,'part_name',e.target.value)} placeholder="Part name" />
