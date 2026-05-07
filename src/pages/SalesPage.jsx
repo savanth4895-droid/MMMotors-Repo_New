@@ -18,163 +18,244 @@ function InvoiceModal({ sale, onClose }) {
   const [notes, setNotes] = useState(sale.notes || '');
 
   const print = () => {
-    const RS = '₹';
+    const RS = '\u20b9';
     const fmt = n => Number(n||0).toLocaleString('en-IN');
+    const nominee = sale.nominee || {};
+    const total = sale.total_amount || 0;
+    const totalStr = fmt(total);
 
-    // build amount breakdown rows
+    // amount in words (simple)
+    const ones = ['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen'];
+    const tens = ['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];
+    function numWords(n) {
+      n = Math.round(n);
+      if (n === 0) return 'Zero';
+      if (n < 0) return 'Minus ' + numWords(-n);
+      let w = '';
+      if (n >= 10000000) { w += numWords(Math.floor(n/10000000)) + ' Crore '; n %= 10000000; }
+      if (n >= 100000)   { w += numWords(Math.floor(n/100000))   + ' Lakh '; n %= 100000; }
+      if (n >= 1000)     { w += numWords(Math.floor(n/1000))     + ' Thousand '; n %= 1000; }
+      if (n >= 100)      { w += ones[Math.floor(n/100)]          + ' Hundred '; n %= 100; }
+      if (n >= 20)       { w += tens[Math.floor(n/10)]; if (n%10) w += ' ' + ones[n%10]; }
+      else if (n > 0)    { w += ones[n]; }
+      return w.trim();
+    }
+    const amtWords = numWords(total) + ' Rupees Only';
+
     const exShowroom  = sale.ex_showroom_price || sale.total_amount || 0;
-    const rto         = sale.rto               || 0;
-    const insurance   = sale.insurance         || 0;
-    const accessories = sale.accessories       || 0;
-    const discount    = sale.discount          || 0;
-    const totalAmount = sale.total_amount      || 0;
+    const rto         = sale.rto        || 0;
+    const insurance   = sale.insurance  || 0;
+    const accessories = sale.accessories|| 0;
+    const discount    = sale.discount   || 0;
 
-    const amountRows = [
+    const descRows = [
       ['Ex-Showroom Price', exShowroom],
-      rto         ? ['RTO',           rto]         : null,
-      insurance   ? ['Insurance',     insurance]   : null,
-      accessories ? ['Accessories',   accessories] : null,
-      discount    ? ['Discount',      -discount]   : null,
-    ].filter(Boolean).map(([l,v]) =>
-      `<tr><td style="padding:8px 12px;border-bottom:1px solid #eee;color:#555;font-size:12px">${l}</td>
-       <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;font-size:12px">${v<0?'− ':''}${RS}${fmt(Math.abs(v))}</td></tr>`
+      rto         ? ['RTO', rto]               : null,
+      insurance   ? ['Insurance', insurance]   : null,
+      accessories ? ['Accessories',accessories]: null,
+      discount    ? ['Discount', -discount]    : null,
+    ].filter(Boolean).map(([l,v],i) =>
+      \`<tr style="background:\${i%2?'#fafafa':'#fff'}">
+        <td style="padding:7px 14px;font-size:11px;color:#555;border-bottom:1px solid #eee">\${l}</td>
+        <td style="padding:7px 14px;font-size:11px;text-align:right;border-bottom:1px solid #eee">\${v<0?'− ':''}\${RS}\${fmt(Math.abs(v))}</td>
+      </tr>\`
     ).join('');
 
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
-    <title>Invoice — ${sale.invoice_number}</title>
+    const html = \`<!DOCTYPE html><html><head><meta charset="utf-8"/>
+    <title>Invoice \${sale.invoice_number}</title>
     <style>
       *{margin:0;padding:0;box-sizing:border-box}
-      body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#111;padding:24px;background:#fff}
-      .wrap{max-width:680px;margin:0 auto}
-      .hdr{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:14px;border-bottom:2.5px solid #B8860B;margin-bottom:20px}
-      .brand{font-size:22px;font-weight:800;color:#B8860B;letter-spacing:-.5px}
-      .brand-sub{font-size:10px;color:#888;margin-top:3px}
-      .inv-meta{text-align:right}
-      .inv-meta .inv-no{font-size:16px;font-weight:700;color:#B8860B}
-      .inv-meta .inv-date{font-size:10px;color:#666;margin-top:4px}
-      .section-title{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:#888;margin-bottom:10px;font-weight:700}
-      .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
-      .box{background:#f9f9f9;border:1px solid #e5e5e5;border-radius:5px;padding:14px}
-      .row{display:flex;padding:7px 0;border-bottom:1px solid #eee}
-      .row:last-child{border-bottom:none}
-      .row .lbl{width:150px;color:#666;font-size:11px;flex-shrink:0}
-      .row .val{font-size:12px;font-weight:500;word-break:break-word}
-      .amt-table{width:100%;border-collapse:collapse;margin-bottom:16px}
-      .total-row td{font-size:14px;font-weight:800;color:#B8860B;padding:10px 12px;border-top:2px solid #B8860B}
-      .notes-box{background:#f9f9f9;border:1px solid #e5e5e5;border-radius:5px;padding:12px;font-size:12px;color:#444;min-height:40px;margin-bottom:20px}
-      .footer{display:flex;justify-content:space-between;border-top:1px solid #ddd;padding-top:12px;font-size:10px;color:#888}
-      @media print{body{padding:10px}}
+      body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#111;background:#fff}
+      .page{max-width:700px;margin:0 auto;padding:0}
+      .topbar{background:#1a1a1a;height:10px}
+      .goldbar{background:#B8860B;height:3px}
+      .hdr{display:flex;justify-content:space-between;align-items:flex-start;padding:16px 24px 14px;border-bottom:1.5px solid #B8860B}
+      .brand{font-size:22px;font-weight:900;color:#1a1a1a;letter-spacing:-.5px}
+      .brand-sub{font-size:9px;color:#888;margin-top:3px;letter-spacing:.04em}
+      .inv-label{font-size:9px;color:#888;font-weight:700;letter-spacing:.1em;text-transform:uppercase;text-align:right}
+      .inv-no{font-size:18px;font-weight:800;color:#B8860B;text-align:right}
+      .inv-date{font-size:9px;color:#888;text-align:right;margin-top:3px}
+      .body{padding:20px 24px}
+      .sec-lbl{font-size:8px;font-weight:800;color:#B8860B;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px;padding-bottom:3px;border-bottom:1px solid #e8d090}
+      .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:18px}
+      .info-box{background:#f9f9f9;border:1px solid #e5e5e5;border-radius:4px;padding:12px 14px}
+      .irow{display:flex;padding:5px 0;border-bottom:1px solid #eee;font-size:11px}
+      .irow:last-child{border-bottom:none}
+      .irow .lbl{width:110px;color:#888;flex-shrink:0;font-size:10px}
+      .irow .val{font-weight:600;word-break:break-word;color:#111}
+      .nom-box{display:grid;grid-template-columns:1fr 1fr 80px 1fr;background:#f9f9f9;border:1px solid #e5e5e5;border-radius:4px;margin-bottom:18px}
+      .nom-cell{padding:10px 12px;border-right:1px solid #eee}
+      .nom-cell:last-child{border-right:none}
+      .nom-cell .lbl{font-size:9px;color:#888;margin-bottom:4px}
+      .nom-cell .val{font-size:11px;font-weight:600}
+      .desc-tbl{width:100%;border-collapse:collapse;margin-bottom:0}
+      .desc-tbl th{background:#1a1a1a;color:#fff;padding:8px 12px;font-size:9px;letter-spacing:.08em;font-weight:700;text-align:left}
+      .desc-tbl th:last-child{text-align:right}
+      .desc-tbl td{padding:7px 14px;font-size:11px;border-bottom:1px solid #eee}
+      .amt-tbl{width:100%;border-collapse:collapse;margin-bottom:0}
+      .amt-tbl td{padding:6px 14px;font-size:11px;border-bottom:1px solid #eee}
+      .total-box{background:#f5e6c0;border:1.5px solid #B8860B;border-radius:3px;padding:8px 14px;text-align:right;margin-top:2px}
+      .total-lbl{font-size:9px;color:#7a5800;font-weight:700;letter-spacing:.08em}
+      .total-val{font-size:16px;font-weight:900;color:#1a1a1a}
+      .sig-row{display:flex;justify-content:space-between;align-items:flex-end;margin:22px 0 0;padding-top:12px;border-top:1px solid #ddd}
+      .sig-col{text-align:center}
+      .sig-col .sig-line{width:120px;border-bottom:1px solid #555;margin:0 auto 5px}
+      .sig-col .sig-lbl{font-size:9px;color:#888}
+      .sig-col .sig-name{font-size:10px;font-weight:700;color:#1a1a1a;margin-top:2px}
+      .sched-wrap{margin-top:20px;border:1px solid #ddd;border-radius:3px;overflow:hidden}
+      .sched-hdr{background:#1a1a1a;padding:9px 14px;display:flex;align-items:center;gap:0}
+      .sched-hdr-gold{background:#B8860B;height:3px;margin-bottom:0}
+      .sched-title{color:#fff;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+      .dear-box{background:#fdf8ec;border-bottom:1px solid #e8d090;padding:10px 14px;font-size:10px;color:#5a4800}
+      .sched-tbl{width:100%;border-collapse:collapse}
+      .sched-tbl th{background:#1a1a1a;color:#fff;padding:8px 12px;font-size:9px;letter-spacing:.08em;font-weight:700;text-align:left}
+      .sched-tbl td{padding:8px 12px;font-size:11px;border-bottom:1px solid #eee}
+      .sched-tbl tr:nth-child(even) td{background:#fafafa}
+      .sched-note{background:#fdf8ec;border-top:1.5px solid #B8860B;padding:7px 14px;font-size:9.5px;font-weight:700;color:#7a5800;text-align:center}
+      .sched-footer{display:flex;justify-content:space-between;padding:7px 14px;font-size:9.5px;color:#777;border-top:1px solid #eee}
+      .thankyou{text-align:center;padding:12px 0 4px;font-size:13px;font-weight:900;color:#1a1a1a}
+      .thankyou-sub{text-align:center;font-size:9.5px;color:#888;font-style:italic;padding-bottom:2px}
+      .thankyou-pts{text-align:center;font-size:9.5px;color:#666;padding-bottom:10px}
+      .page-footer{background:#1a1a1a;color:#777;font-size:8px;display:flex;justify-content:space-between;padding:7px 24px;margin-top:0}
+      @media print{body{margin:0}@page{margin:0}}
     </style></head><body>
-    <div class="wrap">
+    <div class="page">
+      <div class="topbar"></div>
+      <div class="goldbar"></div>
       <div class="hdr">
         <div>
           <div class="brand">MM MOTORS</div>
-          <div class="brand-sub">Authorised Multi-Brand Dealership</div>
+          <div class="brand-sub">MULTI-BRAND DEALERSHIP &nbsp;·&nbsp; MALUR</div>
         </div>
-        <div class="inv-meta">
-          <div style="font-size:11px;color:#888;font-weight:600;letter-spacing:.07em;text-transform:uppercase">Tax Invoice</div>
-          <div class="inv-no">${sale.invoice_number}</div>
-          <div class="inv-date">Date: ${sale.sale_date || new Date().toLocaleDateString('en-IN')}</div>
-        </div>
-      </div>
-
-      <div class="grid2">
-        <div class="box">
-          <div class="section-title">Customer Details</div>
-          <div class="row"><div class="lbl">Name</div><div class="val">${sale.customer_name||'—'}</div></div>
-          <div class="row"><div class="lbl">C/O</div><div class="val">${sale.care_of||sale.customer_care_of||'—'}</div></div>
-          <div class="row"><div class="lbl">Mobile</div><div class="val">${sale.customer_mobile||'—'}</div></div>
-          <div class="row"><div class="lbl">Address</div><div class="val">${sale.customer_address||'—'}</div></div>
-        </div>
-        <div class="box">
-          <div class="section-title">Vehicle Details</div>
-          <div class="row"><div class="lbl">Brand / Model</div><div class="val">${sale.vehicle_brand||''} ${sale.vehicle_model||''}</div></div>
-          <div class="row"><div class="lbl">Variant</div><div class="val">${sale.vehicle_variant||'—'}</div></div>
-          <div class="row"><div class="lbl">Colour</div><div class="val">${sale.vehicle_color||'—'}</div></div>
-          <div class="row"><div class="lbl">Vehicle No.</div><div class="val">${sale.vehicle_number||'—'}</div></div>
-          <div class="row"><div class="lbl">Chassis No.</div><div class="val">${sale.chassis_number||'—'}</div></div>
-          <div class="row"><div class="lbl">Engine No.</div><div class="val">${sale.engine_number||'—'}</div></div>
-          <div class="row"><div class="lbl">HP (Financier)</div><div class="val">${sale.financier||'—'}</div></div>
+        <div>
+          <div class="inv-label">Sale Invoice</div>
+          <div class="inv-no">\${sale.invoice_number||'—'}</div>
+          <div class="inv-date">Date: \${sale.sale_date||new Date().toLocaleDateString('en-IN')}</div>
         </div>
       </div>
 
-      <div class="section-title">Nominee Details</div>
-      <div class="box" style="margin-bottom:20px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0">
-        <div class="row" style="flex-direction:column;border-right:1px solid #eee;padding:10px"><div class="lbl" style="width:auto;margin-bottom:4px">Name</div><div class="val">${sale.nominee?.name||'—'}</div></div>
-        <div class="row" style="flex-direction:column;border-right:1px solid #eee;padding:10px"><div class="lbl" style="width:auto;margin-bottom:4px">Relation</div><div class="val">${sale.nominee?.relation||'—'}</div></div>
-        <div class="row" style="flex-direction:column;border-right:1px solid #eee;padding:10px"><div class="lbl" style="width:auto;margin-bottom:4px">Age</div><div class="val">${sale.nominee?.age||'—'}</div></div>
-        <div class="row" style="flex-direction:column;padding:10px"><div class="lbl" style="width:auto;margin-bottom:4px">Number</div><div class="val">${sale.nominee?.number||'—'}</div></div>
-      </div>
-
-      <div class="section-title">Amount Breakdown</div>
-      <table class="amt-table">
-        <tbody>
-          ${amountRows}
-        </tbody>
-        <tfoot>
-          <tr class="total-row"><td>Total Amount</td><td style="text-align:right">${RS}${fmt(totalAmount)}</td></tr>
-        </tfoot>
-      </table>
-      <div style="text-align:right;font-size:10px;color:#888;font-style:italic;margin-bottom:20px">
-        Payment Mode: ${sale.payment_mode||'Cash'}
-      </div>
-
-      ${notes ? `<div class="section-title">Notes</div><div class="notes-box">${notes}</div>` : ''}
-
-      <div style="margin-top:28px;page-break-inside:avoid">
-        <div style="background:#111;color:#fff;padding:10px 16px;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">Service Schedule</div>
-        <div style="background:#fdf8ec;border:1px solid #e8d8a0;padding:12px 16px;font-size:11px;color:#5a4a00;margin-bottom:0">
-          <strong>DEAR VALUED CUSTOMER,</strong><br/>
-          We thank you for choosing our world-class vehicle. To ensure optimal performance and longevity,
-          please follow the service schedule below for a pleasant riding experience at all times.
+      <div class="body">
+        <div class="info-grid">
+          <div class="info-box">
+            <div class="sec-lbl">Customer Details</div>
+            <div class="irow"><div class="lbl">Name</div><div class="val">\${sale.customer_name||'—'}</div></div>
+            <div class="irow"><div class="lbl">C/O</div><div class="val">\${sale.care_of||sale.customer_care_of||'—'}</div></div>
+            <div class="irow"><div class="lbl">Mobile</div><div class="val">\${sale.customer_mobile||'—'}</div></div>
+            <div class="irow"><div class="lbl">Address</div><div class="val">\${sale.customer_address||'—'}</div></div>
+            <div class="irow"><div class="lbl">Payment</div><div class="val">\${sale.payment_mode||'—'}</div></div>
+          </div>
+          <div class="info-box">
+            <div class="sec-lbl">Vehicle Details</div>
+            <div class="irow"><div class="lbl">Brand</div><div class="val">\${sale.vehicle_brand||'—'}</div></div>
+            <div class="irow"><div class="lbl">Model</div><div class="val">\${sale.vehicle_model||'—'}</div></div>
+            <div class="irow"><div class="lbl">Variant</div><div class="val">\${sale.vehicle_variant||'—'}</div></div>
+            <div class="irow"><div class="lbl">Colour</div><div class="val">\${sale.vehicle_color||'—'}</div></div>
+            <div class="irow"><div class="lbl">Financier</div><div class="val">\${sale.financier||'—'}</div></div>
+          </div>
         </div>
-        <table style="width:100%;border-collapse:collapse;border:1px solid #ddd">
+
+        <div class="info-grid" style="margin-bottom:18px">
+          <div class="info-box">
+            <div class="sec-lbl">Registration / Chassis</div>
+            <div class="irow"><div class="lbl">Vehicle No.</div><div class="val">\${sale.vehicle_number||'—'}</div></div>
+            <div class="irow"><div class="lbl">RTO</div><div class="val">\${sale.rto||'—'}</div></div>
+            <div class="irow"><div class="lbl">Chassis No.</div><div class="val" style="font-family:monospace">\${sale.chassis_number||'—'}</div></div>
+            <div class="irow"><div class="lbl">Engine No.</div><div class="val" style="font-family:monospace">\${sale.engine_number||'—'}</div></div>
+          </div>
+          <div class="info-box">
+            <div class="sec-lbl">Nominee (Insurance)</div>
+            <div class="irow"><div class="lbl">Name</div><div class="val">\${nominee.name||'—'}</div></div>
+            <div class="irow"><div class="lbl">Relation</div><div class="val">\${nominee.relation||'—'}</div></div>
+            <div class="irow"><div class="lbl">Age</div><div class="val">\${nominee.age||'—'}</div></div>
+            <div class="irow"><div class="lbl">Mobile</div><div class="val">\${nominee.number||'—'}</div></div>
+          </div>
+        </div>
+
+        <table class="desc-tbl" style="margin-bottom:2px">
           <thead>
-            <tr style="background:#222;color:#fff">
-              <th style="padding:9px 14px;text-align:left;font-size:10px;letter-spacing:.07em;font-weight:700;width:30%">SERVICE DATE</th>
-              <th style="padding:9px 14px;text-align:left;font-size:10px;letter-spacing:.07em;font-weight:700;width:35%">SERVICE TYPE</th>
-              <th style="padding:9px 14px;text-align:left;font-size:10px;letter-spacing:.07em;font-weight:700">RECOMMENDED SCHEDULE</th>
+            <tr>
+              <th style="width:35%">DESCRIPTION</th>
+              <th style="width:22%">CHASSIS / DETAILS</th>
+              <th style="width:13%">PAYMENT</th>
+              <th style="width:14%">MODE</th>
+              <th style="width:16%;text-align:right">AMOUNT</th>
             </tr>
           </thead>
           <tbody>
-            <tr style="border-bottom:1px solid #eee">
-              <td style="padding:10px 14px;font-size:11px">__/__/____</td>
-              <td style="padding:10px 14px;font-size:11px;font-weight:700;color:#B8860B">FIRST SERVICE</td>
-              <td style="padding:10px 14px;font-size:11px;color:#555">500-700 kms or 15-30 days</td>
-            </tr>
-            <tr style="border-bottom:1px solid #eee;background:#fafafa">
-              <td style="padding:10px 14px;font-size:11px">__/__/____</td>
-              <td style="padding:10px 14px;font-size:11px;font-weight:700;color:#B8860B">SECOND SERVICE</td>
-              <td style="padding:10px 14px;font-size:11px;color:#555">3000-3500 kms or 30-90 days</td>
-            </tr>
-            <tr>
-              <td style="padding:10px 14px;font-size:11px">__/__/____</td>
-              <td style="padding:10px 14px;font-size:11px;font-weight:700;color:#B8860B">THIRD SERVICE</td>
-              <td style="padding:10px 14px;font-size:11px;color:#555">6000-6500 kms or 90-180 days</td>
+            <tr style="background:#f7f7f4">
+              <td>
+                <div style="font-weight:700;font-size:12px">\${sale.vehicle_brand||''} \${sale.vehicle_model||''}</div>
+                <div style="font-size:10px;color:#888;margin-top:2px">\${[sale.vehicle_variant,sale.vehicle_color].filter(Boolean).join('  ·  ')}</div>
+              </td>
+              <td style="font-family:monospace;font-size:10px">\${sale.chassis_number||'—'}</td>
+              <td>\${sale.payment_mode||'—'}</td>
+              <td>Full Payment</td>
+              <td style="text-align:right;font-weight:800;font-size:13px;color:#B8860B">\${RS}\${fmt(total)}</td>
             </tr>
           </tbody>
         </table>
-        <div style="display:flex;justify-content:space-between;border-top:2px solid #B8860B;padding:8px 14px;font-size:10px;color:#666;background:#f9f9f9">
-          <span>* Trusted Dealer</span><span>* 24/7 Service Support</span><span>* Quality Guaranteed</span>
+        <div style="border-top:1px solid #c0a040;margin-bottom:6px"></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+          <div style="font-size:10px;font-style:italic;color:#888">\${amtWords}</div>
+          <div class="total-box">
+            <div class="total-lbl">TOTAL AMOUNT</div>
+            <div class="total-val">\${RS}\${totalStr}</div>
+          </div>
         </div>
-        <div style="text-align:center;padding:14px 0 4px;font-size:13px;font-weight:800;color:#111">Thank You for Choosing M M Motors!</div>
-        <div style="text-align:center;font-size:10px;color:#888;font-style:italic">Your trust drives our excellence in two-wheeler sales and service.</div>
-        <div style="text-align:center;font-size:10px;color:#666;padding:4px 0 8px">* Premium Quality &nbsp; * Expert Service &nbsp; * Customer First</div>
+
+        <div class="sig-row">
+          <div class="sig-col" style="text-align:left">
+            <div class="sig-line" style="margin:0 0 5px 0"></div>
+            <div class="sig-lbl">Customer's Signature</div>
+            <div class="sig-name">\${(sale.customer_name||'').toUpperCase()}</div>
+          </div>
+          <div class="sig-col">
+            <div class="sig-lbl" style="margin-bottom:0">Sold by: \${sale.sold_by||sale.staff_name||'MM MOTORS'}</div>
+          </div>
+          <div class="sig-col" style="text-align:right">
+            <div class="sig-line" style="margin:0 0 5px auto"></div>
+            <div class="sig-lbl">Authorised Signatory</div>
+            <div class="sig-name">MM MOTORS</div>
+          </div>
+        </div>
+
+        <div class="sched-wrap">
+          <div style="background:#B8860B;height:3px"></div>
+          <div class="sched-hdr"><span class="sched-title">Service Schedule</span></div>
+          <div class="dear-box">
+            <strong>DEAR VALUED CUSTOMER,</strong><br/>
+            We thank you for choosing our world-class vehicle. To ensure optimal performance and longevity,
+            please follow the service schedule below for a pleasant riding experience at all times.
+          </div>
+          <table class="sched-tbl">
+            <thead>
+              <tr><th>SERVICE DATE</th><th>SERVICE TYPE</th><th>RECOMMENDED SCHEDULE</th></tr>
+            </thead>
+            <tbody>
+              <tr><td style="font-family:monospace;color:#888">__/__/____</td><td style="font-weight:700;color:#B8860B">FIRST SERVICE</td><td>500-700 kms or 15-30 days</td></tr>
+              <tr><td style="font-family:monospace;color:#888">__/__/____</td><td style="font-weight:700;color:#B8860B">SECOND SERVICE</td><td>3000-3500 kms or 30-90 days</td></tr>
+              <tr><td style="font-family:monospace;color:#888">__/__/____</td><td style="font-weight:700;color:#B8860B">THIRD SERVICE</td><td>6000-6500 kms or 90-180 days</td></tr>
+              <tr><td style="font-family:monospace;color:#888">__/__/____</td><td style="font-weight:700;color:#B8860B">FOURTH SERVICE</td><td>9000-9500 kms or 180-270 days</td></tr>
+            </tbody>
+          </table>
+          <div class="sched-note">IMPORTANT: Follow whichever milestone comes first (km or days)</div>
+          <div class="sched-footer">
+            <span>* Trusted Dealer</span><span>* 24/7 Service Support</span><span>* Quality Guaranteed</span>
+          </div>
+          <div class="thankyou">Thank You for Choosing M M Motors!</div>
+          <div class="thankyou-sub">Your trust drives our excellence in two-wheeler sales and service.</div>
+          <div class="thankyou-pts">* Premium Quality &nbsp; * Expert Service &nbsp; * Customer First</div>
+        </div>
       </div>
 
-      <div class="footer" style="margin-top:20px">
-        <span>Customer's Signature</span>
-        <span>Sold by: ${sale.sold_by || sale.staff_name || 'MM MOTORS'}</span>
-        <span>Authorised Signatory</span>
-      </div>
-      <div style="display:flex;justify-content:space-between;font-size:11px;font-weight:700;padding:4px 0 0">
-        <span>${sale.customer_name || ''}</span>
-        <span></span>
-        <span>MM MOTORS</span>
+      <div class="goldbar"></div>
+      <div class="page-footer">
+        <span>This is a computer-generated document. No signature required if digitally authenticated.</span>
+        <span>MM Motors &nbsp;·&nbsp; Malur &nbsp;·&nbsp; Multi-brand Dealership</span>
       </div>
     </div>
     <script>window.onload=()=>{window.print();}</script>
-    </body></html>`;
+    </body></html>\`;
 
     const w = window.open('', '_blank');
     w.document.write(html);
