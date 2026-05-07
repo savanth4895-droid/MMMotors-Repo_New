@@ -823,8 +823,9 @@ def _generate_sale_pdf(sale: dict) -> bytes:
                 if line: lines.append(line)
                 line = w
         if line: lines.append(line)
-        for li, ln in enumerate(lines[:3]):  # max 3 lines
+        for li, ln in enumerate(lines):
             c.drawString(x + 24*mm, y - li * line_h, ln)
+        return len(lines)
     COL1 = ML; COL2 = W/2 + 2*mm; RH = 5*mm
     COL1_MAX = (W/2 - 2*mm) - (ML + 24*mm)   # max text width for COL1 values
     COL2_MAX = MR - (COL2 + 24*mm)            # max text width for COL2 values
@@ -835,12 +836,13 @@ def _generate_sale_pdf(sale: dict) -> bytes:
     irow(COL1, INFO_Y - 1.6*RH, 'Name',    sale.get('customer_name',''),   max_w=COL1_MAX)
     irow(COL1, INFO_Y - 2.6*RH, 'C/O',     sale.get('care_of',''),          max_w=COL1_MAX)
     irow(COL1, INFO_Y - 3.6*RH, 'Mobile',  sale.get('customer_mobile',''),  max_w=COL1_MAX)
-    irow_wrap(COL1, INFO_Y - 4.6*RH, 'Address', sale.get('customer_address',''), max_w=COL1_MAX)
-    irow(COL1, INFO_Y - 6.8*RH, 'Payment', sale.get('payment_mode',''),     max_w=COL1_MAX)
+    addr_lines = irow_wrap(COL1, INFO_Y - 4.6*RH, 'Address', sale.get('customer_address',''), max_w=COL1_MAX)
+    addr_extra = max(0, addr_lines - 1)
+    irow(COL1, INFO_Y - (5.6 + addr_extra)*RH, 'Payment', sale.get('payment_mode',''), max_w=COL1_MAX)
     sec_label(COL2, INFO_Y, 'Vehicle Details')
     for i, (l, v) in enumerate([('Brand', sale.get('vehicle_brand','')), ('Model', sale.get('vehicle_model','')), ('Variant', sale.get('vehicle_variant','')), ('Colour', sale.get('vehicle_color','')), ('Financier', sale.get('financier',''))]):
         irow(COL2, INFO_Y - (i+1.6)*RH, l, v, max_w=COL2_MAX)
-    SEC2_Y = INFO_Y - 8.8*RH   # extra row for wrapped address
+    SEC2_Y = INFO_Y - (7.8 + addr_extra)*RH   # extra row for wrapped address
     sec_label(COL1, SEC2_Y, 'Registration / Chassis')
     for i, (l, v, m) in enumerate([
         ('Vehicle No', sale.get('vehicle_number',''), False),
