@@ -121,9 +121,56 @@ function InvoiceModal({ sale, onClose }) {
 
       ${notes ? `<div class="section-title">Notes</div><div class="notes-box">${notes}</div>` : ''}
 
-      <div class="footer">
-        <span>Thank you for choosing MM Motors!</span>
+      <div style="margin-top:28px;page-break-inside:avoid">
+        <div style="background:#111;color:#fff;padding:10px 16px;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">Service Schedule</div>
+        <div style="background:#fdf8ec;border:1px solid #e8d8a0;padding:12px 16px;font-size:11px;color:#5a4a00;margin-bottom:0">
+          <strong>DEAR VALUED CUSTOMER,</strong><br/>
+          We thank you for choosing our world-class vehicle. To ensure optimal performance and longevity,
+          please follow the service schedule below for a pleasant riding experience at all times.
+        </div>
+        <table style="width:100%;border-collapse:collapse;border:1px solid #ddd">
+          <thead>
+            <tr style="background:#222;color:#fff">
+              <th style="padding:9px 14px;text-align:left;font-size:10px;letter-spacing:.07em;font-weight:700;width:30%">SERVICE DATE</th>
+              <th style="padding:9px 14px;text-align:left;font-size:10px;letter-spacing:.07em;font-weight:700;width:35%">SERVICE TYPE</th>
+              <th style="padding:9px 14px;text-align:left;font-size:10px;letter-spacing:.07em;font-weight:700">RECOMMENDED SCHEDULE</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="border-bottom:1px solid #eee">
+              <td style="padding:10px 14px;font-size:11px">__/__/____</td>
+              <td style="padding:10px 14px;font-size:11px;font-weight:700;color:#B8860B">FIRST SERVICE</td>
+              <td style="padding:10px 14px;font-size:11px;color:#555">500-700 kms or 15-30 days</td>
+            </tr>
+            <tr style="border-bottom:1px solid #eee;background:#fafafa">
+              <td style="padding:10px 14px;font-size:11px">__/__/____</td>
+              <td style="padding:10px 14px;font-size:11px;font-weight:700;color:#B8860B">SECOND SERVICE</td>
+              <td style="padding:10px 14px;font-size:11px;color:#555">3000-3500 kms or 30-90 days</td>
+            </tr>
+            <tr>
+              <td style="padding:10px 14px;font-size:11px">__/__/____</td>
+              <td style="padding:10px 14px;font-size:11px;font-weight:700;color:#B8860B">THIRD SERVICE</td>
+              <td style="padding:10px 14px;font-size:11px;color:#555">6000-6500 kms or 90-180 days</td>
+            </tr>
+          </tbody>
+        </table>
+        <div style="display:flex;justify-content:space-between;border-top:2px solid #B8860B;padding:8px 14px;font-size:10px;color:#666;background:#f9f9f9">
+          <span>* Trusted Dealer</span><span>* 24/7 Service Support</span><span>* Quality Guaranteed</span>
+        </div>
+        <div style="text-align:center;padding:14px 0 4px;font-size:13px;font-weight:800;color:#111">Thank You for Choosing M M Motors!</div>
+        <div style="text-align:center;font-size:10px;color:#888;font-style:italic">Your trust drives our excellence in two-wheeler sales and service.</div>
+        <div style="text-align:center;font-size:10px;color:#666;padding:4px 0 8px">* Premium Quality &nbsp; * Expert Service &nbsp; * Customer First</div>
+      </div>
+
+      <div class="footer" style="margin-top:20px">
+        <span>Customer's Signature</span>
+        <span>Sold by: ${sale.sold_by || sale.staff_name || 'MM MOTORS'}</span>
         <span>Authorised Signatory</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;font-weight:700;padding:4px 0 0">
+        <span>${sale.customer_name || ''}</span>
+        <span></span>
+        <span>MM MOTORS</span>
       </div>
     </div>
     <script>window.onload=()=>{window.print();}</script>
