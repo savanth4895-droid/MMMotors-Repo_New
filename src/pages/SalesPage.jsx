@@ -55,14 +55,14 @@ function InvoiceModal({ sale, onClose }) {
       accessories ? ['Accessories',accessories]: null,
       discount    ? ['Discount', -discount]    : null,
     ].filter(Boolean).map(([l,v],i) =>
-      `<tr style="background:\${i%2?'#fafafa':'#fff'}">
-        <td style="padding:7px 14px;font-size:11px;color:#555;border-bottom:1px solid #eee">\${l}</td>
-        <td style="padding:7px 14px;font-size:11px;text-align:right;border-bottom:1px solid #eee">\${v<0?'− ':''}\${RS}\${fmt(Math.abs(v))}</td>
+      `<tr style="background:${i%2?'#fafafa':'#fff'}">
+        <td style="padding:7px 14px;font-size:11px;color:#555;border-bottom:1px solid #eee">${l}</td>
+        <td style="padding:7px 14px;font-size:11px;text-align:right;border-bottom:1px solid #eee">${v<0?'− ':''}${RS}${fmt(Math.abs(v))}</td>
       </tr>`
     ).join('');
 
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
-    <title>Invoice \${sale.invoice_number}</title>
+    <title>Invoice ${sale.invoice_number}</title>
     <style>
       *{margin:0;padding:0;box-sizing:border-box}
       body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#111;background:#fff}
@@ -129,8 +129,8 @@ function InvoiceModal({ sale, onClose }) {
         </div>
         <div>
           <div class="inv-label">Sale Invoice</div>
-          <div class="inv-no">\${sale.invoice_number||'—'}</div>
-          <div class="inv-date">Date: \${sale.sale_date||new Date().toLocaleDateString('en-IN')}</div>
+          <div class="inv-no">${sale.invoice_number||'—'}</div>
+          <div class="inv-date">Date: ${sale.sale_date||new Date().toLocaleDateString('en-IN')}</div>
         </div>
       </div>
 
@@ -138,36 +138,36 @@ function InvoiceModal({ sale, onClose }) {
         <div class="info-grid">
           <div class="info-box">
             <div class="sec-lbl">Customer Details</div>
-            <div class="irow"><div class="lbl">Name</div><div class="val">\${sale.customer_name||'—'}</div></div>
-            <div class="irow"><div class="lbl">C/O</div><div class="val">\${sale.care_of||sale.customer_care_of||'—'}</div></div>
-            <div class="irow"><div class="lbl">Mobile</div><div class="val">\${sale.customer_mobile||'—'}</div></div>
-            <div class="irow"><div class="lbl">Address</div><div class="val">\${sale.customer_address||'—'}</div></div>
-            <div class="irow"><div class="lbl">Payment</div><div class="val">\${sale.payment_mode||'—'}</div></div>
+            <div class="irow"><div class="lbl">Name</div><div class="val">${sale.customer_name||'—'}</div></div>
+            <div class="irow"><div class="lbl">C/O</div><div class="val">${sale.care_of||sale.customer_care_of||'—'}</div></div>
+            <div class="irow"><div class="lbl">Mobile</div><div class="val">${sale.customer_mobile||'—'}</div></div>
+            <div class="irow"><div class="lbl">Address</div><div class="val">${sale.customer_address||'—'}</div></div>
+            <div class="irow"><div class="lbl">Payment</div><div class="val">${sale.payment_mode||'—'}</div></div>
           </div>
           <div class="info-box">
             <div class="sec-lbl">Vehicle Details</div>
-            <div class="irow"><div class="lbl">Brand</div><div class="val">\${sale.vehicle_brand||'—'}</div></div>
-            <div class="irow"><div class="lbl">Model</div><div class="val">\${sale.vehicle_model||'—'}</div></div>
-            <div class="irow"><div class="lbl">Variant</div><div class="val">\${sale.vehicle_variant||'—'}</div></div>
-            <div class="irow"><div class="lbl">Colour</div><div class="val">\${sale.vehicle_color||'—'}</div></div>
-            <div class="irow"><div class="lbl">Financier</div><div class="val">\${sale.financier||'—'}</div></div>
+            <div class="irow"><div class="lbl">Brand</div><div class="val">${sale.vehicle_brand||'—'}</div></div>
+            <div class="irow"><div class="lbl">Model</div><div class="val">${sale.vehicle_model||'—'}</div></div>
+            <div class="irow"><div class="lbl">Variant</div><div class="val">${sale.vehicle_variant||'—'}</div></div>
+            <div class="irow"><div class="lbl">Colour</div><div class="val">${sale.vehicle_color||'—'}</div></div>
+            <div class="irow"><div class="lbl">Financier</div><div class="val">${sale.financier||'—'}</div></div>
           </div>
         </div>
 
         <div class="info-grid" style="margin-bottom:18px">
           <div class="info-box">
             <div class="sec-lbl">Registration / Chassis</div>
-            <div class="irow"><div class="lbl">Vehicle No.</div><div class="val">\${sale.vehicle_number||'—'}</div></div>
-            <div class="irow"><div class="lbl">RTO</div><div class="val">\${sale.rto||'—'}</div></div>
-            <div class="irow"><div class="lbl">Chassis No.</div><div class="val" style="font-family:monospace">\${sale.chassis_number||'—'}</div></div>
-            <div class="irow"><div class="lbl">Engine No.</div><div class="val" style="font-family:monospace">\${sale.engine_number||'—'}</div></div>
+            <div class="irow"><div class="lbl">Vehicle No.</div><div class="val">${sale.vehicle_number||'—'}</div></div>
+            <div class="irow"><div class="lbl">RTO</div><div class="val">${sale.rto||'—'}</div></div>
+            <div class="irow"><div class="lbl">Chassis No.</div><div class="val" style="font-family:monospace">${sale.chassis_number||'—'}</div></div>
+            <div class="irow"><div class="lbl">Engine No.</div><div class="val" style="font-family:monospace">${sale.engine_number||'—'}</div></div>
           </div>
           <div class="info-box">
             <div class="sec-lbl">Nominee (Insurance)</div>
-            <div class="irow"><div class="lbl">Name</div><div class="val">\${nominee.name||'—'}</div></div>
-            <div class="irow"><div class="lbl">Relation</div><div class="val">\${nominee.relation||'—'}</div></div>
-            <div class="irow"><div class="lbl">Age</div><div class="val">\${nominee.age||'—'}</div></div>
-            <div class="irow"><div class="lbl">Mobile</div><div class="val">\${nominee.number||'—'}</div></div>
+            <div class="irow"><div class="lbl">Name</div><div class="val">${nominee.name||'—'}</div></div>
+            <div class="irow"><div class="lbl">Relation</div><div class="val">${nominee.relation||'—'}</div></div>
+            <div class="irow"><div class="lbl">Age</div><div class="val">${nominee.age||'—'}</div></div>
+            <div class="irow"><div class="lbl">Mobile</div><div class="val">${nominee.number||'—'}</div></div>
           </div>
         </div>
 
@@ -184,22 +184,22 @@ function InvoiceModal({ sale, onClose }) {
           <tbody>
             <tr style="background:#f7f7f4">
               <td>
-                <div style="font-weight:700;font-size:12px">\${sale.vehicle_brand||''} \${sale.vehicle_model||''}</div>
-                <div style="font-size:10px;color:#888;margin-top:2px">\${[sale.vehicle_variant,sale.vehicle_color].filter(Boolean).join('  ·  ')}</div>
+                <div style="font-weight:700;font-size:12px">${sale.vehicle_brand||''} ${sale.vehicle_model||''}</div>
+                <div style="font-size:10px;color:#888;margin-top:2px">${[sale.vehicle_variant,sale.vehicle_color].filter(Boolean).join('  ·  ')}</div>
               </td>
-              <td style="font-family:monospace;font-size:10px">\${sale.chassis_number||'—'}</td>
-              <td>\${sale.payment_mode||'—'}</td>
+              <td style="font-family:monospace;font-size:10px">${sale.chassis_number||'—'}</td>
+              <td>${sale.payment_mode||'—'}</td>
               <td>Full Payment</td>
-              <td style="text-align:right;font-weight:800;font-size:13px;color:#B8860B">\${RS}\${fmt(total)}</td>
+              <td style="text-align:right;font-weight:800;font-size:13px;color:#B8860B">${RS}${fmt(total)}</td>
             </tr>
           </tbody>
         </table>
         <div style="border-top:1px solid #c0a040;margin-bottom:6px"></div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-          <div style="font-size:10px;font-style:italic;color:#888">\${amtWords}</div>
+          <div style="font-size:10px;font-style:italic;color:#888">${amtWords}</div>
           <div class="total-box">
             <div class="total-lbl">TOTAL AMOUNT</div>
-            <div class="total-val">\${RS}\${totalStr}</div>
+            <div class="total-val">${RS}${totalStr}</div>
           </div>
         </div>
 
@@ -207,10 +207,10 @@ function InvoiceModal({ sale, onClose }) {
           <div class="sig-col" style="text-align:left">
             <div class="sig-line" style="margin:0 0 5px 0"></div>
             <div class="sig-lbl">Customer's Signature</div>
-            <div class="sig-name">\${(sale.customer_name||'').toUpperCase()}</div>
+            <div class="sig-name">${(sale.customer_name||'').toUpperCase()}</div>
           </div>
           <div class="sig-col">
-            <div class="sig-lbl" style="margin-bottom:0">Sold by: \${sale.sold_by||sale.staff_name||'MM MOTORS'}</div>
+            <div class="sig-lbl" style="margin-bottom:0">Sold by: ${sale.sold_by||sale.staff_name||'MM MOTORS'}</div>
           </div>
           <div class="sig-col" style="text-align:right">
             <div class="sig-line" style="margin:0 0 5px auto"></div>
