@@ -14,6 +14,7 @@ const NAV = [
   { id: 'customers', label: 'Customers',    roles: ['owner','sales','service_advisor'] },
   { id: 'debt',        label: 'Debt Ledger',  roles: ['owner','sales'] },
   { id: 'expenses',    label: 'Expenses',     roles: ['owner'] },
+  { id: 'accident-estimate', label: 'Accident Estimate', roles: ['owner','service_advisor'] },
   { id: 'reports',   label: 'Reports',      roles: ['owner'] },
   { id: 'staff',     label: 'Staff',        roles: ['owner'] },
   { id: 'import',    label: 'Import data',  roles: ['owner'] },
