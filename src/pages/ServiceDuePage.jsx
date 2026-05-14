@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { serviceApi } from '../api/client';
+import { useSortable } from '../components/ui';
 import toast from 'react-hot-toast';
 
 const U = {
@@ -88,12 +89,15 @@ export default function ServiceDuePage() {
   const firstSvc  = (raw || []).filter(r => r.source === 'sale').length;
 
   const handleWhatsApp = (r) => {
-    window.open(`https://wa.me/91${r.customer_mobile}?text=${waMsg(r)}`, '_blank');
+    const mobile = (r.customer_mobile || '').replace(/\D/g, '');
+    if (!mobile) return toast.error('No mobile number');
+    window.open(`https://wa.me/91${mobile}?text=${waMsg(r)}`, '_blank');
     notifyMut.mutate(r.vehicle_number);
   };
 
   const handleCall = (r) => {
-    window.open(`tel:${r.customer_mobile}`);
+    const mobile = (r.customer_mobile || '').replace(/\D/g, '');
+    window.open(`tel:+91${mobile}`);
     notifyMut.mutate(r.vehicle_number);
   };
 
@@ -102,7 +106,8 @@ export default function ServiceDuePage() {
     if (!targets.length) return toast.error('Select customers first');
     targets.forEach((r, i) => {
       setTimeout(() => {
-        window.open(`https://wa.me/91${r.customer_mobile}?text=${waMsg(r)}`, '_blank');
+        const mobile = (r.customer_mobile || '').replace(/\D/g, '');
+        window.open(`https://wa.me/91${mobile}?text=${waMsg(r)}`, '_blank');
         notifyMut.mutate(r.vehicle_number);
       }, i * 800);
     });
@@ -114,9 +119,10 @@ export default function ServiceDuePage() {
     setSelected(s => { const n = new Set(s); n.has(veh) ? n.delete(veh) : n.add(veh); return n; });
   };
   const toggleAll = () => {
-    setSelected(s => s.size === list.length ? new Set() : new Set(list.map(r => r.vehicle_number)));
+    setSelected(s => s.size === sortedList.length ? new Set() : new Set(sortedList.map(r => r.vehicle_number)));
   };
 
+  const { sorted: sortedList, Th: DueTh } = useSortable(list, 'due_in_days', 'asc');
   const inp = { padding:'8px 12px', border:'1px solid var(--border)', borderRadius:4, background:'var(--surface2)', color:'var(--text)', fontSize:12, fontFamily:'IBM Plex Sans,sans-serif', outline:'none' };
 
   return (
@@ -202,13 +208,24 @@ export default function ServiceDuePage() {
                   <input type="checkbox" checked={selected.size === list.length && list.length > 0}
                     onChange={toggleAll} style={{ accentColor:'var(--accent)', cursor:'pointer' }} />
                 </th>
-                {['Customer','Mobile','Vehicle','Next Service','Last Date','Days Since','Next Due','Status','Last Notified','Actions'].map(h => (
-                  <th key={h} style={{ padding:'9px 16px', textAlign:'left', fontSize:9, letterSpacing:'.07em', color:'var(--dim)', fontWeight:600, textTransform:'uppercase', whiteSpace:'nowrap' }}>{h}</th>
+                {[
+                  ['Customer',     'customer_name'],
+                  ['Mobile',       'customer_mobile'],
+                  ['Vehicle',      'brand'],
+                  ['Next Service', 'service_type'],
+                  ['Last Date',    'check_in_date'],
+                  ['Days Since',   'days_since'],
+                  ['Next Due',     'next_due_date'],
+                  ['Status',       'urgency'],
+                  ['Last Notified',''],
+                  ['Actions',      ''],
+                ].map(([h, f]) => (
+                  <DueTh key={h} field={f||null} style={{ padding:'9px 16px', textAlign:'left', fontSize:9, letterSpacing:'.07em', color:'var(--dim)', fontWeight:600, textTransform:'uppercase', whiteSpace:'nowrap' }}>{h}</DueTh>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {list.map(r => {
+              {sortedList.map(r => {
                 const u = U[r.urgency] || U.ok;
                 const lastNotified = notifMap?.[r.vehicle_number];
                 const isSelected = selected.has(r.vehicle_number);
