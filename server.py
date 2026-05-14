@@ -1279,12 +1279,17 @@ async def service_due(
              "customer_mobile":1,"vehicle_brand":1,"vehicle_model":1,"created_at":1}
     ).to_list(20000)
 
+    SOLD_SINCE = datetime(2026, 5, 1)   # only track service due for vehicles sold from May 1 onwards
+
     sales_map = {}
     for s in sales_docs:
         vn = (s.get("vehicle_number") or "").upper().strip()
         if not vn:
             continue
         dt = parse_date(s.get("sale_date","")) or parse_date(s.get("created_at",""))
+        # Skip vehicles sold before May 1, 2026
+        if not dt or dt < SOLD_SINCE:
+            continue
         existing = sales_map.get(vn)
         if not existing or (dt and (not existing["dt"] or dt > existing["dt"])):
             sales_map[vn] = {
