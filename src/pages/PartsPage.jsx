@@ -638,6 +638,33 @@ function PartsOrderModal({ onClose }) {
   const [adding, setAdding]   = useState(false);
   const [newPart, setNewPart] = useState({ part_number:'', name:'', brand:'', category:'', stock:0, reorder_level:5, purchase_price:0, selling_price:0, gst_rate:18, hsn_code:'' });
 
+  // ── Bulk selection ────────────────────────────────────────────────
+  const [selected, setSelected] = useState(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  const toggleOne = (id) => setSelected(prev => {
+    const n = new Set(prev);
+    n.has(id) ? n.delete(id) : n.add(id);
+    return n;
+  });
+  const allSelected = lowParts.length > 0 && lowParts.every(p => selected.has(p.id));
+  const toggleAll   = () => setSelected(allSelected ? new Set() : new Set(lowParts.map(p => p.id)));
+
+  const bulkDelete = async () => {
+    if (selected.size === 0) return;
+    if (!window.confirm(`Delete ${selected.size} part${selected.size > 1 ? 's' : ''} from the reorder list? This cannot be undone.`)) return;
+    setBulkDeleting(true);
+    try {
+      await Promise.all([...selected].map(id => partsApi.delete(id)));
+      qc.invalidateQueries(['parts-low-stock-order']);
+      qc.invalidateQueries(['parts']);
+      qc.invalidateQueries(['parts-stats']);
+      toast.success(`${selected.size} part${selected.size > 1 ? 's' : ''} removed`);
+      setSelected(new Set());
+    } catch(e) { toast.error('Some deletions failed'); }
+    finally { setBulkDeleting(false); }
+  };
+
   const startEdit = (p) => setEditing(prev => ({ ...prev, [p.id]: { reorder_level: p.reorder_level } }));
   const cancelEdit = (id) => setEditing(prev => { const n={...prev}; delete n[id]; return n; });
 
@@ -660,6 +687,7 @@ function PartsOrderModal({ onClose }) {
       qc.invalidateQueries(['parts-low-stock-order']);
       qc.invalidateQueries(['parts']);
       qc.invalidateQueries(['parts-stats']);
+      setSelected(prev => { const n = new Set(prev); n.delete(p.id); return n; });
       toast.success('Part deleted');
     } catch(e) { toast.error('Failed to delete'); }
   };
@@ -708,7 +736,7 @@ function PartsOrderModal({ onClose }) {
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.6)', zIndex:200, display:'flex', alignItems:'center', justifyContent:'center' }}
       onClick={onClose}>
-      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:8, width:820, maxWidth:'96vw', maxHeight:'90vh', display:'flex', flexDirection:'column' }}
+      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:8, width:860, maxWidth:'96vw', maxHeight:'90vh', display:'flex', flexDirection:'column' }}
         onClick={e => e.stopPropagation()}>
 
         {/* Header */}
@@ -718,6 +746,13 @@ function PartsOrderModal({ onClose }) {
             <div style={{ fontSize:11, color:'var(--muted)', marginTop:2 }}>Parts below reorder level — needs restocking</div>
           </div>
           <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+            {/* Bulk delete button — visible when rows selected */}
+            {selected.size > 0 && (
+              <button onClick={bulkDelete} disabled={bulkDeleting}
+                style={{ padding:'7px 14px', background:'rgba(239,68,68,.12)', border:'1px solid rgba(239,68,68,.4)', borderRadius:4, color:'#ef4444', fontSize:11, cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif', fontWeight:600, display:'flex', alignItems:'center', gap:6 }}>
+                {bulkDeleting ? '…' : `🗑 Remove ${selected.size} selected`}
+              </button>
+            )}
             <button onClick={() => setAdding(v => !v)}
               style={{ padding:'7px 14px', background:'rgba(34,197,94,.1)', border:'1px solid rgba(34,197,94,.35)', borderRadius:4, color:'#22c55e', fontSize:11, cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif', fontWeight:600 }}>
               + Add Part
@@ -761,6 +796,16 @@ function PartsOrderModal({ onClose }) {
             <table style={{ width:'100%', borderCollapse:'collapse' }}>
               <thead>
                 <tr style={{ borderBottom:'1px solid var(--border)' }}>
+                  {/* Select-all checkbox */}
+                  <th style={{ padding:'9px 10px 9px 16px', width:36 }}>
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      onChange={toggleAll}
+                      title={allSelected ? 'Deselect all' : 'Select all'}
+                      style={{ cursor:'pointer', accentColor:'var(--accent)', width:14, height:14 }}
+                    />
+                  </th>
                   {['Part No.','Name','Brand','Category','Stock','Reorder','Suggested Order','Actions'].map(h => (
                     <th key={h} style={{ padding:'9px 16px', textAlign:'left', fontSize:9, letterSpacing:'.06em', color:'var(--dim)', fontWeight:600, textTransform:'uppercase' }}>{h}</th>
                   ))}
@@ -768,9 +813,19 @@ function PartsOrderModal({ onClose }) {
               </thead>
               <tbody>
                 {lowParts.map(p => {
-                  const isEditing = !!editing[p.id];
+                  const isEditing  = !!editing[p.id];
+                  const isSelected = selected.has(p.id);
                   return (
-                    <tr key={p.id} style={{ borderBottom:'1px solid var(--border)', background: isEditing ? 'rgba(184,134,11,.05)' : 'transparent' }}>
+                    <tr key={p.id} style={{ borderBottom:'1px solid var(--border)', background: isSelected ? 'rgba(239,68,68,.05)' : isEditing ? 'rgba(184,134,11,.05)' : 'transparent', transition:'background .1s' }}>
+                      {/* Row checkbox */}
+                      <td style={{ padding:'10px 10px 10px 16px' }}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleOne(p.id)}
+                          style={{ cursor:'pointer', accentColor:'#ef4444', width:14, height:14 }}
+                        />
+                      </td>
                       <td className="mono" style={{ padding:'10px 16px', fontSize:10, color:'var(--blue)' }}>{p.part_number}</td>
                       <td style={{ padding:'10px 16px', fontSize:11, fontWeight:600 }}>{p.name}</td>
                       <td style={{ padding:'10px 16px', fontSize:10, color:'var(--muted)' }}>{p.brand||'—'}</td>
