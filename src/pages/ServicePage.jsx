@@ -86,6 +86,7 @@ export default function ServicePage() {
   const qc = useQueryClient();
   const [filter, setFilter]         = useState('all');
   const [search, setSearch]         = useState('');
+  const [dateFilter, setDateFilter] = useState('');
   const [newJobOpen, setNewJobOpen]  = useState(false);
   const [billJob, setBillJob]       = useState(null);
   const [editJob, setEditJob]       = useState(null); // FIX #2: edit state
@@ -102,6 +103,16 @@ export default function ServicePage() {
   });
   const jobs = data?.data?.items || data?.data || [];
   const { sorted: sortedJobs, Th: JobTh } = useSortable(jobs, 'check_in_date', 'desc');
+
+  // ── Client-side date filter ────────────────────────────────────────────────
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const toCheckInFormat = (yyyy_mm_dd) => {
+    const [y, m, d] = yyyy_mm_dd.split('-');
+    return `${parseInt(d)} ${MONTHS[parseInt(m)-1]} ${y}`;
+  };
+  const displayedJobs = dateFilter
+    ? sortedJobs.filter(j => j.check_in_date === toCheckInFormat(dateFilter))
+    : sortedJobs;
 
   // ── Stats ────────────────────────────────────────────────────────────────────
   const { data: statsData } = useQuery({
@@ -192,9 +203,52 @@ export default function ServicePage() {
             {t.count>0 && <span style={{ marginLeft:6, fontSize:10, color:filter===t.key?C.gold:'#555' }}>{t.count}</span>}
           </button>
         ))}
-        <input value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Search job#, customer, vehicle…"
-          style={{ ...inp, maxWidth:260, marginLeft:'auto' }} />
+
+        {/* ── Calendar date filter ── */}
+        <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:6 }}>
+          {dateFilter && (
+            <span style={{
+              fontSize:11, color:C.gold, background:C.gold+'18',
+              border:`1px solid ${C.gold}44`, borderRadius:3,
+              padding:'4px 10px', display:'flex', alignItems:'center', gap:6,
+            }}>
+              📅 {toCheckInFormat(dateFilter)}
+              <button onClick={() => setDateFilter('')} style={{
+                background:'none', border:'none', color:C.gold, cursor:'pointer',
+                fontSize:13, lineHeight:1, padding:0, marginLeft:2,
+              }}>×</button>
+            </span>
+          )}
+          <div style={{ position:'relative', display:'flex', alignItems:'center' }}>
+            <button
+              title="Filter by date"
+              style={{
+                ...btnGhost,
+                padding:'6px 10px',
+                color: dateFilter ? C.gold : C.muted,
+                borderColor: dateFilter ? C.gold : '#2a2a2a',
+                background: dateFilter ? C.gold+'18' : 'transparent',
+                display:'flex', alignItems:'center', gap:5, fontSize:13,
+              }}
+              onClick={() => document.getElementById('svc-date-pick').showPicker?.() || document.getElementById('svc-date-pick').focus()}
+            >
+              📅
+            </button>
+            <input
+              id="svc-date-pick"
+              type="date"
+              value={dateFilter}
+              onChange={e => setDateFilter(e.target.value)}
+              style={{
+                position:'absolute', opacity:0, pointerEvents:'none',
+                width:1, height:1, top:0, left:0,
+              }}
+            />
+          </div>
+          <input value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Search job#, customer, vehicle…"
+            style={{ ...inp, maxWidth:260 }} />
+        </div>
       </div>
 
       {/* ── Job table ── */}
@@ -204,6 +258,10 @@ export default function ServicePage() {
         ) : jobs.length === 0 ? (
           <div style={{ padding:48, textAlign:'center', color:C.muted, fontSize:13 }}>
             No jobs found{filter!=='all' ? ` with status "${filter}"` : ''}.
+          </div>
+        ) : displayedJobs.length === 0 ? (
+          <div style={{ padding:48, textAlign:'center', color:C.muted, fontSize:13 }}>
+            No jobs on {toCheckInFormat(dateFilter)}.
           </div>
         ) : (
           <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12, marginTop:8 }}>
@@ -216,7 +274,7 @@ export default function ServicePage() {
               </tr>
             </thead>
             <tbody>
-              {sortedJobs.map((job, idx) => (
+              {displayedJobs.map((job, idx) => (
                 <tr key={job._id||job.id}
                   style={{ borderBottom:'1px solid var(--border,#222)',
                     background:idx%2===0?'transparent':C.s2, transition:'background .1s' }}
