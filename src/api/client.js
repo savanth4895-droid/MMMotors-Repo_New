@@ -210,3 +210,12 @@ export const filesApi = {
 export const healthApi = {
   check: () => axios.get(`${BASE_URL}/health`),
 };
+
+// ── Accident Estimates ──────────────────────────────────────────────
+export const accidentEstimatesApi = {
+  list:   (params) => api.get('/accident-estimates', { params }),
+  get:    (id)     => api.get(`/accident-estimates/${id}`),
+  create: (data)   => api.post('/accident-estimates', data),
+  update: (id, d)  => api.put(`/accident-estimates/${id}`, d),
+  delete: (id)     => api.delete(`/accident-estimates/${id}`),
+};
