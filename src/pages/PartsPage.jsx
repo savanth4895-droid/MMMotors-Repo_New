@@ -652,16 +652,16 @@ function PartsOrderModal({ onClose }) {
 
   const bulkDelete = async () => {
     if (selected.size === 0) return;
-    if (!window.confirm(`Delete ${selected.size} part${selected.size > 1 ? 's' : ''} from the reorder list? This cannot be undone.`)) return;
+    if (!window.confirm(`Remove ${selected.size} part${selected.size > 1 ? 's' : ''} from the order list?`)) return;
     setBulkDeleting(true);
     try {
-      await Promise.all([...selected].map(id => partsApi.delete(id)));
+      await Promise.all([...selected].map(id => partsApi.update(id, { reorder_level: 0 })));
       qc.invalidateQueries(['parts-low-stock-order']);
       qc.invalidateQueries(['parts']);
       qc.invalidateQueries(['parts-stats']);
-      toast.success(`${selected.size} part${selected.size > 1 ? 's' : ''} removed`);
+      toast.success(`${selected.size} part${selected.size > 1 ? 's' : ''} removed from order list`);
       setSelected(new Set());
-    } catch(e) { toast.error('Some deletions failed'); }
+    } catch(e) { toast.error('Some updates failed'); }
     finally { setBulkDeleting(false); }
   };
 
@@ -681,15 +681,15 @@ function PartsOrderModal({ onClose }) {
   };
 
   const deletePart = async (p) => {
-    if (!window.confirm(`Remove "${p.name}" from the reorder list? This deletes the part entirely.`)) return;
+    if (!window.confirm(`Remove "${p.name}" from the order list?`)) return;
     try {
-      await partsApi.delete(p.id);
+      await partsApi.update(p.id, { reorder_level: 0 });
       qc.invalidateQueries(['parts-low-stock-order']);
       qc.invalidateQueries(['parts']);
       qc.invalidateQueries(['parts-stats']);
       setSelected(prev => { const n = new Set(prev); n.delete(p.id); return n; });
-      toast.success('Part deleted');
-    } catch(e) { toast.error('Failed to delete'); }
+      toast.success('Removed from order list');
+    } catch(e) { toast.error('Failed to remove'); }
   };
 
   const addPart = async () => {
