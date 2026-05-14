@@ -452,6 +452,43 @@ class PartsBillCreate(BaseModel):
     items:            List[PartsBillItem] = []
 
 
+# ─── Accident Estimates ───────────────────────────────────────────────────────
+class AccidentEstimatePartItem(BaseModel):
+    part_name:  str   = ""
+    part_number: str  = ""
+    condition:  str   = "New OEM"
+    qty:        float = 1
+    unit_price: float = 0
+    gst:        float = 18
+
+class AccidentEstimateLabourItem(BaseModel):
+    description: str   = ""
+    hours:       float = 1
+    rate:        float = 0
+
+class AccidentEstimateCreate(BaseModel):
+    vehicle:     dict = {}
+    customer:    dict = {}
+    incident:    dict = {}
+    parts:       List[AccidentEstimatePartItem]   = []
+    labour:      List[AccidentEstimateLabourItem] = []
+    additional:  dict = {}
+    notes:       str  = ""
+    grand_total: float = 0
+    status:      str  = "draft"
+
+class AccidentEstimateUpdate(BaseModel):
+    vehicle:     Optional[dict]  = None
+    customer:    Optional[dict]  = None
+    incident:    Optional[dict]  = None
+    parts:       Optional[List[AccidentEstimatePartItem]]   = None
+    labour:      Optional[List[AccidentEstimateLabourItem]] = None
+    additional:  Optional[dict]  = None
+    notes:       Optional[str]   = None
+    grand_total: Optional[float] = None
+    status:      Optional[str]   = None
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  HEALTH
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3094,6 +3131,62 @@ async def export_backup(current_user=Depends(require_admin)):
         "Content-Type": "application/zip",
     }
     return StreamingResponse(iter([zip_buf.read()]), headers=headers_resp, media_type="application/zip")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Accident Estimates
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@api_router.get("/accident-estimates")
+async def list_accident_estimates(
+    skip:  int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    current_user=Depends(verify_token),
+):
+    cursor = db.accident_estimates.find().sort("created_at", -1).skip(skip).limit(limit)
+    docs   = await cursor.to_list(limit)
+    total  = await db.accident_estimates.count_documents({})
+    return JSONResponse(content=oids(docs), headers={"X-Total-Count": str(total)})
+
+
+@api_router.post("/accident-estimates", status_code=201)
+async def create_accident_estimate(body: AccidentEstimateCreate, current_user=Depends(verify_token)):
+    seq        = await next_sequence("accident_estimate")
+    est_number = f"EST-{seq:04d}"
+    ts         = datetime.utcnow().isoformat()
+    doc = {
+        **body.model_dump(),
+        "estimate_number": est_number,
+        "created_by":      current_user["username"],
+        "created_at":      ts,
+        "updated_at":      ts,
+    }
+    result  = await db.accident_estimates.insert_one(doc)
+    created = await db.accident_estimates.find_one({"_id": result.inserted_id})
+    return oid(created)
+
+
+@api_router.get("/accident-estimates/{est_id}")
+async def get_accident_estimate(est_id: str, current_user=Depends(verify_token)):
+    doc = await db.accident_estimates.find_one({"_id": obj_id(est_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Estimate not found")
+    return oid(doc)
+
+
+@api_router.put("/accident-estimates/{est_id}")
+async def update_accident_estimate(est_id: str, body: AccidentEstimateUpdate, current_user=Depends(verify_token)):
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    updates["updated_at"] = datetime.utcnow().isoformat()
+    await db.accident_estimates.update_one({"_id": obj_id(est_id)}, {"$set": updates})
+    return oid(await db.accident_estimates.find_one({"_id": obj_id(est_id)}))
+
+
+@api_router.delete("/accident-estimates/{est_id}", status_code=204)
+async def delete_accident_estimate(est_id: str, current_user=Depends(require_admin)):
+    result = await db.accident_estimates.delete_one({"_id": obj_id(est_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Estimate not found")
+
 
 app.include_router(api_router)
 app.include_router(import_router)
