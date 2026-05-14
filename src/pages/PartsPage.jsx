@@ -1220,7 +1220,7 @@ export default function PartsPage() {
               <table style={{ width:'100%', borderCollapse:'collapse' }}>
                 <thead>
                   <tr style={{ borderBottom:'1px solid var(--border)' }}>
-                    {[['Part no.','part_number'],['Name','name'],['Category','category'],['Brand','brand'],['Loc','location'],['Stock','stock'],['Reorder','reorder_level'],['Purchase','purchase_price'],['Selling','selling_price'],['GST','gst_rate'],['Margin',''],['Status',''],['','']].map(([h,f])=>(
+                    {[['Part no.','part_number'],['Name','name'],['Compatible',''],['Category','category'],['Brand','brand'],['Loc','location'],['Stock','stock'],['Reorder','reorder_level'],['Purchase','purchase_price'],['Selling','selling_price'],['GST','gst_rate'],['Margin',''],['Status',''],['','']].map(([h,f])=>(
                       <PartsTh key={h} field={f||null} style={{ padding:'8px 12px', textAlign:'left', fontSize:9, letterSpacing:'.06em', color:'var(--dim)', fontWeight:500, textTransform:'uppercase' }}>{h}</PartsTh>
                     ))}
                   </tr>
@@ -1236,6 +1236,30 @@ export default function PartsPage() {
                         <td className="mono" style={{ padding:'9px 12px', fontSize:10, color:'var(--blue)' }}>{p.part_number}</td>
                         <td style={{ padding:'9px 12px', fontSize:11, fontWeight:500, maxWidth:160 }}>
                           <div style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.name}</div>
+                        </td>
+                        {/* Compatible models */}
+                        <td style={{ padding:'9px 12px', maxWidth:180 }}>
+                          {p.compatible_with?.length > 0 ? (
+                            <div style={{ display:'flex', flexWrap:'wrap', gap:3 }}>
+                              {p.compatible_with.slice(0,3).map(m => (
+                                <span key={m} style={{
+                                  fontSize:9, padding:'2px 6px', borderRadius:10,
+                                  background:'rgba(184,134,11,.10)', color:'var(--accent)',
+                                  border:'1px solid rgba(184,134,11,.25)', whiteSpace:'nowrap',
+                                  fontWeight:600, letterSpacing:'.02em',
+                                }}>{m}</span>
+                              ))}
+                              {p.compatible_with.length > 3 && (
+                                <span title={p.compatible_with.slice(3).join(', ')} style={{
+                                  fontSize:9, padding:'2px 6px', borderRadius:10,
+                                  background:'var(--surface2)', color:'var(--muted)',
+                                  border:'1px solid var(--border)', whiteSpace:'nowrap', cursor:'default',
+                                }}>+{p.compatible_with.length - 3}</span>
+                              )}
+                            </div>
+                          ) : (
+                            <span style={{ fontSize:10, color:'var(--dim)' }}>—</span>
+                          )}
                         </td>
                         <td style={{ padding:'9px 12px', fontSize:10, color:'var(--muted)' }}>{p.category}</td>
                         <td style={{ padding:'9px 12px', fontSize:10, color:'var(--muted)' }}>{p.brand}</td>
