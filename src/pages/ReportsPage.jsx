@@ -233,9 +233,9 @@ export default function ReportsPage() {
   const monthlyData = (() => {
     if (!revenue) return [];
     const map = {};
-    (revenue.sales||[]).forEach(d => { map[d._id] = { ...map[d._id], month:d._id, sales: d.sales||0 }; });
-    (revenue.service||[]).forEach(d => { map[d._id] = { ...map[d._id], month:d._id, service: d.service||0 }; });
-    (revenue.parts||[]).forEach(d  => { map[d._id] = { ...map[d._id], month:d._id, parts: d.parts||0 }; });
+    (revenue.sales||[]).forEach(d => { map[d.id] = { ...map[d.id], month:d.id, sales: d.sales||0 }; });
+    (revenue.service||[]).forEach(d => { map[d.id] = { ...map[d.id], month:d.id, service: d.service||0 }; });
+    (revenue.parts||[]).forEach(d  => { map[d.id] = { ...map[d.id], month:d.id, parts: d.parts||0 }; });
     return Object.values(map)
       .sort((a,b)=>a.month.localeCompare(b.month))
       .map(d => ({
