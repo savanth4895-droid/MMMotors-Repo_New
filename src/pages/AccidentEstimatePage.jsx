@@ -1,5 +1,7 @@
 import { useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
+import { accidentEstimatesApi, errMsg } from '../api/client';
 
 // ─── Style tokens ──────────────────────────────────────────────────────────────
 const C = {
@@ -322,8 +324,110 @@ function printEstimate(data) {
   w.document.close();
 }
 
+// ─── Saved Estimates Modal ────────────────────────────────────────────────────
+function SavedEstimatesModal({ onLoad, onClose }) {
+  const qc = useQueryClient();
+  const { data: estimates = [], isLoading } = useQuery({
+    queryKey: ['accident-estimates'],
+    queryFn: () => accidentEstimatesApi.list().then(r => r.data),
+    staleTime: 15_000,
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: (id) => accidentEstimatesApi.delete(id),
+    onSuccess: () => { qc.invalidateQueries(['accident-estimates']); toast.success('Deleted'); },
+    onError: (e) => toast.error(errMsg(e)),
+  });
+
+  const severityColor = { Minor: '#4ade80', Moderate: '#fbbf24', Major: '#f87171', 'Total Loss': '#ef4444' };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }} onClick={onClose}>
+      <div style={{
+        background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6,
+        width: 680, maxHeight: '80vh', display: 'flex', flexDirection: 'column',
+        overflow: 'hidden',
+      }} onClick={e => e.stopPropagation()}>
+        {/* Modal header */}
+        <div style={{ padding: '16px 20px', borderBottom: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.text }}>Saved Estimates</div>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{estimates.length} estimate{estimates.length !== 1 ? 's' : ''} saved</div>
+          </div>
+          <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: C.muted, fontSize: 20, cursor: 'pointer', lineHeight: 1 }}>×</button>
+        </div>
+
+        {/* List */}
+        <div style={{ overflowY: 'auto', flex: 1 }}>
+          {isLoading && (
+            <div style={{ padding: 40, textAlign: 'center', color: C.muted, fontSize: 12 }}>Loading...</div>
+          )}
+          {!isLoading && estimates.length === 0 && (
+            <div style={{ padding: 40, textAlign: 'center', color: C.muted, fontSize: 12 }}>No saved estimates yet</div>
+          )}
+          {estimates.map(est => {
+            const sev = est.incident?.severity || 'Moderate';
+            return (
+              <div key={est.id} style={{
+                padding: '14px 20px', borderBottom: `1px solid ${C.border}`,
+                display: 'flex', alignItems: 'center', gap: 14,
+              }}>
+                {/* Est number + meta */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: C.gold, fontFamily: 'monospace' }}>{est.estimate_number}</span>
+                    <span style={{
+                      fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 10,
+                      background: (severityColor[sev] || C.muted) + '22',
+                      color: severityColor[sev] || C.muted,
+                      border: `1px solid ${severityColor[sev] || C.muted}`,
+                    }}>{sev}</span>
+                    <span style={{
+                      fontSize: 9, padding: '2px 7px', borderRadius: 10, fontWeight: 600,
+                      background: est.status === 'final' ? '#4ade8022' : C.border,
+                      color: est.status === 'final' ? '#4ade80' : C.muted,
+                      border: `1px solid ${est.status === 'final' ? '#4ade80' : C.border2}`,
+                    }}>{est.status === 'final' ? 'Final' : 'Draft'}</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: C.text, marginBottom: 2 }}>
+                    {est.customer?.name || '—'} · {est.vehicle?.brand} {est.vehicle?.model}
+                  </div>
+                  <div style={{ fontSize: 10, color: C.muted }}>
+                    {est.vehicle?.reg_number && <span style={{ fontFamily: 'monospace', marginRight: 8 }}>{est.vehicle.reg_number}</span>}
+                    {new Date(est.created_at).toLocaleDateString('en-IN')}
+                    {est.created_by && <span style={{ marginLeft: 6 }}>by {est.created_by}</span>}
+                  </div>
+                </div>
+                {/* Grand total */}
+                <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 800, color: C.gold }}>{RS}{fmt(est.grand_total || 0)}</div>
+                </div>
+                {/* Actions */}
+                <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                  <button
+                    onClick={() => { onLoad(est); onClose(); }}
+                    style={{ ...btnPrimary, padding: '6px 14px', fontSize: 11 }}
+                  >Load</button>
+                  <button
+                    onClick={() => deleteMut.mutate(est.id)}
+                    style={{ background: 'transparent', border: `1px solid ${C.border2}`, borderRadius: 3, padding: '6px 10px', color: C.red, cursor: 'pointer', fontSize: 12 }}
+                  >✕</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function AccidentEstimatePage() {
+  const qc = useQueryClient();
   const [vehicle, setVehicle] = useState({ brand: '', model: '', variant: '', colour: '', reg_number: '', chassis_number: '', engine_number: '', year: '', odometer: '' });
   const [customer, setCustomer] = useState({ name: '', mobile: '', address: '', insurance_company: '', policy_number: '', claim_number: '' });
   const [incident, setIncident] = useState({ date: new Date().toISOString().slice(0,10), location: '', severity: 'Moderate', nature: '', description: '', surveyor: '', surveyor_mobile: '' });
@@ -332,6 +436,8 @@ export default function AccidentEstimatePage() {
   const [additional, setAdditional] = useState({ towing: '', inspection: '', misc: '', discount: '' });
   const [notes, setNotes] = useState('This estimate is valid for 7 days from the date of issue. Final charges may vary based on actual parts availability and hidden damage found during repair.');
   const [activeTab, setActiveTab] = useState('vehicle');
+  const [showSaved, setShowSaved] = useState(false);
+  const [currentEstId, setCurrentEstId] = useState(null); // id of loaded/saved estimate
 
   // Calculations
   const partsTotal  = parts.reduce((s, p)  => s + (Number(p.qty||0) * Number(p.unit_price||0)), 0);
@@ -341,8 +447,45 @@ export default function AccidentEstimatePage() {
 
   const setP = (setter, field) => e => setter(prev => ({ ...prev, [field]: e.target.value }));
 
-  const updatePart = (key, field, val) => setParts(prev => prev.map(p => p._key === key ? { ...p, [field]: val } : p));
+  const updatePart   = (key, field, val) => setParts(prev => prev.map(p => p._key === key ? { ...p, [field]: val } : p));
   const updateLabour = (key, field, val) => setLabour(prev => prev.map(l => l._key === key ? { ...l, [field]: val } : l));
+
+  // ── Build payload ──────────────────────────────────────────────────────────
+  const buildPayload = (status = 'draft') => ({
+    vehicle, customer, incident,
+    parts:      parts.map(({ _key, ...p }) => p),
+    labour:     labour.map(({ _key, ...l }) => l),
+    additional, notes,
+    grand_total: grandTotal,
+    status,
+  });
+
+  // ── Save mutation ──────────────────────────────────────────────────────────
+  const saveMut = useMutation({
+    mutationFn: (payload) =>
+      currentEstId
+        ? accidentEstimatesApi.update(currentEstId, payload).then(r => r.data)
+        : accidentEstimatesApi.create(payload).then(r => r.data),
+    onSuccess: (saved) => {
+      setCurrentEstId(saved.id);
+      qc.invalidateQueries(['accident-estimates']);
+      toast.success(`Saved as ${saved.estimate_number}`);
+    },
+    onError: (e) => toast.error(errMsg(e)),
+  });
+
+  // ── Load estimate into form ────────────────────────────────────────────────
+  const loadEstimate = (est) => {
+    setVehicle(est.vehicle || {});
+    setCustomer(est.customer || {});
+    setIncident(est.incident || {});
+    setParts((est.parts || [emptyPart()]).map(p => ({ ...p, _key: Math.random() })));
+    setLabour((est.labour || [emptyLabour()]).map(l => ({ ...l, _key: Math.random() })));
+    setAdditional(est.additional || { towing: '', inspection: '', misc: '', discount: '' });
+    setNotes(est.notes || '');
+    setCurrentEstId(est.id);
+    toast.success(`Loaded ${est.estimate_number}`);
+  };
 
   const TABS = [
     { id: 'vehicle',   label: 'Vehicle' },
@@ -356,11 +499,18 @@ export default function AccidentEstimatePage() {
   return (
     <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
 
+      {/* Saved estimates modal */}
+      {showSaved && <SavedEstimatesModal onLoad={loadEstimate} onClose={() => setShowSaved(false)} />}
+
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
         <div>
           <h1 style={{ fontSize: 18, fontWeight: 800, color: C.text, margin: 0 }}>Accident Estimate</h1>
-          <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>Create repair estimate for accidental vehicles</div>
+          <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>
+            {currentEstId
+              ? <span style={{ color: C.gold, fontFamily: 'monospace' }}>Editing saved estimate</span>
+              : 'Create repair estimate for accidental vehicles'}
+          </div>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           {/* Grand total pill */}
@@ -368,12 +518,16 @@ export default function AccidentEstimatePage() {
             <div style={{ fontSize: 9, color: C.muted, letterSpacing: '.06em' }}>GRAND TOTAL</div>
             <div style={{ fontSize: 16, fontWeight: 800, color: C.gold }}>{RS}{fmt(grandTotal)}</div>
           </div>
+          <button style={btnGhost} onClick={() => setShowSaved(true)}>📂 Saved</button>
+          <button
+            style={{ ...btnGhost, color: C.text, borderColor: C.border }}
+            onClick={() => saveMut.mutate(buildPayload('draft'))}
+            disabled={saveMut.isPending}
+          >{saveMut.isPending ? 'Saving…' : '💾 Save Draft'}</button>
           <button
             style={btnPrimary}
             onClick={() => printEstimate({ vehicle, customer, incident, parts, labour, additional, notes })}
-          >
-            🖨 Print Estimate
-          </button>
+          >🖨 Print Estimate</button>
         </div>
       </div>
 
@@ -638,8 +792,19 @@ export default function AccidentEstimatePage() {
               setIncident({ date:new Date().toISOString().slice(0,10), location:'',severity:'Moderate',nature:'',description:'',surveyor:'',surveyor_mobile:'' });
               setParts([emptyPart()]); setLabour([emptyLabour()]);
               setAdditional({ towing:'',inspection:'',misc:'',discount:'' });
+              setCurrentEstId(null);
               toast.success('Form cleared');
             }}>Clear Form</button>
+            <button
+              style={{ ...btnGhost, color: C.text, borderColor: C.border }}
+              onClick={() => saveMut.mutate(buildPayload('draft'))}
+              disabled={saveMut.isPending}
+            >{saveMut.isPending ? 'Saving…' : '💾 Save Draft'}</button>
+            <button
+              style={{ ...btnGhost, color: '#4ade80', borderColor: '#4ade8066' }}
+              onClick={() => saveMut.mutate(buildPayload('final'))}
+              disabled={saveMut.isPending}
+            >✓ Save Final</button>
             <button style={btnPrimary} onClick={() => {
               if (!vehicle.brand || !vehicle.model) return toast.error('Enter vehicle brand and model');
               if (!customer.name || !customer.mobile) return toast.error('Enter customer name and mobile');
