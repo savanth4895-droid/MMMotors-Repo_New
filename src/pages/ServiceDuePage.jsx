@@ -9,6 +9,23 @@ const U = {
   ok:       { color:'#4ade80', bg:'rgba(74,222,128,.1)',   border:'rgba(74,222,128,.25)',   label:'OK'        },
 };
 
+// Badge colour per service number
+const SERVICE_TYPE_COLOR = {
+  '1st Service': { color:'#60a5fa', bg:'rgba(96,165,250,.12)', border:'rgba(96,165,250,.3)' },
+  '2nd Service': { color:'#4ade80', bg:'rgba(74,222,128,.12)', border:'rgba(74,222,128,.3)' },
+  '3rd Service': { color:'#fbbf24', bg:'rgba(251,191,36,.12)', border:'rgba(251,191,36,.3)' },
+};
+function serviceTypeBadge(type) {
+  const s = SERVICE_TYPE_COLOR[type] || { color:'var(--muted)', bg:'var(--surface2)', border:'var(--border)' };
+  return (
+    <span style={{ fontSize:9, padding:'2px 7px', borderRadius:10, fontWeight:700,
+      background:s.bg, color:s.color, border:`1px solid ${s.border}`,
+      letterSpacing:'.04em', whiteSpace:'nowrap' }}>
+      {type}
+    </span>
+  );
+}
+
 function daysLabel(n) {
   if (n == null) return '—';
   if (n === 0) return 'Today';
@@ -17,22 +34,29 @@ function daysLabel(n) {
 
 function waMsg(r) {
   const veh = [r.brand, r.model, r.vehicle_number].filter(Boolean).join(' ');
+  if (r.source === 'sale') {
+    return encodeURIComponent(
+      `Hi ${r.customer_name}, your ${veh} is due for its 1st service at MM Motors, Malur. ` +
+      `Your vehicle was delivered ${r.days_since} days ago. Visit us soon! 🏍`
+    );
+  }
   return encodeURIComponent(
-    `Hi ${r.customer_name}, your ${veh} is due for service at MM Motors, Malur. ` +
-    `Last serviced ${r.days_since} days ago. Call us or visit to book your appointment. 🏍`
+    `Hi ${r.customer_name}, your ${veh} is due for its ${r.service_type} at MM Motors, Malur. ` +
+    `Last serviced ${r.days_since} days ago. Call us or visit to book. 🏍`
   );
 }
 
 export default function ServiceDuePage() {
   const qc = useQueryClient();
-  const [days,    setDays]    = useState(90);
-  const [filter,  setFilter]  = useState('all');   // all | overdue | due_soon
-  const [search,  setSearch]  = useState('');
-  const [selected, setSelected] = useState(new Set());
+  const [days,             setDays]            = useState(90);
+  const [firstServiceDays, setFirstServiceDays] = useState(30);
+  const [filter,           setFilter]          = useState('all');   // all | overdue | due_soon | first | repeat
+  const [search,           setSearch]          = useState('');
+  const [selected,         setSelected]        = useState(new Set());
 
   const { data: raw, isLoading } = useQuery({
-    queryKey: ['service-due', days],
-    queryFn: () => serviceApi.due(days).then(r => r.data),
+    queryKey: ['service-due', days, firstServiceDays],
+    queryFn: () => serviceApi.due(days, firstServiceDays).then(r => r.data),
     refetchInterval: 60_000,
   });
   const { data: notifMap } = useQuery({
@@ -47,12 +71,21 @@ export default function ServiceDuePage() {
   });
 
   const list = (raw || [])
-    .filter(r => filter === 'all' || r.urgency === filter)
-    .filter(r => !search || r.customer_name?.toLowerCase().includes(search.toLowerCase()) ||
-      r.customer_mobile?.includes(search) || r.vehicle_number?.toLowerCase().includes(search.toLowerCase()));
+    .filter(r => {
+      if (filter === 'overdue')  return r.urgency === 'overdue';
+      if (filter === 'due_soon') return r.urgency === 'due_soon';
+      if (filter === 'first')    return r.source === 'sale';
+      if (filter === 'repeat')   return r.source === 'service';
+      return true;
+    })
+    .filter(r => !search ||
+      r.customer_name?.toLowerCase().includes(search.toLowerCase()) ||
+      r.customer_mobile?.includes(search) ||
+      r.vehicle_number?.toLowerCase().includes(search.toLowerCase()));
 
-  const overdue  = (raw || []).filter(r => r.urgency === 'overdue').length;
-  const due_soon = (raw || []).filter(r => r.urgency === 'due_soon').length;
+  const overdue   = (raw || []).filter(r => r.urgency === 'overdue').length;
+  const due_soon  = (raw || []).filter(r => r.urgency === 'due_soon').length;
+  const firstSvc  = (raw || []).filter(r => r.source === 'sale').length;
 
   const handleWhatsApp = (r) => {
     window.open(`https://wa.me/91${r.customer_mobile}?text=${waMsg(r)}`, '_blank');
@@ -78,13 +111,8 @@ export default function ServiceDuePage() {
   };
 
   const toggleSelect = (veh) => {
-    setSelected(s => {
-      const n = new Set(s);
-      n.has(veh) ? n.delete(veh) : n.add(veh);
-      return n;
-    });
+    setSelected(s => { const n = new Set(s); n.has(veh) ? n.delete(veh) : n.add(veh); return n; });
   };
-
   const toggleAll = () => {
     setSelected(s => s.size === list.length ? new Set() : new Set(list.map(r => r.vehicle_number)));
   };
@@ -95,14 +123,15 @@ export default function ServiceDuePage() {
     <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
 
       {/* Stats bar */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', borderBottom:'1px solid var(--border)', flexShrink:0 }}>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', borderBottom:'1px solid var(--border)', flexShrink:0 }}>
         {[
-          { l:'Total vehicles tracked', v: raw?.length ?? '—',  c:'var(--text)'   },
-          { l:'Overdue',                v: overdue,              c:'#f87171'       },
-          { l:'Due within 30 days',     v: due_soon,             c:'#fbbf24'       },
-          { l:'Service interval',       v: `${days} days`,       c:'var(--muted)'  },
+          { l:'Total tracked',        v: raw?.length ?? '—',       c:'var(--text)'  },
+          { l:'Overdue',              v: overdue,                   c:'#f87171'      },
+          { l:'Due within 30 days',   v: due_soon,                  c:'#fbbf24'      },
+          { l:'1st service pending',  v: firstSvc,                  c:'#60a5fa'      },
+          { l:'Service interval',     v: `1st: 30d  |  2nd+: 90d`, c:'var(--muted)' },
         ].map((s,i) => (
-          <div key={i} style={{ padding:'14px 20px', borderRight:i<3?'1px solid var(--border)':0 }}>
+          <div key={i} style={{ padding:'14px 20px', borderRight:i<4?'1px solid var(--border)':0 }}>
             <div style={{ fontSize:10, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--muted)', fontWeight:600 }}>{s.l}</div>
             <div style={{ fontSize:22, fontWeight:800, color:s.c, marginTop:6, fontFamily:'display' }}>{s.v}</div>
           </div>
@@ -115,9 +144,9 @@ export default function ServiceDuePage() {
           placeholder="Search customer, mobile, vehicle…"
           style={{ ...inp, width:240 }} />
 
-        {/* Urgency filter */}
+        {/* Filters */}
         <div style={{ display:'flex', gap:6 }}>
-          {[['all','All'],['overdue','Overdue'],['due_soon','Due Soon']].map(([v,l]) => (
+          {[['all','All'],['overdue','Overdue'],['due_soon','Due Soon'],['first','1st Service'],['repeat','Repeat']].map(([v,l]) => (
             <button key={v} onClick={() => setFilter(v)} style={{
               padding:'6px 12px', borderRadius:3, fontSize:10, cursor:'pointer',
               fontFamily:'IBM Plex Sans,sans-serif', letterSpacing:'.05em', textTransform:'uppercase',
@@ -128,13 +157,21 @@ export default function ServiceDuePage() {
           ))}
         </div>
 
-        {/* Service interval selector */}
-        <select value={days} onChange={e => setDays(Number(e.target.value))}
-          style={{ ...inp, width:160 }}>
-          {[[30,'Monthly (30d)'],[60,'Bi-monthly (60d)'],[90,'Quarterly (90d)'],[180,'Half-yearly (180d)']].map(([v,l]) => (
-            <option key={v} value={v}>{l}</option>
-          ))}
-        </select>
+        {/* Interval selectors */}
+        <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+          <span style={{ fontSize:10, color:'var(--muted)', letterSpacing:'.05em' }}>REPEAT:</span>
+          <select value={days} onChange={e => setDays(Number(e.target.value))} style={{ ...inp, width:150, padding:'6px 10px' }}>
+            {[[30,'Monthly (30d)'],[60,'Bi-monthly (60d)'],[90,'Quarterly (90d)'],[180,'Half-yearly (180d)']].map(([v,l]) => (
+              <option key={v} value={v}>{l}</option>
+            ))}
+          </select>
+          <span style={{ fontSize:10, color:'var(--muted)', letterSpacing:'.05em' }}>1ST:</span>
+          <select value={firstServiceDays} onChange={e => setFirstServiceDays(Number(e.target.value))} style={{ ...inp, width:110, padding:'6px 10px' }}>
+            {[[15,'15 days'],[30,'30 days'],[45,'45 days'],[60,'60 days']].map(([v,l]) => (
+              <option key={v} value={v}>{l}</option>
+            ))}
+          </select>
+        </div>
 
         {/* Bulk WhatsApp */}
         {selected.size > 0 && (
@@ -144,9 +181,7 @@ export default function ServiceDuePage() {
           </button>
         )}
 
-        <span style={{ marginLeft:'auto', fontSize:11, color:'var(--muted)' }}>
-          {list.length} vehicles
-        </span>
+        <span style={{ marginLeft:'auto', fontSize:11, color:'var(--muted)' }}>{list.length} vehicles</span>
       </div>
 
       {/* Table */}
@@ -157,7 +192,7 @@ export default function ServiceDuePage() {
           <div style={{ padding:48, textAlign:'center' }}>
             <div style={{ fontSize:32, marginBottom:8 }}>✅</div>
             <div style={{ fontSize:14, fontWeight:600, marginBottom:4 }}>All up to date!</div>
-            <div style={{ fontSize:11, color:'var(--muted)' }}>No vehicles overdue for service in the last {days} days</div>
+            <div style={{ fontSize:11, color:'var(--muted)' }}>No vehicles overdue for service</div>
           </div>
         ) : (
           <table style={{ width:'100%', borderCollapse:'collapse' }}>
@@ -167,7 +202,7 @@ export default function ServiceDuePage() {
                   <input type="checkbox" checked={selected.size === list.length && list.length > 0}
                     onChange={toggleAll} style={{ accentColor:'var(--accent)', cursor:'pointer' }} />
                 </th>
-                {['Customer','Mobile','Vehicle','Last Service','Days Since','Status','Last Notified','Actions'].map(h => (
+                {['Customer','Mobile','Vehicle','Next Service','Last Date','Days Since','Next Due','Status','Last Notified','Actions'].map(h => (
                   <th key={h} style={{ padding:'9px 16px', textAlign:'left', fontSize:9, letterSpacing:'.07em', color:'var(--dim)', fontWeight:600, textTransform:'uppercase', whiteSpace:'nowrap' }}>{h}</th>
                 ))}
               </tr>
@@ -197,12 +232,33 @@ export default function ServiceDuePage() {
                       <div style={{ fontSize:12, fontWeight:500 }}>{r.brand} {r.model}</div>
                       <div className="mono" style={{ fontSize:10, color:'var(--muted)', marginTop:1 }}>{r.vehicle_number || '—'}</div>
                     </td>
+                    {/* Next service type */}
+                    <td style={{ padding:'10px 16px' }}>
+                      {serviceTypeBadge(r.service_type)}
+                      {r.source === 'sale' && (
+                        <div style={{ fontSize:9, color:'var(--dim)', marginTop:3 }}>New vehicle</div>
+                      )}
+                    </td>
+                    {/* Last service / delivery date */}
                     <td style={{ padding:'10px 16px' }}>
                       <div style={{ fontSize:12 }}>{r.check_in_date || '—'}</div>
-                      <div style={{ fontSize:10, color:'var(--dim)', marginTop:1, maxWidth:160, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{r.complaint}</div>
+                      <div style={{ fontSize:10, color:'var(--dim)', marginTop:1, maxWidth:140, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                        {r.source === 'sale' ? 'Delivery date' : r.complaint || ''}
+                      </div>
                     </td>
                     <td style={{ padding:'10px 16px', fontSize:14, fontWeight:800, color:u.color }}>
                       {daysLabel(r.days_since)}
+                    </td>
+                    {/* Next due date */}
+                    <td style={{ padding:'10px 16px' }}>
+                      <div style={{ fontSize:11, fontWeight:600, color: r.due_in_days < 0 ? '#f87171' : r.due_in_days <= 7 ? '#fbbf24' : 'var(--text)' }}>
+                        {r.next_due_date || '—'}
+                      </div>
+                      {r.due_in_days != null && (
+                        <div style={{ fontSize:9, color:'var(--dim)', marginTop:1 }}>
+                          {r.due_in_days < 0 ? `${Math.abs(r.due_in_days)}d overdue` : r.due_in_days === 0 ? 'Due today' : `in ${r.due_in_days}d`}
+                        </div>
+                      )}
                     </td>
                     <td style={{ padding:'10px 16px' }}>
                       <span style={{ fontSize:9, padding:'3px 9px', borderRadius:3, fontWeight:700,
@@ -225,17 +281,15 @@ export default function ServiceDuePage() {
                           <>
                             <button onClick={() => handleWhatsApp(r)}
                               style={{ padding:'5px 10px', background:'rgba(37,211,102,.1)', border:'1px solid rgba(37,211,102,.3)', borderRadius:3, color:'#25d366', fontSize:10, cursor:'pointer', fontWeight:700, fontFamily:'IBM Plex Sans,sans-serif', whiteSpace:'nowrap' }}>
-                              💬 WhatsApp
+                              💬 WA
                             </button>
                             <button onClick={() => handleCall(r)}
                               style={{ padding:'5px 10px', background:'rgba(59,130,246,.1)', border:'1px solid rgba(59,130,246,.3)', borderRadius:3, color:'var(--blue)', fontSize:10, cursor:'pointer', fontWeight:700, fontFamily:'IBM Plex Sans,sans-serif' }}>
-                              📞 Call
+                              📞
                             </button>
                           </>
                         )}
-                        {!r.customer_mobile && (
-                          <span style={{ fontSize:10, color:'var(--dim)' }}>No mobile</span>
-                        )}
+                        {!r.customer_mobile && <span style={{ fontSize:10, color:'var(--dim)' }}>No mobile</span>}
                       </div>
                     </td>
                   </tr>
