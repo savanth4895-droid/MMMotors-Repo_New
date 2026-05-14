@@ -1243,69 +1243,179 @@ async def create_service_job(body: ServiceJobCreate, current_user=Depends(verify
 # ── Service Due ────────────────────────────────────────────────────────────────
 @api_router.get("/service/due")
 async def service_due(
-    days: int = Query(90, ge=1, le=365),
+    days: int               = Query(30, ge=1, le=365),  # lookahead window
+    first_service_days: int = Query(30, ge=1, le=90),   # kept for API compat, ignored — hardcoded 30d
     current_user=Depends(verify_token),
 ):
     """
-    Returns one record per vehicle (most recent job) where the last service
-    was >= `days` ago. Works for ALL customers — sales and service-only.
+    Service schedule:
+      Sold vehicles:
+        1st service  = sale_date + 30 days
+        2nd service  = 1st service date + 90 days
+        3rd+ service = last service date + 90 days
+      Service-only vehicles:
+        next service = last service date + 90 days
+
+    Returns vehicles whose next_due_date <= today + lookahead (days param).
     """
-    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    FIRST_SVC_INTERVAL  = 30   # days after sale for 1st service
+    REPEAT_SVC_INTERVAL = 90   # days between 2nd+ services
 
-    # Aggregate: latest job per vehicle_number, sorted by actual check_in_date
-    pipeline = [
-        {"$match": {"status": "delivered"}},
-        # Parse check_in_date into a real date for reliable sorting
-        {"$addFields": {
-            "parsed_checkin": {
-                "$cond": [
-                    {"$ne": ["$created_at", None]},
-                    {"$dateFromString": {"dateString": "$created_at", "onError": None, "onNull": None}},
-                    None
-                ]
+    now         = datetime.utcnow()
+    lookahead   = now + timedelta(days=days)
+
+    def parse_date(s):
+        for fmt in ("%d %b %Y", "%Y-%m-%d", "%d/%m/%Y", "%Y-%m-%dT%H:%M:%S"):
+            try: return datetime.strptime(s[:len(fmt)+2].strip(), fmt)
+            except (ValueError, TypeError): continue
+        return None
+
+    def ordinal(n):
+        return {1:"1st",2:"2nd",3:"3rd"}.get(n, f"{n}th")
+
+    # ── 1. Sales map: vehicle_number → most-recent sale ─────────────────────
+    sales_docs = await db.sales.find(
+        {}, {"vehicle_number":1,"sale_date":1,"customer_name":1,
+             "customer_mobile":1,"vehicle_brand":1,"vehicle_model":1,"created_at":1}
+    ).to_list(20000)
+
+    sales_map = {}
+    for s in sales_docs:
+        vn = (s.get("vehicle_number") or "").upper().strip()
+        if not vn:
+            continue
+        dt = parse_date(s.get("sale_date","")) or parse_date(s.get("created_at",""))
+        existing = sales_map.get(vn)
+        if not existing or (dt and (not existing["dt"] or dt > existing["dt"])):
+            sales_map[vn] = {
+                "dt":     dt,
+                "str":    s.get("sale_date",""),
+                "name":   s.get("customer_name",""),
+                "mobile": s.get("customer_mobile",""),
+                "brand":  s.get("vehicle_brand",""),
+                "model":  s.get("vehicle_model",""),
             }
-        }},
-        # Sort by most recent service first
-        {"$sort": {"created_at": -1}},
-        # Group: one record per vehicle, keep the most recent job's fields
+
+    # ── 2. Service history per vehicle (oldest-first for counting) ───────────
+    oldest_pipeline = [
+        {"$match": {"status": "delivered"}},
+        {"$sort": {"created_at": 1}},          # oldest first
         {"$group": {
-            "_id": "$vehicle_number",
-            "job_id":          {"$first": "$_id"},
-            "job_number":      {"$first": "$job_number"},
-            "customer_name":   {"$first": "$customer_name"},
-            "customer_mobile": {"$first": "$customer_mobile"},
-            "vehicle_number":  {"$first": "$vehicle_number"},
-            "brand":           {"$first": "$brand"},
-            "model":           {"$first": "$model"},
-            "complaint":       {"$first": "$complaint"},
-            "check_in_date":   {"$first": "$check_in_date"},
-            "created_at":      {"$first": "$created_at"},
+            "_id":   "$vehicle_number",
+            "jobs":  {"$push": {
+                "job_id":   "$_id", "job_number": "$job_number",
+                "created_at": "$created_at", "check_in_date": "$check_in_date",
+                "customer_name": "$customer_name", "customer_mobile": "$customer_mobile",
+                "brand": "$brand", "model": "$model", "complaint": "$complaint",
+            }},
         }},
-        # Only include vehicles whose last service is older than the cutoff
-        {"$match": {"created_at": {"$lt": cutoff}}},
-        # Most overdue first
-        {"$sort": {"created_at": 1}},
-        {"$limit": 500},
     ]
+    grouped = await db.service_jobs.aggregate(oldest_pipeline).to_list(10000)
+    service_map = {}
+    for g in grouped:
+        vn = (g["_id"] or "").upper().strip()
+        if vn:
+            service_map[vn] = g["jobs"]   # [oldest … newest]
 
-    docs = await db.service_jobs.aggregate(pipeline).to_list(500)
-
-    now = datetime.utcnow()
+    # ── 3. Compute next_due for every known vehicle ──────────────────────────
     result = []
-    for d in docs:
-        d["id"] = str(d.pop("job_id", d.get("_id", "")))
-        d.pop("_id", None)
-        # days_since based on created_at (which import now sets from check_in_date)
-        try:
-            last = datetime.fromisoformat(d["created_at"])
-            d["days_since"] = (now - last).days
-        except Exception:
-            d["days_since"] = None
-        ds = d.get("days_since") or 0
-        d["urgency"] = "overdue" if ds >= days else "due_soon" if ds >= days - 30 else "ok"
-        result.append(d)
+    for vn in set(sales_map) | set(service_map):
+        is_sold     = vn in sales_map
+        jobs        = service_map.get(vn, [])   # oldest → newest
+        job_count   = len(jobs)
+        last_job    = jobs[-1] if jobs else None
+        first_job   = jobs[0]  if jobs else None
 
-    return result
+        last_svc_dt  = parse_date(last_job["created_at"])  if last_job  else None
+        first_svc_dt = parse_date(first_job["created_at"]) if first_job else None
+
+        # ── Determine next due date ──────────────────────────────────────────
+        if is_sold:
+            sale   = sales_map[vn]
+            sale_dt = sale["dt"]
+
+            if job_count == 0:
+                # Never serviced — 1st service 30d after sale
+                if not sale_dt: continue
+                next_due   = sale_dt + timedelta(days=FIRST_SVC_INTERVAL)
+                next_label = "1st Service"
+                ref_date   = sale["str"]
+                ref_label  = "Delivery date"
+                source     = "sale"
+            elif job_count == 1:
+                # 1st done — 2nd service 90d after 1st service
+                if not first_svc_dt: continue
+                next_due   = first_svc_dt + timedelta(days=REPEAT_SVC_INTERVAL)
+                next_label = "2nd Service"
+                ref_date   = last_job.get("check_in_date","")
+                ref_label  = last_job.get("complaint","")
+                source     = "sale"
+            else:
+                # 2nd+ done — 90d from last service
+                if not last_svc_dt: continue
+                next_due   = last_svc_dt + timedelta(days=REPEAT_SVC_INTERVAL)
+                next_label = f"{ordinal(job_count + 1)} Service"
+                ref_date   = last_job.get("check_in_date","")
+                ref_label  = last_job.get("complaint","")
+                source     = "sale"
+        else:
+            # Service-only — 90d from last service
+            if not last_svc_dt: continue
+            next_due   = last_svc_dt + timedelta(days=REPEAT_SVC_INTERVAL)
+            next_label = f"{ordinal(job_count + 1)} Service"
+            ref_date   = last_job.get("check_in_date","")
+            ref_label  = last_job.get("complaint","")
+            source     = "service"
+
+        # Skip if not due within lookahead window
+        if next_due > lookahead:
+            continue
+
+        due_in_days = (next_due - now).days   # negative = overdue
+        days_since  = (now - last_svc_dt).days if last_svc_dt else None
+        urgency     = "overdue" if due_in_days < 0 else "due_soon"
+
+        # Customer / vehicle info — prefer latest service job over sale record
+        info = sales_map.get(vn, {})
+        if last_job:
+            cname   = last_job.get("customer_name")   or info.get("name","")
+            cmobile = last_job.get("customer_mobile") or info.get("mobile","")
+            brand   = last_job.get("brand")           or info.get("brand","")
+            model   = last_job.get("model")           or info.get("model","")
+            jnum    = last_job.get("job_number","")
+            jid     = str(last_job.get("job_id",""))
+        else:
+            cname   = info.get("name","")
+            cmobile = info.get("mobile","")
+            brand   = info.get("brand","")
+            model   = info.get("model","")
+            jnum    = ""
+            jid     = ""
+
+        result.append({
+            "id":               jid,
+            "job_number":       jnum,
+            "vehicle_number":   vn,
+            "customer_name":    cname,
+            "customer_mobile":  cmobile,
+            "brand":            brand,
+            "model":            model,
+            "check_in_date":    ref_date,
+            "complaint":        ref_label,
+            "created_at":       last_svc_dt.isoformat() if last_svc_dt else "",
+            "days_since":       days_since,
+            "due_in_days":      due_in_days,
+            "next_due_date":    next_due.strftime("%d %b %Y"),
+            "service_count":    job_count,
+            "service_type":     next_label,
+            "urgency":          urgency,
+            "source":           source,
+            "vehicle_type":     "sold" if is_sold else "service_only",
+        })
+
+    # Most overdue first, then soonest due
+    result.sort(key=lambda x: x["due_in_days"])
+    return result[:500]
 
 @api_router.post("/service/due/{vehicle_number}/notified")
 async def mark_notified(vehicle_number: str, current_user=Depends(verify_token)):
