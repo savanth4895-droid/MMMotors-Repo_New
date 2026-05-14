@@ -123,10 +123,85 @@ export default function ServiceDuePage() {
   };
 
   const { sorted: sortedList, Th: DueTh } = useSortable(list, 'due_in_days', 'asc');
+  const [editRecord,   setEditRecord]   = useState(null);   // record being edited
+  const [editForm,     setEditForm]     = useState({});
+
+  const openEdit = (r) => {
+    setEditForm({
+      customer_name:   r.customer_name   || '',
+      customer_mobile: r.customer_mobile || '',
+      vehicle_number:  r.vehicle_number  || '',
+      brand:           r.brand           || '',
+      model:           r.model           || '',
+      check_in_date:   r.check_in_date   || '',
+    });
+    setEditRecord(r);
+  };
+
+  const saveMut = useMutation({
+    mutationFn: ({ id, payload }) => serviceApi.update(id, payload),
+    onSuccess: () => {
+      qc.invalidateQueries(['service-due']);
+      toast.success('Record updated');
+      setEditRecord(null);
+    },
+    onError: () => toast.error('Failed to update'),
+  });
+
+  const saveEdit = () => {
+    if (!editRecord?.id) return toast.error('No service job to update');
+    saveMut.mutate({ id: editRecord.id, payload: editForm });
+  };
+
   const inp = { padding:'8px 12px', border:'1px solid var(--border)', borderRadius:4, background:'var(--surface2)', color:'var(--text)', fontSize:12, fontFamily:'IBM Plex Sans,sans-serif', outline:'none' };
 
   return (
     <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
+
+      {/* ── Edit modal ── */}
+      {editRecord && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.65)', zIndex:300, display:'flex', alignItems:'center', justifyContent:'center' }}
+          onClick={() => setEditRecord(null)}>
+          <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:8, width:460, padding:24 }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize:13, fontWeight:700, marginBottom:4 }}>Edit Record</div>
+            <div style={{ fontSize:11, color:'var(--muted)', marginBottom:20 }}>
+              {editRecord.vehicle_number} — {editRecord.source === 'sale' ? 'Sold vehicle' : 'Service-only'}
+              {!editRecord.id && <span style={{ color:'#f87171', marginLeft:8 }}>⚠ No service job linked — only name/mobile can be edited via sales record</span>}
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+              {[
+                ['Customer Name',   'customer_name',   'text'],
+                ['Mobile',          'customer_mobile', 'tel'],
+                ['Brand',           'brand',           'text'],
+                ['Model',           'model',           'text'],
+                ['Reg. Number',     'vehicle_number',  'text'],
+                ['Last Service Date','check_in_date',  'text'],
+              ].map(([label, key, type]) => (
+                <div key={key}>
+                  <div style={{ fontSize:9, color:'var(--muted)', marginBottom:4, letterSpacing:'.05em', textTransform:'uppercase' }}>{label}</div>
+                  <input
+                    type={type}
+                    value={editForm[key] || ''}
+                    onChange={e => setEditForm(p => ({ ...p, [key]: e.target.value }))}
+                    style={{ ...inp, padding:'7px 10px', fontSize:12, width:'100%', boxSizing:'border-box' }}
+                  />
+                </div>
+              ))}
+            </div>
+            <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop:20 }}>
+              <button onClick={() => setEditRecord(null)}
+                style={{ padding:'8px 16px', background:'transparent', border:'1px solid var(--border)', borderRadius:4, color:'var(--muted)', fontSize:12, cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif' }}>
+                Cancel
+              </button>
+              <button onClick={saveEdit} disabled={saveMut.isPending}
+                style={{ padding:'8px 18px', background:'var(--accent)', border:'none', borderRadius:4, color:'#000', fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif' }}>
+                {saveMut.isPending ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Stats bar */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', borderBottom:'1px solid var(--border)', flexShrink:0 }}>
@@ -294,6 +369,10 @@ export default function ServiceDuePage() {
                     </td>
                     <td style={{ padding:'10px 16px' }}>
                       <div style={{ display:'flex', gap:5 }}>
+                        <button onClick={() => openEdit(r)}
+                          style={{ padding:'5px 10px', background:'rgba(184,134,11,.1)', border:'1px solid rgba(184,134,11,.3)', borderRadius:3, color:'var(--accent)', fontSize:10, cursor:'pointer', fontWeight:600, fontFamily:'IBM Plex Sans,sans-serif' }}>
+                          Edit
+                        </button>
                         {r.customer_mobile && (
                           <>
                             <button onClick={() => handleWhatsApp(r)}
