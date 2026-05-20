@@ -32,7 +32,7 @@ const MODELS = {
   TVS: [
     'Jupiter 110', 'Jupiter 125', 'Ntorq 125', 'Apache RTR 160', 'Apache RTR 160 4V', 
     'Apache RTR 180', 'Apache RTR 200 4V', 'Apache RR 310', 'Apache RTR 310', 
-    'Raider 125', 'XL100', 'Sport', 'Radeon', 'Ronin', 'iQube', 'Zest 110'
+    'Raider 125', 'XL100', 'Sport', 'Radeon', 'Ronin', 'iQube', 'Zest 110', 'Orbiter'
   ],
   YAMAHA: [
     'FZ FI V3', 'FZ-S FI V3', 'FZ-S FI V4', 'FZ-X', 'MT-15 V2', 
