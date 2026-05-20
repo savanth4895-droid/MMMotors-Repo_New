@@ -3267,8 +3267,7 @@ async def list_accident_estimates(
 
 @api_router.post("/accident-estimates", status_code=201)
 async def create_accident_estimate(body: AccidentEstimateCreate, current_user=Depends(verify_token)):
-    seq        = await next_sequence("accident_estimate")
-    est_number = f"EST-{seq:04d}"
+    est_number = await next_sequence("accident_estimate")   # already "EST-0001"
     ts         = datetime.utcnow().isoformat()
     doc = {
         **body.model_dump(),
