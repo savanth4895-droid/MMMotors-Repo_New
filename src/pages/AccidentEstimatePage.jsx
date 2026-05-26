@@ -325,7 +325,7 @@ function printEstimate(data) {
 }
 
 // ─── Saved Estimates Modal ────────────────────────────────────────────────────
-function SavedEstimatesModal({ onLoad, onClose }) {
+function SavedEstimatesModal({ onLoad, onClose, onDeletedCurrent }) {
   const qc = useQueryClient();
   const { data: estimates = [], isLoading } = useQuery({
     queryKey: ['accident-estimates'],
@@ -335,7 +335,11 @@ function SavedEstimatesModal({ onLoad, onClose }) {
 
   const deleteMut = useMutation({
     mutationFn: (id) => accidentEstimatesApi.delete(id),
-    onSuccess: () => { qc.invalidateQueries(['accident-estimates']); toast.success('Deleted'); },
+    onSuccess: (_, id) => {
+      qc.invalidateQueries(['accident-estimates']);
+      toast.success('Deleted');
+      if (onDeletedCurrent) onDeletedCurrent(id);
+    },
     onError: (e) => toast.error(errMsg(e)),
   });
 
@@ -500,7 +504,11 @@ export default function AccidentEstimatePage() {
     <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
 
       {/* Saved estimates modal */}
-      {showSaved && <SavedEstimatesModal onLoad={loadEstimate} onClose={() => setShowSaved(false)} />}
+      {showSaved && <SavedEstimatesModal
+        onLoad={loadEstimate}
+        onClose={() => setShowSaved(false)}
+        onDeletedCurrent={(id) => { if (id === currentEstId) setCurrentEstId(null); }}
+      />}
 
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
