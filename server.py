@@ -3291,7 +3291,22 @@ async def get_accident_estimate(est_id: str, current_user=Depends(verify_token))
 
 @api_router.put("/accident-estimates/{est_id}")
 async def update_accident_estimate(est_id: str, body: AccidentEstimateUpdate, current_user=Depends(verify_token)):
-    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    existing = await db.accident_estimates.find_one({"_id": obj_id(est_id)})
+    if not existing:
+        # Estimate was deleted — create fresh so frontend gets a new id back
+        est_number = await next_sequence("accident_estimate")
+        ts  = datetime.utcnow().isoformat()
+        doc = {
+            **body.model_dump(exclude_none=True),
+            "estimate_number": est_number,
+            "created_by":      current_user["username"],
+            "created_at":      ts,
+            "updated_at":      ts,
+        }
+        result  = await db.accident_estimates.insert_one(doc)
+        created = await db.accident_estimates.find_one({"_id": result.inserted_id})
+        return oid(created)
+    updates = body.model_dump(exclude_none=True)
     updates["updated_at"] = datetime.utcnow().isoformat()
     await db.accident_estimates.update_one({"_id": obj_id(est_id)}, {"$set": updates})
     return oid(await db.accident_estimates.find_one({"_id": obj_id(est_id)}))
