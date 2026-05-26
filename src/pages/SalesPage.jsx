@@ -13,6 +13,152 @@ function sendWA(mobile, msg) {
   window.open(`https://wa.me/91${cleanMobile}?text=${encodeURIComponent(msg)}`, '_blank');
 }
 
+// ── Standalone client-side PDF/print ────────────────────────────────
+function printSaleInvoice(sale) {
+  // reuse the same logic as InvoiceModal.print but without notes state
+  const RS = '\u20b9';
+  const fmt = n => Number(n||0).toLocaleString('en-IN');
+  const nominee = sale.nominee || {};
+  const total = sale.total_amount || 0;
+  const ones = ['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen'];
+  const tens = ['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];
+  function numWords(n) {
+    n = Math.round(n);
+    if (n === 0) return 'Zero';
+    if (n < 0) return 'Minus ' + numWords(-n);
+    let w = '';
+    if (n >= 10000000) { w += numWords(Math.floor(n/10000000)) + ' Crore '; n %= 10000000; }
+    if (n >= 100000)   { w += numWords(Math.floor(n/100000))   + ' Lakh '; n %= 100000; }
+    if (n >= 1000)     { w += numWords(Math.floor(n/1000))     + ' Thousand '; n %= 1000; }
+    if (n >= 100)      { w += ones[Math.floor(n/100)]          + ' Hundred '; n %= 100; }
+    if (n >= 20)       { w += tens[Math.floor(n/10)]; if (n%10) w += ' ' + ones[n%10]; }
+    else if (n > 0)    { w += ones[n]; }
+    return w.trim();
+  }
+  const amtWords = numWords(total) + ' Rupees Only';
+  const exShowroom  = sale.ex_showroom_price || sale.total_amount || 0;
+  const rto         = sale.rto        || 0;
+  const insurance   = sale.insurance  || 0;
+  const accessories = sale.accessories|| 0;
+  const discount    = sale.discount   || 0;
+  const descRows = [
+    ['Ex-Showroom Price', exShowroom],
+    rto         ? ['RTO', rto]               : null,
+    insurance   ? ['Insurance', insurance]   : null,
+    accessories ? ['Accessories',accessories]: null,
+    discount    ? ['Discount', -discount]    : null,
+  ].filter(Boolean).map(([l,v],i) =>
+    `<tr style="background:${i%2?'#fafafa':'#fff'}">
+      <td style="padding:7px 14px;font-size:11px;color:#555;border-bottom:1px solid #eee">${l}</td>
+      <td style="padding:7px 14px;font-size:11px;text-align:right;border-bottom:1px solid #eee">${v<0?'− ':''}${RS}${fmt(Math.abs(v))}</td>
+    </tr>`
+  ).join('');
+
+  // Use the same HTML template as InvoiceModal but get it directly via InvoiceModal's print logic
+  // Simplest: open InvoiceModal data as print window
+  const invoiceModal = document.createElement('div');
+  invoiceModal.style.display = 'none';
+  document.body.appendChild(invoiceModal);
+
+  // Build the same HTML as InvoiceModal.print()
+  const w = window.open('', '_blank');
+  if (!w) return toast?.error?.('Popup blocked — allow popups for this site');
+
+  // Trigger the InvoiceModal print by setting sale into a temporary modal
+  // Actually: just duplicate the HTML building here (same as InvoiceModal)
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"/>
+  <title>Invoice ${sale.invoice_number}</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#111;background:#fff}
+    .page{max-width:700px;margin:0 auto;padding:0}
+    .topbar{background:#1a1a1a;height:10px}
+    .goldbar{background:#B8860B;height:3px}
+    .hdr{display:flex;justify-content:space-between;align-items:flex-start;padding:16px 24px 14px;border-bottom:1.5px solid #B8860B}
+    .brand{font-size:22px;font-weight:900;color:#1a1a1a;letter-spacing:-.5px}
+    .brand-sub{font-size:9px;color:#888;margin-top:3px;letter-spacing:.04em}
+    .inv-label{font-size:9px;color:#888;font-weight:700;letter-spacing:.1em;text-transform:uppercase;text-align:right}
+    .inv-no{font-size:18px;font-weight:800;color:#B8860B;text-align:right}
+    .inv-date{font-size:9px;color:#888;text-align:right;margin-top:3px}
+    .body{padding:20px 24px}
+    .sec-lbl{font-size:8px;font-weight:800;color:#B8860B;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px;padding-bottom:3px;border-bottom:1px solid #e8d090}
+    .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:18px}
+    .irow{display:flex;justify-content:space-between;margin-bottom:4px}
+    .lbl{font-size:9px;color:#888;text-transform:uppercase;letter-spacing:.04em}
+    .val{font-size:11px;font-weight:600;color:#111;text-align:right}
+    table{width:100%;border-collapse:collapse}
+    .total-row td{font-weight:800;font-size:13px;background:#B8860B!important;color:#fff;padding:9px 14px}
+    .words-row td{font-size:10px;font-style:italic;color:#555;padding:6px 14px;background:#fdf8ec;border-bottom:1px solid #e8d090}
+    .sig-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:24px}
+    .sig-box{text-align:center}
+    .sig-line{border-top:1px solid #333;margin-bottom:4px;padding-top:4px;font-size:9px;color:#555}
+    .footer{text-align:center;font-size:8px;color:#aaa;margin-top:16px;padding:12px 24px;border-top:1px solid #eee}
+    @media print{body{-webkit-print-color-adjust:exact}}
+  </style></head><body>
+  <div class="page">
+    <div class="topbar"></div><div class="goldbar"></div>
+    <div class="hdr">
+      <div>
+        <div class="brand">MM MOTORS</div>
+        <div class="brand-sub">AUTHORISED TWO-WHEELER DEALER</div>
+        <div style="font-size:9px;color:#888;margin-top:2px">Bengaluru, Karnataka</div>
+      </div>
+      <div>
+        <div class="inv-label">Tax Invoice</div>
+        <div class="inv-no">${sale.invoice_number||'—'}</div>
+        <div class="inv-date">${sale.sale_date||''}</div>
+      </div>
+    </div>
+    <div class="body">
+      <div class="info-grid">
+        <div>
+          <div class="sec-lbl">Customer</div>
+          <div class="irow"><div class="lbl">Name</div><div class="val">${sale.customer_name||'—'}</div></div>
+          <div class="irow"><div class="lbl">Mobile</div><div class="val">${sale.customer_mobile||'—'}</div></div>
+          ${sale.customer_address ? `<div class="irow"><div class="lbl">Address</div><div class="val" style="max-width:180px;text-align:right">${sale.customer_address}</div></div>` : ''}
+          ${nominee?.name ? `<div class="irow"><div class="lbl">Nominee</div><div class="val">${nominee.name}</div></div>` : ''}
+        </div>
+        <div>
+          <div class="sec-lbl">Vehicle</div>
+          <div class="irow"><div class="lbl">Brand</div><div class="val">${sale.vehicle_brand||'—'}</div></div>
+          <div class="irow"><div class="lbl">Model</div><div class="val">${sale.vehicle_model||'—'}</div></div>
+          ${sale.vehicle_variant ? `<div class="irow"><div class="lbl">Variant</div><div class="val">${sale.vehicle_variant}</div></div>` : ''}
+          ${sale.vehicle_color   ? `<div class="irow"><div class="lbl">Colour</div><div class="val">${sale.vehicle_color}</div></div>` : ''}
+          ${sale.chassis_number  ? `<div class="irow"><div class="lbl">Chassis</div><div class="val" style="font-family:monospace;font-size:10px">${sale.chassis_number}</div></div>` : ''}
+          ${sale.engine_number   ? `<div class="irow"><div class="lbl">Engine</div><div class="val" style="font-family:monospace;font-size:10px">${sale.engine_number}</div></div>` : ''}
+          ${sale.vehicle_number  ? `<div class="irow"><div class="lbl">Reg No.</div><div class="val" style="font-family:monospace">${sale.vehicle_number}</div></div>` : ''}
+        </div>
+      </div>
+      <div class="sec-lbl" style="margin-bottom:8px">Amount Details</div>
+      <table style="margin-bottom:16px">
+        <thead><tr style="background:#f5f5f5"><th style="padding:7px 14px;text-align:left;font-size:9px;letter-spacing:.06em;color:#888;text-transform:uppercase">Description</th><th style="padding:7px 14px;text-align:right;font-size:9px;letter-spacing:.06em;color:#888;text-transform:uppercase">Amount</th></tr></thead>
+        <tbody>
+          ${descRows}
+          <tr class="total-row"><td>Total Amount</td><td style="text-align:right">${RS}${fmt(total)}</td></tr>
+          <tr class="words-row"><td colspan="2">${amtWords}</td></tr>
+        </tbody>
+      </table>
+      <div class="info-grid" style="margin-bottom:0">
+        <div>
+          <div class="sec-lbl">Payment</div>
+          <div class="irow"><div class="lbl">Mode</div><div class="val">${sale.payment_mode||'—'}</div></div>
+          <div class="irow"><div class="lbl">Status</div><div class="val">${sale.status||'—'}</div></div>
+        </div>
+      </div>
+      <div class="sig-grid">
+        <div class="sig-box"><div style="height:36px"></div><div class="sig-line">Customer Signature</div></div>
+        <div class="sig-box"><div style="height:36px"></div><div class="sig-line">Authorised Signatory</div></div>
+        <div class="sig-box"><div style="height:36px"></div><div class="sig-line">Received By</div></div>
+      </div>
+    </div>
+    <div class="footer">This is a computer-generated invoice. Thank you for your purchase at MM Motors.</div>
+    <div class="goldbar"></div>
+  </div>
+  <script>window.onload=()=>{window.print();}</script>
+  </body></html>`);
+  w.document.close();
+}
+
 // ── Invoice modal ────────────────────────────────────────────────────
 function InvoiceModal({ sale, onClose }) {
   const [notes, setNotes] = useState(sale.notes || '');
