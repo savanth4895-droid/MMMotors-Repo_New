@@ -3525,16 +3525,12 @@ async def _email_backup_to_owner() -> dict:
 
 @api_router.post("/admin/trigger-backup")
 async def trigger_backup_now(current_user=Depends(require_admin)):
-    """Manual backup trigger — owner only. Runs same flow as scheduled job."""
-    result = await _email_backup_to_owner()
+    """Manual backup trigger — owner only. Fire-and-forget: returns immediately.
+    Poll GET /admin/backup-log for result."""
+    asyncio.create_task(_email_backup_to_owner())
     return {
-        "ok":          result["ok"],
-        "size_bytes":  result.get("size_bytes", 0),
-        "size_mb":     round(result.get("size_bytes", 0) / (1024 * 1024), 2),
-        "error":       result.get("error"),
-        "filename":    result.get("filename"),
-        "destination": result.get("destination"),
-        "key":         result.get("key"),
+        "queued": True,
+        "message": "Backup started. Check backup log in 30-60s for result.",
     }
 
 
