@@ -202,6 +202,10 @@ norm_brand("yamaha")     # → "YAMAHA"
 
 **GST rates**: `[5, 12, 18]` — use `calc_gst_line()` / `calc_bill_totals()`
 
+**Discount on service bills**: `discount` field on `service_bills` collection. Applied post-GST off `grand_total`. Frontend clamps `0..subtotal`. Backend stores both `grand_total` (pre-discount) and `net_total` (post-discount). `amount_in_words` derived from `net_total`. Job's `grand_total` synced to `net_total`.
+
+**Complimentary items (free)**: `complimentary: bool` flag per line item on both `service_bills` and `parts_bills`. When true: `unit_price` stored as 0, `mrp` preserves original price for reporting, `gst_rate`=0, `taxable/cgst/sgst/total` all 0. Stock deducts as normal (log reason `"complimentary"` for parts bills). Frontend: checkbox column in bill row, FREE badge, strike-through MRP. Report endpoint `GET /reports/complimentary?date_from&date_to` — groups across both collections by `part_number`, returns qty, occurrences, `mrp_value` forgone, `total_value`.
+
 **ObjectId helpers**: `oid()`, `oids()`, `obj_id()` from `database.py`
 
 **Pagination**: `paginate_params` dependency — standard `skip`/`limit`
