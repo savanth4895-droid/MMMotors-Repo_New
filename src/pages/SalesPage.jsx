@@ -5,6 +5,7 @@ import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError, useSortable } from '..
 import toast from 'react-hot-toast';
 import { useConfirm } from '../components/ConfirmModal';
 import FileUpload from '../components/FileUpload';
+import { useDraft, DraftBar } from '../hooks/useDraft';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 function sendWA(mobile, msg) {
@@ -539,6 +540,11 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
   });
 
   const s = k => e => setF(p => ({ ...p, [k]: e.target.value }));
+
+  // Draft — only for new sales (skip when editing)
+  const isEdit = !!initial?.id;
+  const draft  = useDraft({ key: 'mm_draft_sale', state: f, enabled: !isEdit });
+
   const inpStyle = { background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:3, padding:'8px 10px', color:'var(--text)', outline:'none', fontSize:13, width:'100%' };
   const dropStyle = { position:'absolute', top:'100%', left:0, right:0, zIndex:100, background:'var(--surface)', border:'1px solid var(--border)', borderRadius:3, boxShadow:'0 4px 16px rgba(0,0,0,.12)', maxHeight:200, overflowY:'auto' };
   const dropItemStyle = (hover) => ({ padding:'8px 12px', fontSize:12, cursor:'pointer', background: hover ? 'var(--surface2)' : 'transparent', borderBottom:'1px solid var(--border)' });
@@ -561,11 +567,18 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
       total_amount: parseFloat(f.sale_price) || 0 
     };
     onSave(payload);
+    if (!isEdit) draft.clearDraft();
   };
 
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:14, maxWidth:700 }}>
-      
+      {!isEdit && (
+        <DraftBar
+          draft={draft}
+          onRestore={(data) => setF(p => ({ ...p, ...data }))}
+          onDiscard={() => {}}
+        />
+      )}
       {/* ── Tabs ── */}
       <div style={{ display:'flex', borderBottom:'1px solid var(--border)', marginBottom:10, overflowX: 'auto' }}>
         {['CUSTOMER', 'VEHICLE', 'NOMINEE', 'PRICING', 'HSRP'].map((t, i) => (
