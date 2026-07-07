@@ -219,7 +219,7 @@ norm_brand("yamaha")     # → "YAMAHA"
 - Auth state lives in `AuthContext` — wraps entire app
 - `ConfirmModal` via `ConfirmProvider` for destructive actions
 - `ErrorBoundary` wraps all routes
-- Form drafts: `useDraft` hook + `DraftBar` component (`src/hooks/useDraft.js`). Auto-save every 3s to localStorage. Manual "Save Draft" button. Restore prompt shows when returning to form. Wired into Sales/Service/PartsBill/AccidentEstimate new-record forms only (skipped for edit modals via `enabled` flag). Draft cleared on successful submit. Keys: `mm_draft_sale`, `mm_draft_service`, `mm_draft_parts_bill`, `mm_draft_accident`.
+- Form drafts: `useDraft` hook + `DraftBar` component (`src/hooks/useDraft.jsx`). Auto-save every 3s to localStorage. Manual "Save Draft" button. Restore prompt shows when returning to form. Wired into Sales/Service/PartsBill/AccidentEstimate new-record forms only (skipped for edit modals via `enabled` flag). Draft cleared on successful submit. Keys: `mm_draft_sale`, `mm_draft_service`, `mm_draft_parts_bill`, `mm_draft_accident`. Note: file must be `.jsx` (contains JSX), Vite won't transform `.js`.
 
 ---
 
