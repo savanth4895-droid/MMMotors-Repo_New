@@ -87,6 +87,16 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
 | `JWT_SECRET_KEY`| ✓        | 64-char hex. Server exits without this.        |
 | `ALLOW_ORIGINS` | ✓        | Comma-separated Vercel URLs + `localhost:5173` |
 | `SERVICE_DUE_CUTOFF` |     | YYYY-MM-DD. Default `2026-05-01`. Vehicles sold before excluded from Service Due. |
+| `SMTP_HOST`     |          | Default `smtp.gmail.com` |
+| `SMTP_PORT`     |          | Default `465` (SSL) |
+| `SMTP_USER`     | ✓ (for backup) | Gmail address sending backup |
+| `SMTP_PASS`     | ✓ (for backup) | Gmail App Password (myaccount.google.com/apppasswords) — NOT login password |
+| `BACKUP_EMAIL_TO` | ✓ (for backup) | Owner email receiving nightly backup |
+| `ENABLE_BACKUP_SCHEDULER` |  | `"true"`/`"false"` — disable to skip scheduler startup |
+| `B2_KEY_ID`     | ✓ (for backup) | Backblaze B2 Application Key ID |
+| `B2_APP_KEY`    | ✓ (for backup) | Backblaze B2 Application Key |
+| `B2_BUCKET`     | ✓ (for backup) | Bucket name (e.g. `mmmotors-backups`) |
+| `B2_ENDPOINT`   | ✓ (for backup) | S3 endpoint URL (shown on bucket page after creation) |
 
 Generate JWT secret:
 ```bash
@@ -158,7 +168,7 @@ Default seed account (change immediately after first login):
 | Debts            | CRUD `/debts`, `/debts/summary`, `POST /debts/{id}/payments`              |
 | Expenses         | CRUD `/expenses`, `/expenses/stats/summary`                                |
 | Accident Est.    | CRUD `/accident-estimates` (PUT recreates if deleted)                     |
-| Backup           | `GET /backup/export` (ZIP of per-entity Excel files, admin only)          |
+| Backup           | `GET /backup/export` (ZIP of per-entity Excel files, admin only) · `POST /admin/trigger-backup` (manual) · `GET /admin/backup-log` (last 20 attempts) |
 | P&L              | `GET /reports/pnl`                                                         |
 
 Import supports: `customers`, `vehicles`, `sales`, `service`, `parts`, `staff`
@@ -254,6 +264,23 @@ After deploy:
 ---
 
 ## Known Issues / Notes (audit 07 Jul 2026)
+
+### Backup System (added 07 Jul 2026 · B2 upgrade 07 Jul 2026)
+
+- Nightly at 2 AM IST (20:30 UTC). `AsyncIOScheduler` in-process.
+- Primary destination: **Backblaze B2** via S3-compatible API (`boto3`).
+- Path format: `backups/YYYY/MM/MMMotors_Backup_YYYY-MM-DD.zip`
+- Secondary: email **notification only** (no attachment) via Gmail SMTP — subject shows OK/FAIL + size.
+- `_build_backup_zip()` — shared with `/backup/export` endpoint.
+- `_upload_backup_to_b2()` — runs boto3 `put_object` in thread pool executor.
+- `_email_backup_notification()` — best-effort. Email failure does not fail backup.
+- Retention: set B2 bucket **Lifecycle Rule** in Backblaze UI (recommend 30-day auto-delete). Not managed by code.
+- `backup_log` collection: TTL 90 days. Stores ts, ok, size, key, destination, error.
+- Manual: `POST /admin/trigger-backup` (admin only).
+- Log: `GET /admin/backup-log?limit=20`.
+- **Risk:** B2 key revoked silently. Email notification catches it on next run.
+- **Risk:** Scheduler dies on Render restart until UptimeRobot pings `/health`.
+- **Risk:** Email address wrong → no failure alerts. Test with `/admin/trigger-backup` after setup.
 
 - ~~`GET /files/{file_id}` — **no auth**.~~ **FIXED 07 Jul 2026** — added `Depends(verify_token)`. Frontend `FileUpload.jsx` now uses blob-fetch pattern (`filesApi.getFileBlobUrl`) with `URL.createObjectURL` + cleanup on unmount. Legacy `filesApi.getFileUrl` retained but no longer functional anonymously.
 - `bcrypt==3.2.2` pinned (works with passlib 1.7.4; do not upgrade to 4.x without testing).
