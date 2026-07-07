@@ -87,7 +87,31 @@ async def lifespan(app):
         print(f"[MM Motors] Connected to MongoDB · DB: {DB_NAME}")
     except Exception as e:
         print(f"[MM Motors] WARNING: DB connection failed: {e}")
+
+    # Start nightly backup scheduler — 2 AM IST = 20:30 UTC previous day
+    scheduler = None
+    if os.getenv("ENABLE_BACKUP_SCHEDULER", "true").lower() == "true":
+        try:
+            from apscheduler.schedulers.asyncio import AsyncIOScheduler
+            from apscheduler.triggers.cron import CronTrigger
+            scheduler = AsyncIOScheduler(timezone="UTC")
+            scheduler.add_job(
+                _email_backup_to_owner,
+                trigger=CronTrigger(hour=20, minute=30),  # 2 AM IST
+                id="nightly_backup",
+                replace_existing=True,
+                misfire_grace_time=3600,   # run if missed by up to 1 hour
+            )
+            scheduler.start()
+            print("[MM Motors] Backup scheduler started · 2 AM IST daily")
+        except Exception as e:
+            print(f"[MM Motors] Scheduler failed: {e}")
+            scheduler = None
+
     yield
+
+    if scheduler:
+        scheduler.shutdown(wait=False)
     if _db.client:
         _db.client.close()
 
@@ -160,6 +184,8 @@ async def _ensure_indexes():
     )
     await db.login_attempts.create_index("username")
     await db.login_attempts.create_index([("username", 1), ("ip", 1)])
+    # backup_log — TTL 90 days
+    await db.backup_log.create_index("ts", expireAfterSeconds=90 * 24 * 3600)
     print("[MM Motors] Indexes ensured")
 
 async def _seed_owner():
@@ -3275,6 +3301,16 @@ async def export_backup(current_user=Depends(require_admin)):
     Export all collections as a ZIP containing individual Excel files.
     One file per entity — ready to re-import via the Import page.
     """
+    zip_bytes, filename = await _build_backup_zip()
+    headers_resp = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Type": "application/zip",
+    }
+    return StreamingResponse(iter([zip_bytes]), headers=headers_resp, media_type="application/zip")
+
+
+async def _build_backup_zip() -> tuple[bytes, str]:
+    """Build full backup ZIP. Returns (bytes, filename). Reused by scheduler."""
     import zipfile, io as _io
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
@@ -3283,20 +3319,17 @@ async def export_backup(current_user=Depends(require_admin)):
 
     def make_sheet(wb, title, rows, headers):
         ws = wb.create_sheet(title)
-        # Header row
         for ci, h in enumerate(headers, 1):
             c = ws.cell(row=1, column=ci, value=h)
             c.font      = Font(name='Arial', bold=True, color=WHITE, size=9)
             c.fill      = PatternFill('solid', start_color=GOLD)
             c.alignment = Alignment(horizontal='center', vertical='center')
-        # Data rows
         for ri, row in enumerate(rows, 2):
             for ci, h in enumerate(headers, 1):
                 val = row.get(h, '')
                 if isinstance(val, (dict, list)):
                     val = str(val)
                 ws.cell(row=ri, column=ci, value=val)
-        # Auto width
         for col in ws.columns:
             max_len = max((len(str(c.value or '')) for c in col), default=10)
             ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 40)
@@ -3367,11 +3400,154 @@ async def export_backup(current_user=Depends(require_admin)):
             zf.writestr(f"MMMotors_Backup_{today}/{fname}", data)
 
     zip_buf.seek(0)
-    headers_resp = {
-        "Content-Disposition": f'attachment; filename="MMMotors_Backup_{today}.zip"',
-        "Content-Type": "application/zip",
+    return zip_buf.read(), f"MMMotors_Backup_{today}.zip"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Nightly Email Backup
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def _upload_backup_to_b2(zip_bytes: bytes, filename: str) -> dict:
+    """Upload backup ZIP to Backblaze B2 via S3-compatible API.
+    Returns {'ok': bool, 'key': str, 'error': str|None}."""
+    key_id     = os.getenv("B2_KEY_ID", "").strip()
+    app_key    = os.getenv("B2_APP_KEY", "").strip()
+    bucket     = os.getenv("B2_BUCKET", "").strip()
+    endpoint   = os.getenv("B2_ENDPOINT", "").strip()  # e.g. https://s3.us-west-004.backblazeb2.com
+
+    if not (key_id and app_key and bucket and endpoint):
+        return {"ok": False, "key": None, "error": "B2 env vars missing (B2_KEY_ID, B2_APP_KEY, B2_BUCKET, B2_ENDPOINT)"}
+
+    try:
+        import boto3
+        from botocore.config import Config
+        # Run blocking boto3 call in thread pool
+        loop = asyncio.get_event_loop()
+        def _upload():
+            client = boto3.client(
+                "s3",
+                endpoint_url=endpoint,
+                aws_access_key_id=key_id,
+                aws_secret_access_key=app_key,
+                config=Config(signature_version="s3v4", retries={"max_attempts": 3}),
+            )
+            key = f"backups/{utcnow().strftime('%Y/%m')}/{filename}"
+            client.put_object(
+                Bucket=bucket, Key=key, Body=zip_bytes,
+                ContentType="application/zip",
+                Metadata={"generated": utcnow().isoformat()},
+            )
+            return key
+        key = await loop.run_in_executor(None, _upload)
+        return {"ok": True, "key": key, "error": None}
+    except Exception as e:
+        return {"ok": False, "key": None, "error": str(e)[:500]}
+
+
+async def _email_backup_notification(subject: str, body: str) -> bool:
+    """Send plain-text notification email. No attachment. Returns True if sent."""
+    import smtplib, ssl
+    from email.message import EmailMessage
+
+    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", "465"))
+    smtp_user = os.getenv("SMTP_USER", "").strip()
+    smtp_pass = os.getenv("SMTP_PASS", "").strip()
+    to_addr   = os.getenv("BACKUP_EMAIL_TO", "").strip()
+
+    if not (smtp_user and smtp_pass and to_addr):
+        return False
+
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"]    = smtp_user
+        msg["To"]      = to_addr
+        msg.set_content(body)
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, context=ctx, timeout=60) as server:
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        print(f"[BACKUP] Email notification failed: {e}")
+        return False
+
+
+async def _email_backup_to_owner() -> dict:
+    """Build backup, upload to B2, send email notification.
+    (Function name kept for scheduler binding compatibility.)"""
+    status = {"ts": utcnow(), "ok": False, "size_bytes": 0, "error": None,
+              "destination": "b2", "key": None}
+    try:
+        zip_bytes, filename = await _build_backup_zip()
+        status["size_bytes"] = len(zip_bytes)
+        status["filename"]   = filename
+        size_mb = len(zip_bytes) / (1024 * 1024)
+
+        upload = await _upload_backup_to_b2(zip_bytes, filename)
+        status["ok"]  = upload["ok"]
+        status["key"] = upload["key"]
+        if not upload["ok"]:
+            status["error"] = upload["error"]
+
+        # Notification (best-effort — do not fail backup if email fails)
+        if status["ok"]:
+            subject = f"MM Motors Backup OK — {size_mb:.1f}MB · {utcnow().strftime('%d %b')}"
+            body    = (f"Backup uploaded to Backblaze B2.\n\n"
+                       f"File: {filename}\nSize: {size_mb:.2f} MB\n"
+                       f"Path: {upload['key']}\nBucket: {os.getenv('B2_BUCKET', '')}\n"
+                       f"Time (UTC): {utcnow().isoformat()}\n")
+        else:
+            subject = f"⚠ MM Motors Backup FAILED — {utcnow().strftime('%d %b')}"
+            body    = (f"Backup failed.\n\nError: {status['error']}\n"
+                       f"Size: {size_mb:.2f} MB\nTime (UTC): {utcnow().isoformat()}\n\n"
+                       f"Check /admin/backup-log for history.")
+        await _email_backup_notification(subject, body)
+
+        await db.backup_log.insert_one(status)
+        print(f"[BACKUP] {'OK' if status['ok'] else 'FAIL'} · {size_mb:.2f}MB · {status.get('key') or status['error']}")
+        return status
+    except Exception as e:
+        status["error"] = str(e)[:500]
+        await db.backup_log.insert_one(status)
+        await _email_backup_notification(
+            f"⚠ MM Motors Backup CRASHED — {utcnow().strftime('%d %b')}",
+            f"Backup crashed before completion.\n\nError: {e}\nTime: {utcnow().isoformat()}",
+        )
+        print(f"[BACKUP] Crashed: {e}")
+        return status
+
+
+@api_router.post("/admin/trigger-backup")
+async def trigger_backup_now(current_user=Depends(require_admin)):
+    """Manual backup trigger — owner only. Runs same flow as scheduled job."""
+    result = await _email_backup_to_owner()
+    return {
+        "ok":          result["ok"],
+        "size_bytes":  result.get("size_bytes", 0),
+        "size_mb":     round(result.get("size_bytes", 0) / (1024 * 1024), 2),
+        "error":       result.get("error"),
+        "filename":    result.get("filename"),
+        "destination": result.get("destination"),
+        "key":         result.get("key"),
     }
-    return StreamingResponse(iter([zip_buf.read()]), headers=headers_resp, media_type="application/zip")
+
+
+@api_router.get("/admin/backup-log")
+async def backup_log(limit: int = Query(20, ge=1, le=100), current_user=Depends(require_admin)):
+    """Recent backup attempts — success + failure."""
+    docs = await db.backup_log.find().sort("ts", -1).limit(limit).to_list(limit)
+    return [{
+        "ts":          d.get("ts").isoformat() if d.get("ts") else None,
+        "ok":          d.get("ok", False),
+        "size_bytes":  d.get("size_bytes", 0),
+        "filename":    d.get("filename", ""),
+        "destination": d.get("destination", "email"),
+        "key":         d.get("key"),
+        "error":       d.get("error"),
+    } for d in docs]
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Accident Estimates
