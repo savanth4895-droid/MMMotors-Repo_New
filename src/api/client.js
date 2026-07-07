@@ -167,7 +167,9 @@ export const expensesApi = {
 };
 
 export const backupApi = {
-  export: () => api.get('/backup/export', { responseType: 'blob' }),
+  export:  () => api.get('/backup/export', { responseType: 'blob' }),
+  trigger: () => api.post('/admin/trigger-backup'),
+  log:     (limit = 20) => api.get('/admin/backup-log', { params: { limit } }),
 };
 
 export const reportsApi = {
