@@ -262,9 +262,19 @@ function BackupSection() {
   const runMut = useMutation({
     mutationFn: () => backupApi.trigger().then(r => r.data),
     onSuccess: (data) => {
-      if (data.ok) toast.success(`Backup uploaded · ${data.size_mb} MB`);
-      else         toast.error(`Backup failed: ${data.error || 'unknown'}`);
-      qc.invalidateQueries(['backup-log']);
+      if (data.queued) {
+        toast.success('Backup queued. Refreshing log…');
+        // Poll log for fresh result — 5s, 15s, 30s, 60s
+        [5000, 15000, 30000, 60000].forEach(delay =>
+          setTimeout(() => qc.invalidateQueries(['backup-log']), delay)
+        );
+      } else if (data.ok) {
+        toast.success(`Backup uploaded · ${data.size_mb} MB`);
+        qc.invalidateQueries(['backup-log']);
+      } else {
+        toast.error(`Backup failed: ${data.error || 'unknown'}`);
+        qc.invalidateQueries(['backup-log']);
+      }
     },
     onError: (e) => toast.error(`Trigger failed: ${e?.response?.data?.detail || e.message}`),
   });
