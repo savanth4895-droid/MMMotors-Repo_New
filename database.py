@@ -7,11 +7,12 @@ Never import server.py from here — this module has no FastAPI app dependency.
 import os
 import sys
 import certifi
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from bson import ObjectId
 from bson.errors import InvalidId
+from pymongo import ReturnDocument
 from fastapi import Depends, HTTPException, Query, Cookie, Request
 from jose import JWTError, jwt
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
@@ -66,7 +67,7 @@ pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def create_token(data: dict, expires_delta: timedelta = None) -> str:
     to_encode = data.copy()
-    expire    = datetime.utcnow() + (expires_delta or timedelta(minutes=JWT_EXPIRE_MIN))
+    expire    = utcnow() + (expires_delta or timedelta(minutes=JWT_EXPIRE_MIN))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
@@ -102,9 +103,9 @@ async def require_admin(current_user: dict = Depends(verify_token)) -> dict:
         raise HTTPException(status_code=403, detail="Owner access required")
     return current_user
 
-async def require_roles(*roles):
+def require_roles(*roles):
     async def checker(current_user: dict = Depends(verify_token)) -> dict:
-        if current_user.get("role") not in roles:
+        if norm_role(current_user.get("role", "")) not in [norm_role(r) for r in roles]:
             raise HTTPException(status_code=403, detail=f"Required roles: {roles}")
         return current_user
     return checker
@@ -115,7 +116,8 @@ _PREFIX = {"invoice": ("INV", 6), "job": ("SRV", 6), "part_bill": ("PRT", 6), "p
 async def next_sequence(name: str) -> str:
     prefix, pad = _PREFIX[name]
     result = await db.counters.find_one_and_update(
-        {"_id": name}, {"$inc": {"seq": 1}}, upsert=True, return_document=True,
+        {"_id": name}, {"$inc": {"seq": 1}}, upsert=True,
+        return_document=ReturnDocument.AFTER,
     )
     return f"{prefix}-{str(result['seq']).zfill(pad)}"
 
@@ -151,8 +153,13 @@ def obj_id(s: str) -> ObjectId:
 def paginate_params(page: int = Query(1, ge=1), limit: int = Query(50, ge=1, le=5000)):
     return {"page": page, "limit": limit, "skip": (page - 1) * limit}
 
+def utcnow() -> datetime:
+    """Naive UTC datetime — replaces deprecated datetime.utcnow().
+    Naive preserves compatibility with existing naive ISO strings in DB."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
 def now() -> str:
-    return datetime.utcnow().isoformat()
+    return utcnow().isoformat()
 
 # ── GST calculation ─────────────────────────────────────────────────────────────
 def calc_gst_line(price: float, qty: int, gst_rate: float) -> dict:
