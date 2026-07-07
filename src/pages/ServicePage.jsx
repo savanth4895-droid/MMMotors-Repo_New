@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { serviceApi, partsApi, customersApi, billsApi, salesApi, errMsg} from '../api/client';
 import { useSortable } from '../components/ui';
 import toast from 'react-hot-toast';
+import { useDraft, DraftBar } from '../hooks/useDraft';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const RS   = '₹';
@@ -568,15 +569,33 @@ function NewJobModal({ onClose }) {
       toast.success('Job card created!');
       qc.invalidateQueries(['service-jobs']);
       qc.invalidateQueries(['service-stats']);
+      draft.clearDraft();
       onClose();
     },
     onError: e => toast.error(errMsg(e, 'Failed to create job')),
   });
 
+  // Draft — full state snapshot for restore
+  const draftState = { form, selCust, step, custSearch, vehicleSearch };
+  const draft = useDraft({ key: 'mm_draft_service', state: draftState });
+
   const BRANDS = ['HERO','HONDA','BAJAJ','TVS','YAMAHA','SUZUKI','ROYAL ENFIELD','KTM'];
 
   return (
     <ModalShell onClose={onClose} title="New Job Card" sub="Service check-in">
+      <div style={{ padding:'12px 20px 0' }}>
+        <DraftBar
+          draft={draft}
+          onRestore={(d) => {
+            if (d.form)          setForm(d.form);
+            if (d.selCust)       setSelCust(d.selCust);
+            if (d.step)          setStep(d.step);
+            if (d.custSearch)    setCustSearch(d.custSearch);
+            if (d.vehicleSearch) setVehicleSearch(d.vehicleSearch);
+          }}
+          onDiscard={() => {}}
+        />
+      </div>
       {step === 1 ? (
         <div style={{ padding:'20px 20px 0' }}>
           <label style={labelSt}>Search Customer</label>
