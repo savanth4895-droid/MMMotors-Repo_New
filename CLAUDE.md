@@ -278,6 +278,7 @@ After deploy:
 - `backup_log` collection: TTL 90 days. Stores ts, ok, size, key, destination, error.
 - Manual: `POST /admin/trigger-backup` (admin only).
 - Log: `GET /admin/backup-log?limit=20`.
+- **UI:** BackupSection on Dashboard — owner/admin only. Shows last 10 runs, Run Now button, stale-warning if last success >30h old.
 - **Risk:** B2 key revoked silently. Email notification catches it on next run.
 - **Risk:** Scheduler dies on Render restart until UptimeRobot pings `/health`.
 - **Risk:** Email address wrong → no failure alerts. Test with `/admin/trigger-backup` after setup.
