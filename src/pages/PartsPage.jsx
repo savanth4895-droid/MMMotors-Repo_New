@@ -17,16 +17,21 @@ function printPartsBill(bill) {
   const cgst     = Math.round(gstTotal / 2 * 100) / 100;
   const sgst     = Math.round((gstTotal - cgst) * 100) / 100;
 
-  const rows = items.map((item, i) => `
-    <tr style="background:${i % 2 === 0 ? '#fff' : '#f9f7f3'}">
-      <td>${item.description || item.name || '—'}</td>
+  const rows = items.map((item, i) => {
+    const isFree   = !!item.complimentary;
+    const priceRaw = isFree ? (Number(item.mrp) || 0) : (Number(item.unit_price) || 0);
+    const amt      = isFree ? 0 : Math.round(item.total || (item.unit_price || 0) * item.qty);
+    return `
+    <tr style="background:${isFree ? '#fdf6e3' : (i % 2 === 0 ? '#fff' : '#f9f7f3')}">
+      <td>${item.description || item.name || '—'}${isFree ? ' <span style="font-size:9px;font-weight:700;color:#B8860B;background:#fff3cd;padding:1px 5px;border-radius:2px;margin-left:4px;">FREE</span>' : ''}</td>
       <td style="font-family:monospace">${item.part_number || '—'}</td>
       <td style="font-family:monospace;text-align:center">${item.hsn_code || '—'}</td>
       <td style="text-align:center;font-weight:700">${item.qty}</td>
-      <td style="text-align:right">${RS}${(item.unit_price || 0).toLocaleString('en-IN')}</td>
-      <td style="text-align:center">${item.gst_rate || 18}%</td>
-      <td style="text-align:right;font-weight:700;color:#B8860B">${RS}${Math.round(item.total || (item.unit_price || 0) * item.qty).toLocaleString('en-IN')}</td>
-    </tr>`).join('');
+      <td style="text-align:right">${isFree ? `<s>${RS}${priceRaw.toLocaleString('en-IN')}</s>` : `${RS}${priceRaw.toLocaleString('en-IN')}`}</td>
+      <td style="text-align:center">${isFree ? '—' : (item.gst_rate || 18) + '%'}</td>
+      <td style="text-align:right;font-weight:700;color:#B8860B">${RS}${amt.toLocaleString('en-IN')}</td>
+    </tr>`;
+  }).join('');
 
   const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Parts Invoice ${bill.bill_number || ''}</title>
@@ -896,7 +901,7 @@ function NewBillForm({ parts, onCancel, onDone }) {
   const addToCart = p => {
     setCart(prev => {
       const ex = prev.find(i=>i.part.id===p.id);
-      return ex ? prev.map(i=>i.part.id===p.id?{...i,qty:i.qty+1}:i) : [...prev,{part:p,qty:1}];
+      return ex ? prev.map(i=>i.part.id===p.id?{...i,qty:i.qty+1}:i) : [...prev,{part:p,qty:1,complimentary:false}];
     });
     setSearch('');
   };
@@ -904,13 +909,17 @@ function NewBillForm({ parts, onCancel, onDone }) {
     if (qty<=0) setCart(p=>p.filter(i=>i.part.id!==id));
     else setCart(p=>p.map(i=>i.part.id===id?{...i,qty}:i));
   };
+  const toggleFree = (id) => setCart(p=>p.map(i=>i.part.id===id?{...i,complimentary:!i.complimentary}:i));
 
-  const pbTotal   = cart.reduce((s,{part,qty})=>s+part.selling_price*qty,0);
-  const pbTaxable = cart.reduce((s,{part,qty})=>s+part.selling_price*qty/(1+(part.gst_rate/100)),0);
+  const paidCart  = cart.filter(i => !i.complimentary);
+  const freeCart  = cart.filter(i => i.complimentary);
+  const pbTotal   = paidCart.reduce((s,{part,qty})=>s+part.selling_price*qty,0);
+  const pbTaxable = paidCart.reduce((s,{part,qty})=>s+part.selling_price*qty/(1+(part.gst_rate/100)),0);
   const pbGst     = pbTotal - pbTaxable;
   const pbCgst    = pbGst / 2;
   const pbSgst    = pbGst / 2;
   const grand     = pbTotal;
+  const freeValue = freeCart.reduce((s,{part,qty})=>s+part.selling_price*qty,0);
 
   const handleSubmit = async () => {
     if (!cart.length) return toast.error('Add at least one part');
@@ -920,7 +929,7 @@ function NewBillForm({ parts, onCancel, onDone }) {
         customer_name:    customer.name,
         customer_mobile:  customer.mobile,
         customer_vehicle: '',
-        items: cart.map(({part,qty})=>({ part_id:part.id, part_number:part.part_number, name:part.name, hsn_code:part.hsn_code||'8714', qty, unit_price:part.selling_price, gst_rate:part.gst_rate })),
+        items: cart.map(({part,qty,complimentary})=>({ part_id:part.id, part_number:part.part_number, name:part.name, hsn_code:part.hsn_code||'8714', qty, unit_price:part.selling_price, gst_rate:part.gst_rate, complimentary: !!complimentary })),
         payment_mode: payMode,
       });
       toast.success('Bill created');
@@ -933,10 +942,10 @@ function NewBillForm({ parts, onCancel, onDone }) {
     }
   };
 
-  // Draft — store cart as {partId, qty} only (parts refetched from live inventory on restore)
+  // Draft — store cart as {partId, qty, complimentary} (parts refetched from live inventory on restore)
   const draftState = {
     customer, payMode,
-    cart: cart.map(({part,qty}) => ({ partId: part.id, qty })),
+    cart: cart.map(({part,qty,complimentary}) => ({ partId: part.id, qty, complimentary: !!complimentary })),
   };
   const draft = useDraft({ key: 'mm_draft_parts_bill', state: draftState });
 
@@ -955,9 +964,9 @@ function NewBillForm({ parts, onCancel, onDone }) {
           if (d.payMode)  setPayMode(d.payMode);
           if (Array.isArray(d.cart)) {
             const rebuilt = d.cart
-              .map(({partId, qty}) => {
+              .map(({partId, qty, complimentary}) => {
                 const part = parts.find(p => p.id === partId);
-                return part ? { part, qty } : null;
+                return part ? { part, qty, complimentary: !!complimentary } : null;
               })
               .filter(Boolean);
             setCart(rebuilt);
@@ -1008,17 +1017,26 @@ function NewBillForm({ parts, onCancel, onDone }) {
               <table style={{ width:'100%', borderCollapse:'collapse' }}>
                 <thead>
                   <tr style={{ background:'var(--surface2)', borderBottom:'1px solid var(--border)' }}>
-                    {['Part Name','Qty','Unit Price','GST%','CGST%','SGST%','Amount',''].map((h,i)=>(
+                    {['Part Name','Qty','Unit Price','Free','GST%','CGST%','SGST%','Amount',''].map((h,i)=>(
                       <th key={i} style={{ padding:'8px 10px', fontSize:10, fontWeight:600, color:'var(--muted)', letterSpacing:'.05em', textAlign:i>=1?'center':'left', whiteSpace:'nowrap' }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {cart.map(({part,qty},idx)=>{
+                  {cart.map(({part,qty,complimentary},idx)=>{
                     const half = (part.gst_rate/2).toFixed(1).replace('.0','');
+                    const amt  = complimentary ? 0 : Math.round(part.selling_price*qty);
                     return (
-                      <tr key={part.id} style={{ borderBottom:'1px solid var(--border)', background:idx%2===0?'transparent':'var(--surface2)' }}>
-                        <td style={{ padding:'8px 10px', fontSize:11, fontWeight:500 }}>{part.name}<div className="mono" style={{ fontSize:9, color:'var(--muted)', marginTop:1 }}>{part.part_number}</div></td>
+                      <tr key={part.id} style={{ borderBottom:'1px solid var(--border)', background: complimentary ? 'rgba(184,134,11,.06)' : (idx%2===0?'transparent':'var(--surface2)') }}>
+                        <td style={{ padding:'8px 10px', fontSize:11, fontWeight:500 }}>
+                          <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                            <span>{part.name}</span>
+                            {complimentary && (
+                              <span style={{ fontSize:9, fontWeight:700, letterSpacing:.5, padding:'2px 6px', background:'var(--accent,#b8860b)', color:'#000', borderRadius:3 }}>FREE</span>
+                            )}
+                          </div>
+                          <div className="mono" style={{ fontSize:9, color:'var(--muted)', marginTop:1 }}>{part.part_number}</div>
+                        </td>
                         <td style={{ padding:'8px 6px', textAlign:'center' }}>
                           <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:4 }}>
                             <button onClick={()=>updateQty(part.id,qty-1)} style={{ width:22, height:22, background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:2, cursor:'pointer', fontSize:13, fontFamily:'inherit' }}>−</button>
@@ -1026,11 +1044,14 @@ function NewBillForm({ parts, onCancel, onDone }) {
                             <button onClick={()=>updateQty(part.id,qty+1)} style={{ width:22, height:22, background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:2, cursor:'pointer', fontSize:13, fontFamily:'inherit' }}>+</button>
                           </div>
                         </td>
-                        <td style={{ padding:'8px 10px', textAlign:'center', fontSize:11 }}>₹{part.selling_price.toLocaleString('en-IN')}</td>
-                        <td style={{ padding:'8px 10px', textAlign:'center', fontSize:11, color:'var(--muted)' }}>{part.gst_rate}%</td>
-                        <td style={{ padding:'8px 10px', textAlign:'center', fontSize:11, color:'var(--muted)' }}>{half}%</td>
-                        <td style={{ padding:'8px 10px', textAlign:'center', fontSize:11, color:'var(--muted)' }}>{half}%</td>
-                        <td style={{ padding:'8px 10px', textAlign:'center', fontSize:12, fontWeight:700, color:'var(--accent)' }}>₹{Math.round(part.selling_price*qty).toLocaleString('en-IN')}</td>
+                        <td style={{ padding:'8px 10px', textAlign:'center', fontSize:11, textDecoration: complimentary ? 'line-through' : 'none', opacity: complimentary ? .5 : 1 }}>₹{part.selling_price.toLocaleString('en-IN')}</td>
+                        <td style={{ padding:'8px 6px', textAlign:'center' }}>
+                          <input type="checkbox" checked={!!complimentary} onChange={()=>toggleFree(part.id)} style={{ cursor:'pointer', accentColor:'var(--accent,#b8860b)' }} />
+                        </td>
+                        <td style={{ padding:'8px 10px', textAlign:'center', fontSize:11, color:'var(--muted)', opacity: complimentary ? .5 : 1 }}>{part.gst_rate}%</td>
+                        <td style={{ padding:'8px 10px', textAlign:'center', fontSize:11, color:'var(--muted)', opacity: complimentary ? .5 : 1 }}>{half}%</td>
+                        <td style={{ padding:'8px 10px', textAlign:'center', fontSize:11, color:'var(--muted)', opacity: complimentary ? .5 : 1 }}>{half}%</td>
+                        <td style={{ padding:'8px 10px', textAlign:'center', fontSize:12, fontWeight:700, color:'var(--accent)' }}>₹{amt.toLocaleString('en-IN')}</td>
                         <td style={{ padding:'8px 6px', textAlign:'center' }}>
                           <button onClick={()=>setCart(p=>p.filter(i=>i.part.id!==part.id))} style={{ background:'transparent', border:'none', color:'var(--red,#ef4444)', cursor:'pointer', fontSize:16, padding:0 }}>×</button>
                         </td>
@@ -1060,6 +1081,11 @@ function NewBillForm({ parts, onCancel, onDone }) {
                 <span style={{ fontSize:12, fontWeight:600 }}>Total</span>
                 <span className="display" style={{ fontSize:20, color:'var(--accent)' }}>₹{Math.round(grand).toLocaleString('en-IN')}</span>
               </div>
+              {freeCart.length > 0 && (
+                <div style={{ marginTop:6, padding:'6px 10px', background:'rgba(184,134,11,.08)', border:'1px solid rgba(184,134,11,.25)', borderRadius:3, fontSize:10, color:'var(--accent,#b8860b)', textAlign:'center' }}>
+                  {freeCart.length} free item{freeCart.length>1?'s':''} · MRP ₹{Math.round(freeValue).toLocaleString('en-IN')}
+                </div>
+              )}
             </div>
           </div>
           <Field label="Payment mode">
