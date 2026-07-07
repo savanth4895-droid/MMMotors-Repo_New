@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { accidentEstimatesApi, errMsg } from '../api/client';
+import { useDraft, DraftBar } from '../hooks/useDraft';
 
 // ─── Style tokens ──────────────────────────────────────────────────────────────
 const C = {
@@ -473,9 +474,18 @@ export default function AccidentEstimatePage() {
     onSuccess: (saved) => {
       setCurrentEstId(saved.id);
       qc.invalidateQueries(['accident-estimates']);
+      draft.clearDraft();
       toast.success(`Saved as ${saved.estimate_number}`);
     },
     onError: (e) => toast.error(errMsg(e)),
+  });
+
+  // Draft — only active for new estimates (not when editing loaded one)
+  const draftState = { vehicle, customer, incident, parts, labour, additional, notes };
+  const draft = useDraft({
+    key: 'mm_draft_accident',
+    state: draftState,
+    enabled: !currentEstId,
   });
 
   // ── Load estimate into form ────────────────────────────────────────────────
@@ -538,6 +548,23 @@ export default function AccidentEstimatePage() {
           >🖨 Print Estimate</button>
         </div>
       </div>
+
+      {/* Local draft bar — only for new estimates */}
+      {!currentEstId && (
+        <DraftBar
+          draft={draft}
+          onRestore={(d) => {
+            if (d.vehicle)    setVehicle(d.vehicle);
+            if (d.customer)   setCustomer(d.customer);
+            if (d.incident)   setIncident(d.incident);
+            if (d.parts)      setParts(d.parts.map(p => ({ ...p, _key: Math.random() })));
+            if (d.labour)     setLabour(d.labour.map(l => ({ ...l, _key: Math.random() })));
+            if (d.additional) setAdditional(d.additional);
+            if (d.notes)      setNotes(d.notes);
+          }}
+          onDiscard={() => {}}
+        />
+      )}
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 2, marginBottom: 20, borderBottom: `1px solid ${C.border}`, paddingBottom: 0 }}>
