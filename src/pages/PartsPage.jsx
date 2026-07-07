@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { partsApi, customersApi, errMsg } from '../api/client';
 import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError, useSortable } from '../components/ui';
 import toast from 'react-hot-toast';
+import { useDraft, DraftBar } from '../hooks/useDraft';
 
 const CATEGORIES = ['Engine','Electrical','Brakes','Tyres & Tubes','Filters','Body Parts','Transmission','Suspension','Accessories','Consumables'];
 
@@ -923,6 +924,7 @@ function NewBillForm({ parts, onCancel, onDone }) {
         payment_mode: payMode,
       });
       toast.success('Bill created');
+      draft.clearDraft();
       onDone();
     } catch(e) {
       toast.error(errMsg(e, 'Failed'));
@@ -930,6 +932,13 @@ function NewBillForm({ parts, onCancel, onDone }) {
       setSaving(false);
     }
   };
+
+  // Draft — store cart as {partId, qty} only (parts refetched from live inventory on restore)
+  const draftState = {
+    customer, payMode,
+    cart: cart.map(({part,qty}) => ({ partId: part.id, qty })),
+  };
+  const draft = useDraft({ key: 'mm_draft_parts_bill', state: draftState });
 
   const selStyle = { background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:3, padding:'8px 10px', color:'var(--text)', outline:'none', fontSize:13, fontFamily:'IBM Plex Sans,sans-serif', width:'100%' };
 
@@ -939,6 +948,26 @@ function NewBillForm({ parts, onCancel, onDone }) {
         <GhostBtn onClick={onCancel} sm>← Parts</GhostBtn>
         <span style={{ fontSize:13, fontWeight:500 }}>New parts bill</span>
       </div>
+      <DraftBar
+        draft={draft}
+        onRestore={(d) => {
+          if (d.customer) setCustomer(d.customer);
+          if (d.payMode)  setPayMode(d.payMode);
+          if (Array.isArray(d.cart)) {
+            const rebuilt = d.cart
+              .map(({partId, qty}) => {
+                const part = parts.find(p => p.id === partId);
+                return part ? { part, qty } : null;
+              })
+              .filter(Boolean);
+            setCart(rebuilt);
+            if (rebuilt.length < d.cart.length) {
+              toast('Some parts no longer available', { icon:'⚠️' });
+            }
+          }
+        }}
+        onDiscard={() => {}}
+      />
       <div style={{ display:'grid', gridTemplateColumns:'1fr 320px', gap:20 }}>
         <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
           <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:3, padding:'14px 16px' }}>
