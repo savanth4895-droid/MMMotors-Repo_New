@@ -3413,7 +3413,11 @@ async def _upload_backup_to_b2(zip_bytes: bytes, filename: str) -> dict:
     key_id     = os.getenv("B2_KEY_ID", "").strip()
     app_key    = os.getenv("B2_APP_KEY", "").strip()
     bucket     = os.getenv("B2_BUCKET", "").strip()
-    endpoint   = os.getenv("B2_ENDPOINT", "").strip()  # e.g. https://s3.us-west-004.backblazeb2.com
+    endpoint   = os.getenv("B2_ENDPOINT", "").strip().rstrip("/")
+
+    # Auto-prepend scheme if missing (common misconfig)
+    if endpoint and not endpoint.startswith(("http://", "https://")):
+        endpoint = "https://" + endpoint
 
     if not (key_id and app_key and bucket and endpoint):
         return {"ok": False, "key": None, "error": "B2 env vars missing (B2_KEY_ID, B2_APP_KEY, B2_BUCKET, B2_ENDPOINT)"}
