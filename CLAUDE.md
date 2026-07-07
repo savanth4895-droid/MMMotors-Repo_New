@@ -276,9 +276,9 @@ After deploy:
 - `_email_backup_notification()` — best-effort. Email failure does not fail backup.
 - Retention: set B2 bucket **Lifecycle Rule** in Backblaze UI (recommend 30-day auto-delete). Not managed by code.
 - `backup_log` collection: TTL 90 days. Stores ts, ok, size, key, destination, error.
-- Manual: `POST /admin/trigger-backup` (admin only).
+- Manual: `POST /admin/trigger-backup` (admin only). **Fire-and-forget** — returns immediately with `{queued: true}`. Poll `/admin/backup-log` for result.
 - Log: `GET /admin/backup-log?limit=20`.
-- **UI:** BackupSection on Dashboard — owner/admin only. Shows last 10 runs, Run Now button, stale-warning if last success >30h old.
+- **UI:** BackupSection on Dashboard — owner/admin only. Shows last 10 runs, Run Now button (queues + polls log at 5/15/30/60s), stale-warning if last success >30h old.
 - **Risk:** B2 key revoked silently. Email notification catches it on next run.
 - **Risk:** Scheduler dies on Render restart until UptimeRobot pings `/health`.
 - **Risk:** Email address wrong → no failure alerts. Test with `/admin/trigger-backup` after setup.
