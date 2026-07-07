@@ -59,7 +59,7 @@ from database import (
     MAX_LOGIN_ATTEMPTS, LOGIN_LOCKOUT_MIN, BRANDS, GST_RATES,
     pwd_ctx, create_token, verify_token, require_admin, require_roles,
     next_sequence, _sync_counter,
-    oid, oids, obj_id, paginate_params, now,
+    oid, oids, obj_id, paginate_params, now, utcnow,
     calc_gst_line, calc_bill_totals, amount_in_words,
 )
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
@@ -106,6 +106,16 @@ app.add_middleware(
     expose_headers=["X-Total-Count"],
 )
 
+# Cache invalidation — clears /service/due cache on mutations to sales/service_jobs
+@app.middleware("http")
+async def _service_due_cache_invalidator(request: Request, call_next):
+    response = await call_next(request)
+    if request.method in ("POST", "PUT", "PATCH", "DELETE") and 200 <= response.status_code < 300:
+        path = request.url.path
+        if "/sales" in path or "/service" in path:
+            _invalidate_service_due_cache()
+    return response
+
 from fastapi import APIRouter
 api_router = APIRouter(prefix="/api")
 
@@ -149,6 +159,7 @@ async def _ensure_indexes():
         "created_at", expireAfterSeconds=LOGIN_LOCKOUT_MIN * 60
     )
     await db.login_attempts.create_index("username")
+    await db.login_attempts.create_index([("username", 1), ("ip", 1)])
     print("[MM Motors] Indexes ensured")
 
 async def _seed_owner():
@@ -164,8 +175,8 @@ async def _seed_owner():
             "password":   pwd_ctx.hash("mm@123456"),
             "status":     "active",
             "salary":     0,
-            "join_date":  datetime.utcnow().strftime("%d %b %Y"),
-            "created_at": datetime.utcnow().isoformat(),
+            "join_date":  utcnow().strftime("%d %b %Y"),
+            "created_at": utcnow().isoformat(),
         })
         print("[MM Motors] Default owner created  username=owner  password=mm@123456")
     else:
@@ -364,12 +375,13 @@ class ServiceJobUpdate(BaseModel):
 
 # ── Service Bills ─────────────────────────────────────────────────────────────
 class BillLineItem(BaseModel):
-    description: str
-    part_number: Optional[str] = ""
-    hsn_code:    Optional[str] = ""
-    qty:         int           = 1
-    unit_price:  float
-    gst_rate:    float         = 18
+    description:   str
+    part_number:   Optional[str] = ""
+    hsn_code:      Optional[str] = ""
+    qty:           int           = 1
+    unit_price:    float
+    gst_rate:      float         = 18
+    complimentary: Optional[bool] = False
 
 class ServiceBillCreate(BaseModel):
     job_id:          str
@@ -378,11 +390,13 @@ class ServiceBillCreate(BaseModel):
     items:           Optional[List[BillLineItem]] = []
     payment_mode:    Optional[str] = "Cash"
     notes:           Optional[str] = ""
+    discount:        Optional[float] = 0
 
 class ServiceBillUpdate(BaseModel):
     items:           Optional[List[BillLineItem]] = None
     payment_mode:    Optional[str]   = None
     notes:           Optional[str]   = None
+    discount:        Optional[float] = None
 
 # ── Spare Parts ───────────────────────────────────────────────────────────────
 class SparePartCreate(BaseModel):
@@ -445,6 +459,7 @@ class PartsBillItem(BaseModel):
     qty:             int             = 1
     unit_price:      float
     gst_rate:        float           = 18.0
+    complimentary:   Optional[bool]  = False
 
 class PartsBillCreate(BaseModel):
     customer_name:    Optional[str] = ""
@@ -522,7 +537,7 @@ async def upload_file(file: UploadFile = File(...), current_user=Depends(verify_
     return {"file_id": str(file_id), "filename": file.filename}
 
 @api_router.get("/files/{file_id}")
-async def get_file(file_id: str):
+async def get_file(file_id: str, current_user=Depends(verify_token)):
     try:
         grid_out = await fs.open_download_stream(obj_id(file_id))
         async def file_stream():
@@ -540,22 +555,37 @@ async def get_file(file_id: str):
 #  AUTH
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _client_ip(request: Request) -> str:
+    """Extract client IP behind Render/Vercel proxy chain."""
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
 @api_router.post("/auth/login", response_model=TokenOut)
-async def login(body: LoginIn):
+async def login(body: LoginIn, request: Request):
     username = body.username.strip().lower()
-    attempt_count = await db.login_attempts.count_documents({"username": username})
+    ip       = _client_ip(request)
+    # Per-(username, IP) lockout — attacker cannot lock real user from elsewhere
+    attempt_count = await db.login_attempts.count_documents({"username": username, "ip": ip})
     if attempt_count >= MAX_LOGIN_ATTEMPTS:
         raise HTTPException(
             status_code=429,
-            detail=f"Account locked. Too many failed attempts. Try again in {LOGIN_LOCKOUT_MIN} minutes."
+            detail=f"Too many failed attempts from this location. Try again in {LOGIN_LOCKOUT_MIN} minutes."
         )
     user = await db.users.find_one({"username": username})
     if not user or not pwd_ctx.verify(body.password, user.get("password", "")):
-        await db.login_attempts.insert_one({"username": username, "created_at": datetime.utcnow()})
+        await db.login_attempts.insert_one({
+            "username":   username,
+            "ip":         ip,
+            "created_at": utcnow(),
+        })
         raise HTTPException(status_code=401, detail="Invalid username or password")
     if user.get("status") != "active":
         raise HTTPException(status_code=403, detail="Account is inactive or deactivated")
-    await db.login_attempts.delete_many({"username": username})
+    # Clear only this IP's failures for this user — preserve others as evidence
+    await db.login_attempts.delete_many({"username": username, "ip": ip})
     token = create_token({"sub": str(user["_id"]), "role": user["role"]})
     user_data = {
         "id":       str(user["_id"]),
@@ -603,7 +633,7 @@ async def create_user(body: UserCreate, current_user=Depends(require_admin)):
     doc = body.dict()
     doc["username"] = doc["username"].strip().lower()
     doc["password"] = pwd_ctx.hash(doc["password"])
-    doc["created_at"] = datetime.utcnow()
+    doc["created_at"] = utcnow()
     result = await db.users.insert_one(doc)
     doc["id"] = str(result.inserted_id)
     doc.pop("_id", None); doc.pop("password", None)
@@ -669,7 +699,7 @@ async def list_customers(
 @api_router.post("/customers", status_code=201)
 async def create_customer(body: CustomerCreate, current_user=Depends(verify_token)):
     doc = body.dict()
-    doc["created_at"] = datetime.utcnow().isoformat()
+    doc["created_at"] = utcnow().isoformat()
     result = await db.customers.insert_one(doc)
     doc["id"] = str(result.inserted_id); doc.pop("_id", None)
     return doc
@@ -751,7 +781,7 @@ async def create_vehicle(body: VehicleCreate, current_user=Depends(verify_token)
     doc = body.dict()
     doc["chassis_number"] = chassis
     doc["brand"]          = doc["brand"].upper()
-    doc["created_at"]     = datetime.utcnow().isoformat()
+    doc["created_at"]     = utcnow().isoformat()
     result = await db.vehicles.insert_one(doc)
     doc["id"] = str(result.inserted_id); doc.pop("_id", None)
     return doc
@@ -1018,7 +1048,7 @@ async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
         raise HTTPException(status_code=409, detail="Vehicle already sold")
     total_amount = body.total_amount if body.total_amount is not None else (body.sale_price or 0)
     inv_no    = await next_sequence("invoice")
-    sale_date = body.sale_date or datetime.utcnow().strftime("%d %b %Y")
+    sale_date = body.sale_date or utcnow().strftime("%d %b %Y")
     doc = {
         "invoice_number":  inv_no,
         "customer_id":     body.customer_id,
@@ -1052,7 +1082,7 @@ async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
         "hsrp_back_id":    body.hsrp_back_id or "",
         "hsrp_date":       body.hsrp_date or "",
         "hsrp_notes":      body.hsrp_notes or "",
-        "created_at":      datetime.utcnow().isoformat(),
+        "created_at":      utcnow().isoformat(),
     }
     result = await db.sales.insert_one(doc)
     await db.vehicles.update_one(
@@ -1064,7 +1094,7 @@ async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
 
 @api_router.get("/sales/stats/summary")
 async def sales_stats(current_user=Depends(verify_token)):
-    today = datetime.utcnow().strftime("%d %b %Y")
+    today = utcnow().strftime("%d %b %Y")
     pipeline_total = [{"$group": {"_id": None, "total": {"$sum": "$total_amount"}, "count": {"$sum": 1}}}]
     result = await db.sales.aggregate(pipeline_total).to_list(1)
     all_time    = result[0] if result else {"total": 0, "count": 0}
@@ -1182,7 +1212,7 @@ async def create_service_job(body: ServiceJobCreate, current_user=Depends(verify
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     job_no   = await next_sequence("job")
-    check_in = body.check_in_date or datetime.utcnow().strftime("%d %b %Y")
+    check_in = body.check_in_date or utcnow().strftime("%d %b %Y")
     veh_no   = body.vehicle_number.strip().upper() if body.vehicle_number else ""
     chassis  = body.chassis_number.strip().upper() if body.chassis_number else ""
     doc = {
@@ -1206,7 +1236,7 @@ async def create_service_job(body: ServiceJobCreate, current_user=Depends(verify
         "delivery_date":      "",
         "status":             "pending",
         "notes":              body.notes or "",
-        "created_at":         datetime.utcnow().isoformat(),
+        "created_at":         utcnow().isoformat(),
     }
     result = await db.service_jobs.insert_one(doc)
     doc["id"] = str(result.inserted_id); doc.pop("_id", None)
@@ -1235,7 +1265,7 @@ async def create_service_job(body: ServiceJobCreate, current_user=Depends(verify
                 "inbound_location": "Service",
                 "return_date":      "",
                 "returned_location":"",
-                "created_at":       datetime.utcnow().isoformat(),
+                "created_at":       utcnow().isoformat(),
                 "_source":          "service",
             })
 
@@ -1243,6 +1273,13 @@ async def create_service_job(body: ServiceJobCreate, current_user=Depends(verify
 
 
 # ── Service Due ────────────────────────────────────────────────────────────────
+# Module-level TTL cache — invalidated on sales/service_jobs writes
+_SERVICE_DUE_CACHE: dict = {}   # key: days (int) → {"ts": datetime, "data": list}
+_SERVICE_DUE_TTL_SEC = 60
+
+def _invalidate_service_due_cache():
+    _SERVICE_DUE_CACHE.clear()
+
 @api_router.get("/service/due")
 async def service_due(
     days: int               = Query(30, ge=1, le=365),  # lookahead window
@@ -1259,11 +1296,17 @@ async def service_due(
         next service = last service date + 90 days
 
     Returns vehicles whose next_due_date <= today + lookahead (days param).
+    Cached in-memory for 60s; invalidated on sales/service_jobs write.
     """
+    # Cache lookup
+    cached = _SERVICE_DUE_CACHE.get(days)
+    if cached and (utcnow() - cached["ts"]).total_seconds() < _SERVICE_DUE_TTL_SEC:
+        return cached["data"]
+
     FIRST_SVC_INTERVAL  = 30   # days after sale for 1st service
     REPEAT_SVC_INTERVAL = 90   # days between 2nd+ services
 
-    now         = datetime.utcnow()
+    now         = utcnow()
     lookahead   = now + timedelta(days=days)
 
     def parse_date(s):
@@ -1281,7 +1324,12 @@ async def service_due(
              "customer_mobile":1,"vehicle_brand":1,"vehicle_model":1,"created_at":1}
     ).to_list(20000)
 
-    SOLD_SINCE = datetime(2026, 5, 1)   # only track service due for vehicles sold from May 1 onwards
+    # Cutoff from env var (YYYY-MM-DD), fallback 2026-05-01
+    _cutoff_str = os.getenv("SERVICE_DUE_CUTOFF", "2026-05-01").strip()
+    try:
+        SOLD_SINCE = datetime.strptime(_cutoff_str, "%Y-%m-%d")
+    except ValueError:
+        SOLD_SINCE = datetime(2026, 5, 1)
 
     sales_map = {}
     for s in sales_docs:
@@ -1422,7 +1470,9 @@ async def service_due(
 
     # Most overdue first, then soonest due
     result.sort(key=lambda x: x["due_in_days"])
-    return result[:500]
+    trimmed = result[:500]
+    _SERVICE_DUE_CACHE[days] = {"ts": utcnow(), "data": trimmed}
+    return trimmed
 
 @api_router.post("/service/due/{vehicle_number}/notified")
 async def mark_notified(vehicle_number: str, current_user=Depends(verify_token)):
@@ -1432,7 +1482,7 @@ async def mark_notified(vehicle_number: str, current_user=Depends(verify_token))
         {"vehicle_number": key},
         {"$set": {
             "vehicle_number":  key,
-            "notified_at":     datetime.utcnow().isoformat(),
+            "notified_at":     utcnow().isoformat(),
             "notified_by":     current_user.get("name", ""),
         }},
         upsert=True,
@@ -1469,7 +1519,7 @@ async def get_service_job(job_id: str, current_user=Depends(verify_token)):
 async def update_service_job(job_id: str, body: ServiceJobUpdate, current_user=Depends(verify_token)):
     update = {k: v for k, v in body.dict().items() if v is not None}
     if "status" in update and update["status"] == "delivered":
-        update.setdefault("delivery_date", datetime.utcnow().strftime("%d %b %Y"))
+        update.setdefault("delivery_date", utcnow().strftime("%d %b %Y"))
     await db.service_jobs.update_one({"_id": obj_id(job_id)}, {"$set": update})
     return oid(await db.service_jobs.find_one({"_id": obj_id(job_id)}))
 
@@ -1512,14 +1562,20 @@ async def create_service_bill(body: ServiceBillCreate, current_user=Depends(veri
     # Build line items with GST
     items_out = []
     for item in (body.items or []):
-        line = calc_gst_line(item.unit_price, item.qty, item.gst_rate)
+        if item.complimentary:
+            # Zero-value line but preserve part_number for stock deduction downstream
+            line = {"taxable": 0.0, "cgst": 0.0, "sgst": 0.0, "gst_total": 0.0, "total": 0.0}
+        else:
+            line = calc_gst_line(item.unit_price, item.qty, item.gst_rate)
         items_out.append({
-            "description": item.description,
-            "part_number": item.part_number or "",
-            "hsn_code":    item.hsn_code or "",
-            "qty":         item.qty,
-            "unit_price":  item.unit_price,
-            "gst_rate":    item.gst_rate,
+            "description":   item.description,
+            "part_number":   item.part_number or "",
+            "hsn_code":      item.hsn_code or "",
+            "qty":           item.qty,
+            "unit_price":    0 if item.complimentary else item.unit_price,
+            "mrp":           item.unit_price if item.complimentary else item.unit_price,
+            "gst_rate":      0 if item.complimentary else item.gst_rate,
+            "complimentary": bool(item.complimentary),
             **line,
         })
 
@@ -1535,6 +1591,9 @@ async def create_service_bill(body: ServiceBillCreate, current_user=Depends(veri
         })
 
     totals  = calc_bill_totals([{"unit_price": i["unit_price"], "qty": i["qty"], "gst_rate": i["gst_rate"]} for i in items_out])
+    # Apply discount off grand_total (post-GST). Clamped 0..grand_total.
+    discount = max(0.0, min(float(body.discount or 0), totals["grand_total"]))
+    net_total = round(totals["grand_total"] - discount, 2)
     # Bill number derives from job number — no separate counter consumed
     bill_no = job.get("job_number", "").replace("SRV", "SRV-B")
 
@@ -1551,16 +1610,18 @@ async def create_service_bill(body: ServiceBillCreate, current_user=Depends(veri
         "items":          items_out,
         "labour_charges": body.labour_charges or 0,
         **totals,
-        "amount_in_words": amount_in_words(totals["grand_total"]),
+        "discount":       discount,
+        "net_total":      net_total,
+        "amount_in_words": amount_in_words(net_total),
         "payment_mode":   body.payment_mode or "Cash",
         "notes":          body.notes or "",
-        "bill_date":      datetime.utcnow().strftime("%d %b %Y"),
-        "created_at":     datetime.utcnow().isoformat(),
+        "bill_date":      utcnow().strftime("%d %b %Y"),
+        "created_at":     utcnow().isoformat(),
     }
     result = await db.service_bills.insert_one(doc)
     await db.service_jobs.update_one(
         {"_id": obj_id(body.job_id)},
-        {"$set": {"status": "ready", "bill_number": doc["bill_number"], "grand_total": totals["grand_total"]}}
+        {"$set": {"status": "ready", "bill_number": doc["bill_number"], "grand_total": net_total}}
     )
     doc["id"] = str(result.inserted_id); doc.pop("_id", None)
     return doc
@@ -1583,14 +1644,19 @@ async def update_service_bill(bill_id: str, body: ServiceBillCreate, current_use
 
     items_out = []
     for item in (body.items or []):
-        line = calc_gst_line(item.unit_price, item.qty, item.gst_rate)
+        if item.complimentary:
+            line = {"taxable": 0.0, "cgst": 0.0, "sgst": 0.0, "gst_total": 0.0, "total": 0.0}
+        else:
+            line = calc_gst_line(item.unit_price, item.qty, item.gst_rate)
         items_out.append({
-            "description": item.description,
-            "part_number": item.part_number or "",
-            "hsn_code":    item.hsn_code or "",
-            "qty":         item.qty,
-            "unit_price":  item.unit_price,
-            "gst_rate":    item.gst_rate,
+            "description":   item.description,
+            "part_number":   item.part_number or "",
+            "hsn_code":      item.hsn_code or "",
+            "qty":           item.qty,
+            "unit_price":    0 if item.complimentary else item.unit_price,
+            "mrp":           item.unit_price,
+            "gst_rate":      0 if item.complimentary else item.gst_rate,
+            "complimentary": bool(item.complimentary),
             **line,
         })
 
@@ -1598,18 +1664,24 @@ async def update_service_bill(bill_id: str, body: ServiceBillCreate, current_use
         {"unit_price": i["unit_price"], "qty": i["qty"], "gst_rate": i["gst_rate"]}
         for i in items_out
     ])
+    # Discount: use new value if provided, else keep existing
+    discount_raw = body.discount if body.discount is not None else bill.get("discount", 0)
+    discount = max(0.0, min(float(discount_raw or 0), totals["grand_total"]))
+    net_total = round(totals["grand_total"] - discount, 2)
 
     update = {
         "items":           items_out,
         "payment_mode":    body.payment_mode or bill.get("payment_mode", "Cash"),
-        "updated_at":      datetime.utcnow(),
-        "amount_in_words": amount_in_words(totals["grand_total"]),
+        "updated_at":      utcnow(),
+        "discount":        discount,
+        "net_total":       net_total,
+        "amount_in_words": amount_in_words(net_total),
         **totals,
     }
     await db.service_bills.update_one({"_id": obj_id(bill_id)}, {"$set": update})
     await db.service_jobs.update_one(
         {"_id": obj_id(bill["job_id"])},
-        {"$set": {"grand_total": totals["grand_total"]}}
+        {"$set": {"grand_total": net_total}}
     )
     updated = await db.service_bills.find_one({"_id": obj_id(bill_id)})
     return JSONResponse(content=oid(updated))
@@ -1677,7 +1749,7 @@ async def create_part(body: SparePartCreate, current_user=Depends(verify_token))
         if await db.spare_parts.find_one({"part_number": pn}):
             raise HTTPException(status_code=409, detail="Part number already exists")
     doc["part_number"] = pn
-    doc["created_at"]  = datetime.utcnow().isoformat()
+    doc["created_at"]  = utcnow().isoformat()
     result = await db.spare_parts.insert_one(doc)
     doc["id"] = str(result.inserted_id); doc.pop("_id", None)
     return doc
@@ -1739,7 +1811,7 @@ async def adjust_stock_by_number(
         {"part_number": part_number},
         {"$set": {"stock": new_stock}, "$push": {"stock_log": {
             "qty": body.qty, "action": action, "reason": body.reason or "service_bill",
-            "new_stock": new_stock, "date": datetime.utcnow().isoformat(),
+            "new_stock": new_stock, "date": utcnow().isoformat(),
         }}}
     )
     return JSONResponse(content={"part_number": part_number, "old_stock": current_stock, "new_stock": new_stock})
@@ -1759,7 +1831,7 @@ async def adjust_stock(part_id: str, body: StockAdjust, current_user=Depends(ver
         {"_id": obj_id(part_id)},
         {"$set": {"stock": new_stock}, "$push": {"stock_log": {
             "qty": body.qty, "action": action, "reason": body.reason,
-            "new_stock": new_stock, "date": datetime.utcnow().isoformat()
+            "new_stock": new_stock, "date": utcnow().isoformat()
         }}}
     )
     return {"part_id": part_id, "new_stock": new_stock}
@@ -1809,7 +1881,7 @@ async def create_parts_sale(body: PartsSaleCreate, current_user=Depends(verify_t
         await db.spare_parts.update_one({"_id": obj_id(item.part_id)}, {"$inc": {"stock": -item.qty}})
     totals  = calc_bill_totals([{"unit_price":i["unit_price"],"qty":i["qty"],"gst_rate":i["gst_rate"]} for i in items_out])
     bill_no = await next_sequence("part_bill")
-    doc = {"bill_number":bill_no,"customer_name":body.customer_name or "","customer_mobile":body.customer_mobile or "","items":items_out,**totals,"amount_in_words":amount_in_words(totals["grand_total"]),"payment_mode":body.payment_mode or "Cash","sold_by":body.sold_by or current_user.get("name",""),"sale_date":datetime.utcnow().strftime("%d %b %Y"),"notes":body.notes or "","created_at":datetime.utcnow().isoformat()}
+    doc = {"bill_number":bill_no,"customer_name":body.customer_name or "","customer_mobile":body.customer_mobile or "","items":items_out,**totals,"amount_in_words":amount_in_words(totals["grand_total"]),"payment_mode":body.payment_mode or "Cash","sold_by":body.sold_by or current_user.get("name",""),"sale_date":utcnow().strftime("%d %b %Y"),"notes":body.notes or "","created_at":utcnow().isoformat()}
     result = await db.parts_sales.insert_one(doc)
     doc["id"] = str(result.inserted_id); doc.pop("_id", None)
     return doc
@@ -1883,20 +1955,26 @@ async def create_parts_bill(body: PartsBillCreate, current_user=Depends(verify_t
             await db.spare_parts.update_one(
                 {"_id": part["_id"]},
                 {"$set": {"stock": new_stock}, "$push": {"stock_log": {
-                    "qty": -item.qty, "action": "subtract", "reason": "parts_bill",
-                    "new_stock": new_stock, "date": datetime.utcnow().isoformat(),
+                    "qty": -item.qty, "action": "subtract",
+                    "reason": "complimentary" if item.complimentary else "parts_bill",
+                    "new_stock": new_stock, "date": utcnow().isoformat(),
                 }}}
             )
 
-        line = calc_gst_line(item.unit_price, item.qty, item.gst_rate)
+        if item.complimentary:
+            line = {"taxable": 0.0, "cgst": 0.0, "sgst": 0.0, "gst_total": 0.0, "total": 0.0}
+        else:
+            line = calc_gst_line(item.unit_price, item.qty, item.gst_rate)
         items_out.append({
-            "part_id":     str(part["_id"]) if part else (item.part_id or ""),
-            "part_number": item.part_number or (part.get("part_number","") if part else ""),
-            "name":        item.name,
-            "hsn_code":    item.hsn_code or (part.get("hsn_code","8714") if part else "8714"),
-            "qty":         item.qty,
-            "unit_price":  item.unit_price,
-            "gst_rate":    item.gst_rate,
+            "part_id":       str(part["_id"]) if part else (item.part_id or ""),
+            "part_number":   item.part_number or (part.get("part_number","") if part else ""),
+            "name":          item.name,
+            "hsn_code":      item.hsn_code or (part.get("hsn_code","8714") if part else "8714"),
+            "qty":           item.qty,
+            "unit_price":    0 if item.complimentary else item.unit_price,
+            "mrp":           item.unit_price,
+            "gst_rate":      0 if item.complimentary else item.gst_rate,
+            "complimentary": bool(item.complimentary),
             **line,
         })
 
@@ -1912,8 +1990,8 @@ async def create_parts_bill(body: PartsBillCreate, current_user=Depends(verify_t
         "items":            items_out,
         "amount_in_words":  amount_in_words(totals["grand_total"]),
         "sold_by":          current_user.get("name",""),
-        "bill_date":        datetime.utcnow().strftime("%d %b %Y"),
-        "created_at":       datetime.utcnow().isoformat(),
+        "bill_date":        utcnow().strftime("%d %b %Y"),
+        "created_at":       utcnow().isoformat(),
         **totals,
     }
     res     = await db.parts_bills.insert_one(doc)
@@ -1959,7 +2037,7 @@ async def delete_parts_bill(bill_id: str, current_user=Depends(require_admin)):
 
 @api_router.get("/dashboard/stats")
 async def dashboard_stats(current_user=Depends(verify_token)):
-    today = datetime.utcnow().strftime("%d %b %Y")
+    today = utcnow().strftime("%d %b %Y")
     (vehicles_in_stock, vehicles_sold_today, jobs_pending, jobs_in_progress, jobs_ready, customers_total, parts_low, parts_out, sales_today_count) = await asyncio.gather(
         db.vehicles.count_documents({"status":"in_stock"}),
         db.sales.count_documents({"sale_date":today}),
@@ -1972,7 +2050,7 @@ async def dashboard_stats(current_user=Depends(verify_token)):
         db.sales.count_documents({"sale_date":today}),
     )
     pipeline_today_rev = [{"$match":{"sale_date":today}},{"$group":{"_id":None,"total":{"$sum":"$total_amount"}}}]
-    pipeline_month_rev = [{"$match":{"sale_date":{"$regex":datetime.utcnow().strftime("%b %Y")}}},{"$group":{"_id":None,"total":{"$sum":"$total_amount"}}}]
+    pipeline_month_rev = [{"$match":{"sale_date":{"$regex":utcnow().strftime("%b %Y")}}},{"$group":{"_id":None,"total":{"$sum":"$total_amount"}}}]
     today_rev_r, month_rev_r = await asyncio.gather(
         db.sales.aggregate(pipeline_today_rev).to_list(1),
         db.sales.aggregate(pipeline_month_rev).to_list(1),
@@ -2045,7 +2123,7 @@ async def revenue_report(months: int = Query(6, ge=1, le=24), current_user=Depen
 
 @api_router.get("/reports/daily-closing")
 async def daily_closing_report(date: Optional[str] = Query(None), current_user=Depends(require_admin)):
-    target_date = date or datetime.utcnow().strftime("%d %b %Y")
+    target_date = date or utcnow().strftime("%d %b %Y")
     async def get_totals(collection, date_field, amount_field):
         pipeline = [{"$match":{date_field:target_date}},{"$group":{"_id":{"$toLower":"$payment_mode"},"total":{"$sum":amount_field}}}]
         return await db[collection].aggregate(pipeline).to_list(None)
@@ -2073,7 +2151,7 @@ async def backfill_service_dates(current_user=Depends(require_admin)):
     where created_at is today (import artifact). Fixes Service Due calculations.
     """
     updated = 0; skipped = 0; errors = 0
-    today_prefix = datetime.utcnow().strftime("%Y-%m-%dT")
+    today_prefix = utcnow().strftime("%Y-%m-%dT")
 
     async for job in db.service_jobs.find(
         {"_imported": True, "check_in_date": {"$exists": True, "$ne": ""}},
@@ -2156,6 +2234,52 @@ async def top_parts_report(limit: int = Query(10), current_user=Depends(require_
     pipeline = [{"$unwind":"$items"},{"$group":{"_id":"$items.name","qty":{"$sum":"$items.qty"},"revenue":{"$sum":"$items.total"}}},{"$sort":{"qty":-1}},{"$limit":limit}]
     docs = await db.parts_sales.aggregate(pipeline).to_list(limit)
     return [{"name":d["_id"],"qty_sold":d["qty"],"revenue":round(d["revenue"],2)} for d in docs]
+
+
+@api_router.get("/reports/complimentary")
+async def complimentary_report(
+    date_from: Optional[str] = Query(None),
+    date_to:   Optional[str] = Query(None),
+    current_user=Depends(verify_token),
+):
+    """Complimentary (free) items given across service_bills and parts_bills.
+    Groups by part_number / name. Shows MRP value forgone."""
+    match: dict = {"items.complimentary": True}
+    if date_from or date_to:
+        rng: dict = {}
+        if date_from: rng["$gte"] = date_from
+        if date_to:   rng["$lte"] = date_to
+        match["created_at"] = rng
+
+    pipeline = [
+        {"$match": match},
+        {"$unwind": "$items"},
+        {"$match": {"items.complimentary": True}},
+        {"$group": {
+            "_id": {"pn": "$items.part_number", "name": {"$ifNull": ["$items.name", "$items.description"]}},
+            "qty":       {"$sum": "$items.qty"},
+            "mrp_value": {"$sum": {"$multiply": [{"$ifNull": ["$items.mrp", 0]}, "$items.qty"]}},
+            "occurrences": {"$sum": 1},
+        }},
+        {"$sort": {"qty": -1}},
+    ]
+    sb, pb = await asyncio.gather(
+        db.service_bills.aggregate(pipeline).to_list(500),
+        db.parts_bills.aggregate(pipeline).to_list(500),
+    )
+    merged: dict = {}
+    for d in (sb + pb):
+        key = d["_id"].get("pn") or d["_id"].get("name")
+        row = merged.setdefault(key, {
+            "part_number": d["_id"].get("pn",""),
+            "name":        d["_id"].get("name",""),
+            "qty": 0, "mrp_value": 0.0, "occurrences": 0,
+        })
+        row["qty"]         += d["qty"]
+        row["mrp_value"]   += d["mrp_value"]
+        row["occurrences"] += d["occurrences"]
+    result = sorted(merged.values(), key=lambda r: r["qty"], reverse=True)
+    return {"items": result, "total_value": round(sum(r["mrp_value"] for r in result), 2)}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2381,7 +2505,7 @@ async def import_customers(request: Request, file: UploadFile = File(...), mode:
                 "email":      safe(row.get("email")),
                 "address":    safe(row.get("address")),
                 "tags":       [t.strip() for t in safe(row.get("tags","")).split(",") if t.strip()],
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": utcnow().isoformat(),
             }
             if mobile in existing_mobiles:
                 if mode == "overwrite":
@@ -2436,7 +2560,7 @@ async def import_vehicles(request: Request, file: UploadFile = File(...), mode: 
             if not chassis: skipped.append({"row":rn,"reason":"Missing chassis_number"}); continue
             if not brand:   skipped.append({"row":rn,"reason":"Missing brand"});          continue
             if not model:   skipped.append({"row":rn,"reason":"Missing model"});          continue
-            doc = {"brand":brand,"model":model,"variant":safe(row.get("variant")),"color":safe(row.get("color")),"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"key_number":safe(row.get("key_number")),"type":safe(row.get("type","new")).lower() or "new","status":safe(row.get("status","in_stock")).lower() or "in_stock","inbound_date":safe(row.get("inbound_date","")),"inbound_location":safe(row.get("inbound_location","")),"return_date":safe(row.get("return_date","")),"returned_location":safe(row.get("returned_location","")),"created_at":datetime.utcnow().isoformat()}
+            doc = {"brand":brand,"model":model,"variant":safe(row.get("variant")),"color":safe(row.get("color")),"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"key_number":safe(row.get("key_number")),"type":safe(row.get("type","new")).lower() or "new","status":safe(row.get("status","in_stock")).lower() or "in_stock","inbound_date":safe(row.get("inbound_date","")),"inbound_location":safe(row.get("inbound_location","")),"return_date":safe(row.get("return_date","")),"returned_location":safe(row.get("returned_location","")),"created_at":utcnow().isoformat()}
             if chassis in existing_chassis:
                 if mode=="overwrite": to_update.append(doc)
                 else: skipped.append({"row":rn,"reason":f"Chassis {chassis} already imported"})
@@ -2509,7 +2633,7 @@ async def import_sales(request: Request, file: UploadFile = File(...), mode: str
                 skipped.append({"row":rn,"reason":f"Missing: {', '.join(missing)}"}); continue
 
             # Dedup: primary by chassis, fallback by mobile+model+date
-            sale_date_val = safe(row.get("sale_date","")) or datetime.utcnow().strftime("%d %b %Y")
+            sale_date_val = safe(row.get("sale_date","")) or utcnow().strftime("%d %b %Y")
             fallback_key  = f"{mobile}|{model.lower()}|{sale_date_val}"
             import_address = safe(row.get("customer_address",""))
 
@@ -2557,7 +2681,7 @@ async def import_sales(request: Request, file: UploadFile = File(...), mode: str
                     "name":name,"mobile":mobile,
                     "care_of":safe(row.get("care_of","")),
                     "email":"","address":safe(row.get("customer_address","")),
-                    "tags":[],"created_at":datetime.utcnow().isoformat()
+                    "tags":[],"created_at":utcnow().isoformat()
                 })
                 cust_id = str(r.inserted_id)
                 new_customer_id = cust_id  # track so we can delete on failure
@@ -2596,9 +2720,9 @@ async def import_sales(request: Request, file: UploadFile = File(...), mode: str
                     "relation": safe(row.get("nominee_relation")),
                     "age":      safe(row.get("nominee_age")),
                 },
-                "sale_date":  safe(row.get("sale_date","")) or datetime.utcnow().strftime("%d %b %Y"),
+                "sale_date":  safe(row.get("sale_date","")) or utcnow().strftime("%d %b %Y"),
                 "status":     "delivered",
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": utcnow().isoformat(),
                 "_imported":  True,
             }
 
@@ -2643,7 +2767,7 @@ async def import_service(request: Request, file: UploadFile = File(...), mode: s
             mobile   = safe(row.get("customer_mobile",""))
             veh_no   = safe(row.get("vehicle_number","")).upper()
             complaint= safe(row.get("complaint","")) or "Service"
-            check_in = safe(row.get("check_in_date","")) or datetime.utcnow().strftime("%d %b %Y")
+            check_in = safe(row.get("check_in_date","")) or utcnow().strftime("%d %b %Y")
             amount   = safe_float(row.get("amount",0))
             dedup_key = f"{veh_no}|{check_in}"
             if veh_no and check_in and dedup_key in existing_keys:
@@ -2651,7 +2775,7 @@ async def import_service(request: Request, file: UploadFile = File(...), mode: s
             if mobile in customer_cache:
                 cust_id = customer_cache[mobile]
             elif name:
-                r = await db.customers.insert_one({"name":name,"mobile":mobile,"email":"","address":"","tags":[],"created_at":datetime.utcnow().isoformat()})
+                r = await db.customers.insert_one({"name":name,"mobile":mobile,"email":"","address":"","tags":[],"created_at":utcnow().isoformat()})
                 cust_id = str(r.inserted_id); customer_cache[mobile] = cust_id
             else: cust_id = ""
             status = safe(row.get("status","delivered")).lower()
@@ -2667,7 +2791,7 @@ async def import_service(request: Request, file: UploadFile = File(...), mode: s
                     try:
                         parsed_checkin = datetime.strptime(check_in, "%Y-%m-%d")
                     except ValueError:
-                        parsed_checkin = datetime.utcnow()
+                        parsed_checkin = utcnow()
             created_iso = parsed_checkin.isoformat()
             to_insert.append({"job_number":job_no,"customer_id":cust_id,"customer_name":name or "","customer_mobile":mobile or "","vehicle_number":veh_no or "","brand":safe(row.get("brand","")).upper(),"model":safe(row.get("model","")),"odometer_km":safe_int(row.get("odometer_km",0)),"complaint":complaint,"technician":safe(row.get("technician","")),"check_in_date":check_in,"status":status,"grand_total":amount,"notes":safe(row.get("notes","")),"created_at":created_iso,"_imported":True})
             if veh_no: existing_keys.add(dedup_key)
@@ -2696,7 +2820,7 @@ async def import_parts(request: Request, file: UploadFile = File(...), mode: str
             if not part_no: skipped.append({"row":rn,"reason":"Missing part_number"}); continue
             if not name:    skipped.append({"row":rn,"reason":"Missing name"});        continue
             compat_raw = safe(row.get("compatible_with",""))
-            doc = {"part_number":part_no,"name":name,"category":safe(row.get("category","")),"brand":safe(row.get("brand","")),"compatible_with":[c.strip().upper() for c in compat_raw.split(",") if c.strip()],"stock":safe_int(row.get("stock",0)),"reorder_level":safe_int(row.get("reorder_level",5)),"purchase_price":safe_float(row.get("purchase_price",0)),"selling_price":safe_float(row.get("selling_price",0)),"gst_rate":safe_float(row.get("gst_rate",18)),"hsn_code":safe(row.get("hsn_code","")),"location":safe(row.get("location","")),"created_at":datetime.utcnow().isoformat()}
+            doc = {"part_number":part_no,"name":name,"category":safe(row.get("category","")),"brand":safe(row.get("brand","")),"compatible_with":[c.strip().upper() for c in compat_raw.split(",") if c.strip()],"stock":safe_int(row.get("stock",0)),"reorder_level":safe_int(row.get("reorder_level",5)),"purchase_price":safe_float(row.get("purchase_price",0)),"selling_price":safe_float(row.get("selling_price",0)),"gst_rate":safe_float(row.get("gst_rate",18)),"hsn_code":safe(row.get("hsn_code","")),"location":safe(row.get("location","")),"created_at":utcnow().isoformat()}
             if part_no in existing_parts:
                 if mode=="overwrite": to_update.append(doc)
                 else: skipped.append({"row":rn,"reason":f"Part {part_no} already exists"})
@@ -2732,7 +2856,7 @@ async def import_staff(file: UploadFile = File(...), mode: str = Form("skip"), c
                     inserted += 1
                 else: skipped.append({"row":rn,"reason":f"Username {username} already exists"})
                 continue
-            await db.users.insert_one({"username":username,"name":name,"mobile":safe(row.get("mobile","")),"email":safe(row.get("email","")),"role":role,"password":pwd_ctx.hash("mm@123456"),"salary":safe_float(row.get("salary",0)),"join_date":safe(row.get("join_date","")),"status":"active","created_at":datetime.utcnow().isoformat()})
+            await db.users.insert_one({"username":username,"name":name,"mobile":safe(row.get("mobile","")),"email":safe(row.get("email","")),"role":role,"password":pwd_ctx.hash("mm@123456"),"salary":safe_float(row.get("salary",0)),"join_date":safe(row.get("join_date","")),"status":"active","created_at":utcnow().isoformat()})
             inserted += 1
         except Exception as e:
             traceback.print_exc(); errors.append({"row":rn,"error":str(e)})
@@ -2779,7 +2903,7 @@ async def import_expenses(request: Request, file: UploadFile = File(...), mode: 
                 "receipt_no":   safe(row.get("receipt_no", "")),
                 "notes":        safe(row.get("notes", "")),
                 "created_by":   current_user.get("name", "imported"),
-                "created_at":   datetime.utcnow().isoformat(),
+                "created_at":   utcnow().isoformat(),
             })
         except Exception as e:
             errors.append({"row": rn, "error": str(e)})
@@ -2867,7 +2991,7 @@ async def create_debt(body: DebtCreate, current_user=Depends(verify_token)):
         "source":         body.source or "manual",
         "status":         "pending",
         "payments":       [],
-        "created_at":     datetime.utcnow().isoformat(),
+        "created_at":     utcnow().isoformat(),
     }
     result = await db.debts.insert_one(doc)
     doc["id"] = str(result.inserted_id); doc.pop("_id", None)
@@ -2894,8 +3018,8 @@ async def add_payment(debt_id: str, body: PaymentCreate, current_user=Depends(ve
     payment = {
         "amount":    body.amount,
         "notes":     body.notes or "",
-        "paid_date": body.paid_date or datetime.utcnow().strftime("%Y-%m-%d"),
-        "recorded_at": datetime.utcnow().isoformat(),
+        "paid_date": body.paid_date or utcnow().strftime("%Y-%m-%d"),
+        "recorded_at": utcnow().isoformat(),
         "recorded_by": current_user.get("name", ""),
     }
     new_paid    = round(debt.get("paid", 0) + body.amount, 2)
@@ -2994,7 +3118,7 @@ async def create_expense(body: ExpenseCreate, current_user=Depends(verify_token)
         "receipt_no":   body.receipt_no or "",
         "notes":        body.notes or "",
         "created_by":   current_user.get("name", ""),
-        "created_at":   datetime.utcnow().isoformat(),
+        "created_at":   utcnow().isoformat(),
     }
     result = await db.expenses.insert_one(doc)
     doc["id"] = str(result.inserted_id); doc.pop("_id", None)
@@ -3223,7 +3347,7 @@ async def export_backup(current_user=Depends(require_admin)):
         buf = _io.BytesIO(); wb.save(buf); buf.seek(0)
         return buf.read()
 
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = utcnow().strftime("%Y-%m-%d")
 
     files = [
         (f"customers_{today}.xlsx",    make_workbook(customers_c, ['name','mobile','care_of','email','address','tags','created_at'], 'Customers')),
@@ -3268,7 +3392,7 @@ async def list_accident_estimates(
 @api_router.post("/accident-estimates", status_code=201)
 async def create_accident_estimate(body: AccidentEstimateCreate, current_user=Depends(verify_token)):
     est_number = await next_sequence("accident_estimate")   # already "EST-0001"
-    ts         = datetime.utcnow().isoformat()
+    ts         = utcnow().isoformat()
     doc = {
         **body.model_dump(),
         "estimate_number": est_number,
@@ -3295,7 +3419,7 @@ async def update_accident_estimate(est_id: str, body: AccidentEstimateUpdate, cu
     if not existing:
         # Estimate was deleted — create fresh so frontend gets a new id back
         est_number = await next_sequence("accident_estimate")
-        ts  = datetime.utcnow().isoformat()
+        ts  = utcnow().isoformat()
         doc = {
             **body.model_dump(exclude_none=True),
             "estimate_number": est_number,
@@ -3307,7 +3431,7 @@ async def update_accident_estimate(est_id: str, body: AccidentEstimateUpdate, cu
         created = await db.accident_estimates.find_one({"_id": result.inserted_id})
         return oid(created)
     updates = body.model_dump(exclude_none=True)
-    updates["updated_at"] = datetime.utcnow().isoformat()
+    updates["updated_at"] = utcnow().isoformat()
     await db.accident_estimates.update_one({"_id": obj_id(est_id)}, {"$set": updates})
     return oid(await db.accident_estimates.find_one({"_id": obj_id(est_id)}))
 
