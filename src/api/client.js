@@ -175,6 +175,7 @@ export const reportsApi = {
   brandSales:   (params) => api.get('/reports/brand-sales', { params }),
   brandMonthly: (params) => api.get('/reports/brand-monthly', { params }),
   topParts:     (params) => api.get('/reports/top-parts', { params }),
+  complimentary:(params) => api.get('/reports/complimentary', { params }),
   dailyClosing: (date)   => api.get('/reports/daily-closing', { params: { date } }),
 };
 
@@ -203,7 +204,15 @@ export const filesApi = {
     });
     return res.data;
   },
+  // Legacy — direct URL. Only works if backend allows anon (it no longer does).
+  // Kept for compatibility. Prefer getFileBlobUrl.
   getFileUrl: (fileId) => `${api.defaults.baseURL}/files/${fileId}`,
+  // Authenticated blob fetch — returns object URL usable in <img src> / <a href>.
+  // Caller must revoke via URL.revokeObjectURL(url) on unmount.
+  getFileBlobUrl: async (fileId) => {
+    const res = await api.get(`/files/${fileId}`, { responseType: 'blob' });
+    return URL.createObjectURL(res.data);
+  },
 };
 
 // ── Health ──────────────────────────────────────────────────────────
