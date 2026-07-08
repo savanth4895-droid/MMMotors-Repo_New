@@ -87,16 +87,6 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
 | `JWT_SECRET_KEY`| ✓        | 64-char hex. Server exits without this.        |
 | `ALLOW_ORIGINS` | ✓        | Comma-separated Vercel URLs + `localhost:5173` |
 | `SERVICE_DUE_CUTOFF` |     | YYYY-MM-DD. Default `2026-05-01`. Vehicles sold before excluded from Service Due. |
-| `SMTP_HOST`     |          | Default `smtp.gmail.com` |
-| `SMTP_PORT`     |          | Default `465` (SSL) |
-| `SMTP_USER`     | ✓ (for backup) | Gmail address sending backup |
-| `SMTP_PASS`     | ✓ (for backup) | Gmail App Password (myaccount.google.com/apppasswords) — NOT login password |
-| `BACKUP_EMAIL_TO` | ✓ (for backup) | Owner email receiving nightly backup |
-| `ENABLE_BACKUP_SCHEDULER` |  | `"true"`/`"false"` — disable to skip scheduler startup |
-| `B2_KEY_ID`     | ✓ (for backup) | Backblaze B2 Application Key ID |
-| `B2_APP_KEY`    | ✓ (for backup) | Backblaze B2 Application Key |
-| `B2_BUCKET`     | ✓ (for backup) | Bucket name (e.g. `mmmotors-backups`) |
-| `B2_ENDPOINT`   | ✓ (for backup) | S3 endpoint URL (shown on bucket page after creation) |
 
 Generate JWT secret:
 ```bash
@@ -160,7 +150,7 @@ Default seed account (change immediately after first login):
 | Parts Sales      | CRUD `/parts-sales`                                                       |
 | Parts Bills      | CRUD `/parts-bills`                                                       |
 | Dashboard        | `GET /dashboard/stats`, `GET /dashboard/recent-activity`                 |
-| Reports          | `/reports/revenue`, `/reports/daily-closing`, `/reports/brand-sales`, `/reports/top-parts` |
+| Reports          | `/reports/revenue`, `/reports/daily-closing`, `/reports/brand-sales`, `/reports/top-parts`, `/reports/gstr1?month=YYYY-MM` |
 | Files            | `POST /upload`, `GET /files/{file_id}` (GridFS)                          |
 | Import           | `GET /import/template/{entity}`, `POST /import/preview/{entity}`, `POST /import/{entity}` |
 | Health           | `GET /health`, `GET /ready`                                               |
@@ -168,7 +158,7 @@ Default seed account (change immediately after first login):
 | Debts            | CRUD `/debts`, `/debts/summary`, `POST /debts/{id}/payments`              |
 | Expenses         | CRUD `/expenses`, `/expenses/stats/summary`                                |
 | Accident Est.    | CRUD `/accident-estimates` (PUT recreates if deleted)                     |
-| Backup           | `GET /backup/export` (ZIP of per-entity Excel files, admin only) · `POST /admin/trigger-backup` (manual) · `GET /admin/backup-log` (last 20 attempts) |
+| Backup           | `GET /backup/export` (ZIP of per-entity Excel files, admin only, manual download) |
 | P&L              | `GET /reports/pnl`                                                         |
 
 Import supports: `customers`, `vehicles`, `sales`, `service`, `parts`, `staff`
@@ -265,23 +255,14 @@ After deploy:
 
 ## Known Issues / Notes (audit 07 Jul 2026)
 
-### Backup System (added 07 Jul 2026 · B2 upgrade 07 Jul 2026)
+### Backup System (manual only · 08 Jul 2026)
 
-- Nightly at 2 AM IST (20:30 UTC). `AsyncIOScheduler` in-process.
-- Primary destination: **Backblaze B2** via S3-compatible API (`boto3`).
-- Path format: `backups/YYYY/MM/MMMotors_Backup_YYYY-MM-DD.zip`
-- Secondary: email **notification only** (no attachment) via Gmail SMTP — subject shows OK/FAIL + size.
-- `_build_backup_zip()` — shared with `/backup/export` endpoint.
-- `_upload_backup_to_b2()` — runs boto3 `put_object` in thread pool executor.
-- `_email_backup_notification()` — best-effort. Email failure does not fail backup.
-- Retention: set B2 bucket **Lifecycle Rule** in Backblaze UI (recommend 30-day auto-delete). Not managed by code.
-- `backup_log` collection: TTL 90 days. Stores ts, ok, size, key, destination, error.
-- Manual: `POST /admin/trigger-backup` (admin only). **Fire-and-forget** — returns immediately with `{queued: true}`. Poll `/admin/backup-log` for result.
-- Log: `GET /admin/backup-log?limit=20`.
-- **UI:** BackupSection on Dashboard — owner/admin only. Shows last 10 runs, Run Now button (queues + polls log at 5/15/30/60s), stale-warning if last success >30h old.
-- **Risk:** B2 key revoked silently. Email notification catches it on next run.
-- **Risk:** Scheduler dies on Render restart until UptimeRobot pings `/health`.
-- **Risk:** Email address wrong → no failure alerts. Test with `/admin/trigger-backup` after setup.
+- Automatic nightly backup, B2 upload, and email notification **removed** 08 Jul 2026.
+- Only path: `GET /backup/export` (admin only) → downloads ZIP of per-entity Excel files.
+- Frontend: `ManualBackupSection` on Dashboard (owner/admin only) — single "Download Backup" button. Uses `URL.createObjectURL` blob pattern.
+- **Runbook:** Owner downloads backup weekly (minimum) and stores locally on personal machine + optional cloud drive (Google Drive, OneDrive).
+- **Risk:** Human forgets to run. No alerts. If Atlas corrupts and last manual backup >7 days old, data loss window equals days since last download.
+- Removed: `apscheduler`, `boto3` from requirements. `SMTP_*`, `B2_*`, `BACKUP_EMAIL_TO`, `ENABLE_BACKUP_SCHEDULER` env vars removed from render.yaml. `backup_log` collection no longer written or indexed (existing docs harmless — TTL 90d already applied on prior deploys will let Mongo expire them; safe to `db.backup_log.drop()` manually).
 
 - ~~`GET /files/{file_id}` — **no auth**.~~ **FIXED 07 Jul 2026** — added `Depends(verify_token)`. Frontend `FileUpload.jsx` now uses blob-fetch pattern (`filesApi.getFileBlobUrl`) with `URL.createObjectURL` + cleanup on unmount. Legacy `filesApi.getFileUrl` retained but no longer functional anonymously.
 - `bcrypt==3.2.2` pinned (works with passlib 1.7.4; do not upgrade to 4.x without testing).
@@ -294,3 +275,18 @@ After deploy:
 - ~~`next_sequence` uses `return_document=True` — should be `ReturnDocument.AFTER` enum; truthy value works but relies on pymongo coercion.~~ **FIXED 07 Jul 2026** — uses `ReturnDocument.AFTER` enum.
 - Backup export loads 100k docs per collection into memory — acceptable free-tier scale only.
 - CLAUDE.md previously said collection `parts` — actual name `spare_parts`.
+
+### GSTR-1 Export (added 08 Jul 2026)
+
+- `GET /reports/gstr1?month=YYYY-MM` — admin only. Returns xlsx blob.
+- Sheets: `summary`, `b2b`, `b2cl`, `b2cs`, `hsn`, `docs`.
+- Karnataka intra-state assumed → CGST + SGST split (equal halves). No IGST.
+- Vehicle sales: `total_amount` treated as **GST-inclusive at 28%**. Taxable back-calculated. This is an approximation — vehicle GST breakdown not stored on the sales collection. If the actual mix is CGST/SGST at 14% each, this is correct.
+- Service bills: use per-line GST breakdown from `items[]`. Complimentary items excluded.
+- Rounding: GST rounded per-invoice to 2dp, not per line (portal convention).
+- B2CL threshold: ₹2.5L invoice value.
+- Classification: `customer_gstin` field on sale/bill → B2B. Else >₹2.5L → B2CL. Else → B2CS aggregated by rate.
+- HSN column left **blank** in all sheets — no HSN mapping table exists yet. CA fills manually before portal upload.
+- `customer_gstin` field not yet added to sales/service_bills schemas. Currently all rows route to B2CL/B2CS. Add field + form input when B2B invoicing begins.
+- Frontend: `GSTR1Section` on Dashboard (owner/admin only). Month picker + blob download via `URL.createObjectURL`.
+- Follow-up before production use: (a) add `customer_gstin` field + form, (b) build HSN mapping table + `hsn_code` on sales items, (c) verify with CA against actual portal upload for one month.
