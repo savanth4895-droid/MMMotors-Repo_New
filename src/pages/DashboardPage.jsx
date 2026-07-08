@@ -1,5 +1,6 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { dashboardApi, salesApi, vehiclesApi, partsApi, serviceApi, expensesApi, backupApi } from '../api/client';
+import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { dashboardApi, salesApi, vehiclesApi, partsApi, serviceApi, expensesApi, backupApi, reportsApi } from '../api/client';
 import { Skeleton, ApiError, Btn } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
@@ -243,103 +244,108 @@ export default function DashboardPage({ setActive }) {
           </div>
         </div>
 
-        {(user?.role === 'owner' || user?.role === 'admin') && <BackupSection />}
+        {(user?.role === 'owner' || user?.role === 'admin') && <ManualBackupSection />}
+        {(user?.role === 'owner' || user?.role === 'admin') && <GSTR1Section />}
 
       </div>
     </div>
   );
 }
 
-// ── Backup Admin Section ─────────────────────────────────────────────────────
-function BackupSection() {
-  const qc = useQueryClient();
-  const { data: logs, isLoading } = useQuery({
-    queryKey: ['backup-log'],
-    queryFn: () => backupApi.log(10).then(r => r.data),
-    refetchInterval: 30_000,
-  });
-
-  const runMut = useMutation({
-    mutationFn: () => backupApi.trigger().then(r => r.data),
-    onSuccess: (data) => {
-      if (data.queued) {
-        toast.success('Backup queued. Refreshing log…');
-        // Poll log for fresh result — 5s, 15s, 30s, 60s
-        [5000, 15000, 30000, 60000].forEach(delay =>
-          setTimeout(() => qc.invalidateQueries(['backup-log']), delay)
-        );
-      } else if (data.ok) {
-        toast.success(`Backup uploaded · ${data.size_mb} MB`);
-        qc.invalidateQueries(['backup-log']);
-      } else {
-        toast.error(`Backup failed: ${data.error || 'unknown'}`);
-        qc.invalidateQueries(['backup-log']);
-      }
-    },
-    onError: (e) => toast.error(`Trigger failed: ${e?.response?.data?.detail || e.message}`),
-  });
-
-  const last = Array.isArray(logs) && logs.length ? logs[0] : null;
-  const lastAge = last ? Math.floor((Date.now() - new Date(last.ts).getTime()) / 3600000) : null;
-  const staleWarn = last && lastAge > 30;
-
+// ── Manual Data Backup Section ───────────────────────────────────────────────
+function ManualBackupSection() {
+  const [busy, setBusy] = useState(false);
+  async function download() {
+    setBusy(true);
+    try {
+      const res  = await backupApi.export();
+      const url  = URL.createObjectURL(res.data);
+      const a    = document.createElement('a');
+      const today = new Date().toISOString().slice(0, 10);
+      a.href = url;
+      a.download = `MMMotors_Backup_${today}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success('Backup downloaded');
+    } catch (e) {
+      toast.error(`Backup failed: ${e?.response?.data?.detail || e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
     <div style={{ marginTop: 32, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 4, padding: '18px 20px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '.06em', color: 'var(--accent, #b8860b)' }}>SYSTEM BACKUP</div>
+          <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '.06em', color: 'var(--accent, #b8860b)' }}>DATA BACKUP</div>
           <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 2 }}>
-            {last
-              ? `Last: ${last.ok ? '✓' : '✗'} ${new Date(last.ts).toLocaleString('en-IN')} · ${(last.size_bytes/1048576).toFixed(2)} MB`
-              : 'No backups yet'}
+            Download full data as ZIP (Excel per collection). Store locally. Run weekly minimum.
           </div>
         </div>
-        <Btn onClick={() => runMut.mutate()} disabled={runMut.isPending}>
-          {runMut.isPending ? 'Running…' : 'Run Backup Now'}
+        <Btn onClick={download} disabled={busy}>
+          {busy ? 'Building…' : 'Download Backup'}
         </Btn>
       </div>
+    </div>
+  );
+}
 
-      {staleWarn && (
-        <div style={{ marginBottom: 12, padding: '8px 12px', background: 'rgba(239,68,68,.08)', border: '1px solid rgba(239,68,68,.3)', borderRadius: 3, fontSize: 11, color: '#ef4444' }}>
-          ⚠ Last successful backup {lastAge}h ago. Investigate scheduler.
+// ── GSTR-1 Export Section ────────────────────────────────────────────────────
+function GSTR1Section() {
+  const now = new Date();
+  const defaultMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const [month, setMonth] = useState(defaultMonth);
+  const [busy, setBusy]   = useState(false);
+
+  async function download() {
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      toast.error('Invalid month');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res  = await reportsApi.gstr1(month);
+      const url  = URL.createObjectURL(res.data);
+      const a    = document.createElement('a');
+      a.href = url;
+      a.download = `GSTR1_${month}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success(`GSTR-1 for ${month} downloaded`);
+    } catch (e) {
+      toast.error(`Export failed: ${e?.response?.data?.detail || e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 24, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 4, padding: '18px 20px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '.06em', color: 'var(--accent, #b8860b)' }}>GSTR-1 EXPORT</div>
+          <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 2 }}>
+            Monthly GST return. B2B / B2CL / B2CS / HSN / Docs sheets. HSN blank — CA fills manually.
+          </div>
         </div>
-      )}
-
-      <div style={{ maxHeight: 240, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 3 }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-          <thead>
-            <tr style={{ background: 'var(--surface2)' }}>
-              <th style={{ textAlign: 'left',  padding: '6px 10px', color: 'var(--muted)', fontWeight: 600, letterSpacing: '.05em' }}>Time</th>
-              <th style={{ textAlign: 'center',padding: '6px 10px', color: 'var(--muted)', fontWeight: 600, letterSpacing: '.05em' }}>Status</th>
-              <th style={{ textAlign: 'right', padding: '6px 10px', color: 'var(--muted)', fontWeight: 600, letterSpacing: '.05em' }}>Size</th>
-              <th style={{ textAlign: 'left',  padding: '6px 10px', color: 'var(--muted)', fontWeight: 600, letterSpacing: '.05em' }}>Path / Error</th>
-            </tr>
-          </thead>
-          <tbody>
-            {isLoading ? (
-              <tr><td colSpan={4} style={{ padding: 12 }}><Skeleton height={40} /></td></tr>
-            ) : !logs || logs.length === 0 ? (
-              <tr><td colSpan={4} style={{ padding: 16, textAlign: 'center', color: 'var(--muted)', fontSize: 11 }}>No backup history yet</td></tr>
-            ) : logs.map((r, i) => (
-              <tr key={i} style={{ borderTop: '1px solid var(--border)' }}>
-                <td style={{ padding: '6px 10px' }}>{new Date(r.ts).toLocaleString('en-IN')}</td>
-                <td style={{ padding: '6px 10px', textAlign: 'center' }}>
-                  <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 3, fontSize: 10, fontWeight: 700,
-                    color: r.ok ? '#10b981' : '#ef4444',
-                    background: r.ok ? 'rgba(16,185,129,.1)' : 'rgba(239,68,68,.1)' }}>
-                    {r.ok ? 'OK' : 'FAIL'}
-                  </span>
-                </td>
-                <td style={{ padding: '6px 10px', textAlign: 'right', fontFamily: 'monospace' }}>
-                  {r.size_bytes ? (r.size_bytes/1048576).toFixed(2) + ' MB' : '—'}
-                </td>
-                <td style={{ padding: '6px 10px', color: r.ok ? 'var(--muted)' : '#ef4444', fontFamily: 'monospace', fontSize: 10 }}>
-                  {r.ok ? (r.key || r.filename || '—') : (r.error || '—')}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            type="month"
+            value={month}
+            onChange={e => setMonth(e.target.value)}
+            style={{
+              background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 3,
+              color: 'var(--text)', padding: '6px 10px', fontSize: 12, fontFamily: 'inherit',
+            }}
+          />
+          <Btn onClick={download} disabled={busy}>
+            {busy ? 'Building…' : 'Download xlsx'}
+          </Btn>
+        </div>
       </div>
     </div>
   );
