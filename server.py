@@ -88,30 +88,8 @@ async def lifespan(app):
     except Exception as e:
         print(f"[MM Motors] WARNING: DB connection failed: {e}")
 
-    # Start nightly backup scheduler — 2 AM IST = 20:30 UTC previous day
-    scheduler = None
-    if os.getenv("ENABLE_BACKUP_SCHEDULER", "true").lower() == "true":
-        try:
-            from apscheduler.schedulers.asyncio import AsyncIOScheduler
-            from apscheduler.triggers.cron import CronTrigger
-            scheduler = AsyncIOScheduler(timezone="UTC")
-            scheduler.add_job(
-                _email_backup_to_owner,
-                trigger=CronTrigger(hour=20, minute=30),  # 2 AM IST
-                id="nightly_backup",
-                replace_existing=True,
-                misfire_grace_time=3600,   # run if missed by up to 1 hour
-            )
-            scheduler.start()
-            print("[MM Motors] Backup scheduler started · 2 AM IST daily")
-        except Exception as e:
-            print(f"[MM Motors] Scheduler failed: {e}")
-            scheduler = None
-
     yield
 
-    if scheduler:
-        scheduler.shutdown(wait=False)
     if _db.client:
         _db.client.close()
 
@@ -184,8 +162,6 @@ async def _ensure_indexes():
     )
     await db.login_attempts.create_index("username")
     await db.login_attempts.create_index([("username", 1), ("ip", 1)])
-    # backup_log — TTL 90 days
-    await db.backup_log.create_index("ts", expireAfterSeconds=90 * 24 * 3600)
     print("[MM Motors] Indexes ensured")
 
 async def _seed_owner():
@@ -2262,6 +2238,252 @@ async def top_parts_report(limit: int = Query(10), current_user=Depends(require_
     return [{"name":d["_id"],"qty_sold":d["qty"],"revenue":round(d["revenue"],2)} for d in docs]
 
 
+# ─── GSTR-1 Export ─────────────────────────────────────────────────────────────
+# Monthly GST return export. Karnataka intra-state assumed (CGST + SGST split).
+# Vehicle sales: no GST breakdown stored — treat total_amount as inclusive at 28%.
+# Service bills: GST already computed per line + totals on doc.
+# HSN column left blank per current data (no HSN mapping table yet).
+# Rounds GST to 2 decimals per invoice (not per line).
+
+_GSTR1_VEHICLE_GST_RATE = 28.0  # Two-wheeler GST rate
+
+def _parse_month_range(month: str):
+    """month = 'YYYY-MM' → (start_dt, end_dt_exclusive, label)."""
+    from datetime import datetime as _dt
+    y, m = month.split("-")
+    y, m = int(y), int(m)
+    start = _dt(y, m, 1)
+    end   = _dt(y + (1 if m == 12 else 0), 1 if m == 12 else m + 1, 1)
+    return start, end, month
+
+def _split_gst_inclusive(total: float, rate: float):
+    """Back-calculate taxable + CGST + SGST from GST-inclusive total.
+    Karnataka intra-state → equal CGST/SGST split. Rounds to 2dp per invoice."""
+    total = float(total or 0)
+    taxable = round(total / (1 + rate / 100), 2)
+    gst_total = round(total - taxable, 2)
+    cgst = round(gst_total / 2, 2)
+    sgst = round(gst_total - cgst, 2)
+    return taxable, cgst, sgst
+
+async def _gstr1_fetch_sales(start, end):
+    """Sales in month. sale_date format varies — parse defensively."""
+    pipeline = [
+        {"$addFields": {
+            "p1": {"$dateFromString": {"dateString": "$sale_date", "format": "%d %b %Y", "onError": None, "onNull": None}},
+            "p2": {"$dateFromString": {"dateString": {"$substr": ["$sale_date", 0, 10]}, "format": "%Y-%m-%d", "onError": None, "onNull": None}},
+            "p3": {"$dateFromString": {"dateString": "$sale_date", "format": "%d/%m/%Y", "onError": None, "onNull": None}},
+        }},
+        {"$addFields": {"parsed": {"$ifNull": ["$p1", {"$ifNull": ["$p2", "$p3"]}]}}},
+        {"$match": {"parsed": {"$gte": start, "$lt": end}}},
+        {"$sort": {"parsed": 1}},
+    ]
+    return await db.sales.aggregate(pipeline).to_list(20000)
+
+async def _gstr1_fetch_service_bills(start, end):
+    """Service bills in month. bill_date format 'DD Mon YYYY'."""
+    pipeline = [
+        {"$addFields": {
+            "p1": {"$dateFromString": {"dateString": "$bill_date", "format": "%d %b %Y", "onError": None, "onNull": None}},
+            "p2": {"$dateFromString": {"dateString": {"$substr": ["$created_at", 0, 10]}, "format": "%Y-%m-%d", "onError": None, "onNull": None}},
+        }},
+        {"$addFields": {"parsed": {"$ifNull": ["$p1", "$p2"]}}},
+        {"$match": {"parsed": {"$gte": start, "$lt": end}}},
+        {"$sort": {"parsed": 1}},
+    ]
+    return await db.service_bills.aggregate(pipeline).to_list(20000)
+
+def _build_gstr1_workbook(month_label, sales, service_bills):
+    """Build multi-sheet xlsx per GSTR-1 sections."""
+    from openpyxl.styles import Font, PatternFill, Alignment
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="1F3864")
+    center = Alignment(horizontal="center", vertical="center")
+
+    def add_sheet(name, headers, rows):
+        ws = wb.create_sheet(name)
+        ws.append(headers)
+        for c in ws[1]:
+            c.font = header_font; c.fill = header_fill; c.alignment = center
+        for row in rows:
+            ws.append(row)
+        for i, h in enumerate(headers, 1):
+            col = ws.cell(row=1, column=i).column_letter
+            ws.column_dimensions[col].width = max(14, min(30, len(str(h)) + 4))
+        ws.freeze_panes = "A2"
+
+    b2b_rows, b2cl_rows, b2cs_agg, hsn_agg, docs = [], [], {}, {}, []
+    B2CL_THRESHOLD = 250000.0
+
+    def acc_hsn(hsn, desc, uqc, qty, taxable, cgst, sgst, rate):
+        key = (hsn or "", desc or "", rate)
+        row = hsn_agg.setdefault(key, {"qty": 0.0, "taxable": 0.0, "cgst": 0.0, "sgst": 0.0})
+        row["qty"] += float(qty or 0)
+        row["taxable"] += taxable
+        row["cgst"] += cgst
+        row["sgst"] += sgst
+
+    def acc_b2cs(rate, taxable, cgst, sgst):
+        row = b2cs_agg.setdefault(rate, {"taxable": 0.0, "cgst": 0.0, "sgst": 0.0})
+        row["taxable"] += taxable
+        row["cgst"]    += cgst
+        row["sgst"]    += sgst
+
+    # Vehicle sales
+    for s in sales:
+        inv_no = s.get("invoice_number") or str(s.get("_id",""))[-8:]
+        inv_dt = s.get("sale_date","")
+        total  = float(s.get("total_amount") or s.get("sale_price") or 0)
+        if total <= 0:
+            continue
+        gstin  = (s.get("customer_gstin") or "").strip().upper()
+        taxable, cgst, sgst = _split_gst_inclusive(total, _GSTR1_VEHICLE_GST_RATE)
+        customer = s.get("customer_name","")
+
+        docs.append(("Sales Invoice", inv_no, inv_dt))
+
+        if gstin:
+            b2b_rows.append([gstin, customer, inv_no, inv_dt, round(total,2), _GSTR1_VEHICLE_GST_RATE,
+                             taxable, cgst, sgst, "", "29-Karnataka"])
+        elif total > B2CL_THRESHOLD:
+            b2cl_rows.append([inv_no, inv_dt, round(total,2), "29-Karnataka", _GSTR1_VEHICLE_GST_RATE,
+                              taxable, cgst, sgst, customer])
+        else:
+            acc_b2cs(_GSTR1_VEHICLE_GST_RATE, taxable, cgst, sgst)
+
+        acc_hsn("", "Two-wheeler", "NOS", 1, taxable, cgst, sgst, _GSTR1_VEHICLE_GST_RATE)
+
+    # Service bills
+    for b in service_bills:
+        inv_no = b.get("bill_number") or str(b.get("_id",""))[-8:]
+        inv_dt = b.get("bill_date","")
+        total  = float(b.get("net_total") or b.get("grand_total") or 0)
+        if total <= 0:
+            continue
+        gstin  = (b.get("customer_gstin") or "").strip().upper()
+        customer = b.get("customer_name","")
+
+        taxable_sum = round(sum(float(it.get("taxable",0)) for it in b.get("items",[])), 2)
+        cgst_sum    = round(sum(float(it.get("cgst",0))    for it in b.get("items",[])), 2)
+        sgst_sum    = round(sum(float(it.get("sgst",0))    for it in b.get("items",[])), 2)
+        by_rate = {}
+        for it in b.get("items", []):
+            if it.get("complimentary"):
+                continue
+            r = float(it.get("gst_rate", 0) or 0)
+            bucket = by_rate.setdefault(r, {"taxable": 0.0, "cgst": 0.0, "sgst": 0.0})
+            bucket["taxable"] += float(it.get("taxable", 0))
+            bucket["cgst"]    += float(it.get("cgst", 0))
+            bucket["sgst"]    += float(it.get("sgst", 0))
+            acc_hsn(it.get("hsn_code",""), it.get("description",""), "NOS",
+                    it.get("qty",1), float(it.get("taxable",0)),
+                    float(it.get("cgst",0)), float(it.get("sgst",0)), r)
+
+        docs.append(("Service Bill", inv_no, inv_dt))
+        top_rate = max(by_rate.keys(), default=18.0)
+
+        if gstin:
+            b2b_rows.append([gstin, customer, inv_no, inv_dt, round(total,2), top_rate,
+                             taxable_sum, cgst_sum, sgst_sum, "", "29-Karnataka"])
+        elif total > B2CL_THRESHOLD:
+            b2cl_rows.append([inv_no, inv_dt, round(total,2), "29-Karnataka", top_rate,
+                              taxable_sum, cgst_sum, sgst_sum, customer])
+        else:
+            for r, bucket in by_rate.items():
+                acc_b2cs(r, round(bucket["taxable"],2), round(bucket["cgst"],2), round(bucket["sgst"],2))
+
+    add_sheet("b2b",
+        ["GSTIN/UIN of Recipient","Receiver Name","Invoice Number","Invoice Date",
+         "Invoice Value","Rate","Taxable Value","CGST","SGST","HSN","Place of Supply"],
+        b2b_rows)
+
+    add_sheet("b2cl",
+        ["Invoice Number","Invoice Date","Invoice Value","Place of Supply","Rate",
+         "Taxable Value","CGST","SGST","Receiver Name"],
+        b2cl_rows)
+
+    b2cs_rows = []
+    for rate, agg in sorted(b2cs_agg.items()):
+        b2cs_rows.append(["OE", rate, round(agg["taxable"],2), "29-Karnataka",
+                          round(agg["cgst"],2), round(agg["sgst"],2)])
+    add_sheet("b2cs",
+        ["Type","Rate","Taxable Value","Place of Supply","CGST","SGST"],
+        b2cs_rows)
+
+    hsn_rows = []
+    for (hsn, desc, rate), agg in hsn_agg.items():
+        total_val = agg["taxable"] + agg["cgst"] + agg["sgst"]
+        hsn_rows.append([hsn, desc, "NOS", round(agg["qty"],2), round(agg["taxable"],2),
+                         rate, round(agg["cgst"],2), round(agg["sgst"],2), round(total_val,2)])
+    add_sheet("hsn",
+        ["HSN","Description","UQC","Total Qty","Taxable Value","Rate","CGST","SGST","Total Value"],
+        hsn_rows)
+
+    add_sheet("docs",
+        ["Doc Type","Invoice Number","Invoice Date"],
+        docs)
+
+    # Summary sheet first
+    ws = wb.create_sheet("summary", 0)
+    ws.append(["GSTR-1 Export"])
+    ws.append(["Period", month_label])
+    ws.append(["Generated", utcnow().strftime("%d %b %Y %H:%M UTC")])
+    ws.append([])
+    ws.append(["Section","Count","Taxable","CGST","SGST","Total"])
+    for c in ws[5]:
+        c.font = header_font; c.fill = header_fill
+    b2b_t  = round(sum(r[6] for r in b2b_rows), 2)
+    b2b_c  = round(sum(r[7] for r in b2b_rows), 2)
+    b2b_s  = round(sum(r[8] for r in b2b_rows), 2)
+    b2cl_t = round(sum(r[5] for r in b2cl_rows), 2)
+    b2cl_c = round(sum(r[6] for r in b2cl_rows), 2)
+    b2cl_s = round(sum(r[7] for r in b2cl_rows), 2)
+    b2cs_t = round(sum(r[2] for r in b2cs_rows), 2)
+    b2cs_c = round(sum(r[4] for r in b2cs_rows), 2)
+    b2cs_s = round(sum(r[5] for r in b2cs_rows), 2)
+    ws.append(["B2B",  len(b2b_rows),  b2b_t,  b2b_c,  b2b_s,  round(b2b_t+b2b_c+b2b_s,2)])
+    ws.append(["B2CL", len(b2cl_rows), b2cl_t, b2cl_c, b2cl_s, round(b2cl_t+b2cl_c+b2cl_s,2)])
+    ws.append(["B2CS", len(b2cs_rows), b2cs_t, b2cs_c, b2cs_s, round(b2cs_t+b2cs_c+b2cs_s,2)])
+    ws.append([])
+    ws.append(["Notes"])
+    ws.append(["- HSN codes blank — fill manually before portal upload."])
+    ws.append(["- Vehicle sales: GST back-calculated at 28% inclusive."])
+    ws.append(["- Place of supply hardcoded 29-Karnataka (intra-state)."])
+    ws.append(["- B2B rows use customer_gstin field (currently absent → all sales route to B2CL/B2CS)."])
+    for i in range(1, 7):
+        ws.column_dimensions[chr(64+i)].width = 18
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+@api_router.get("/reports/gstr1")
+async def gstr1_export(
+    month: str = Query(..., regex=r"^\d{4}-\d{2}$"),
+    current_user=Depends(require_admin),
+):
+    """GSTR-1 export for given month (YYYY-MM). Returns xlsx blob.
+    Sheets: summary, b2b, b2cl, b2cs, hsn, docs. Karnataka intra-state."""
+    try:
+        start, end, label = _parse_month_range(month)
+    except Exception:
+        raise HTTPException(status_code=400, detail="month must be YYYY-MM")
+    sales, service_bills = await asyncio.gather(
+        _gstr1_fetch_sales(start, end),
+        _gstr1_fetch_service_bills(start, end),
+    )
+    buf = _build_gstr1_workbook(label, sales, service_bills)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="GSTR1_{label}.xlsx"'},
+    )
+
+
 @api_router.get("/reports/complimentary")
 async def complimentary_report(
     date_from: Optional[str] = Query(None),
@@ -3310,7 +3532,7 @@ async def export_backup(current_user=Depends(require_admin)):
 
 
 async def _build_backup_zip() -> tuple[bytes, str]:
-    """Build full backup ZIP. Returns (bytes, filename). Reused by scheduler."""
+    """Build full backup ZIP. Returns (bytes, filename). Used by /backup/export."""
     import zipfile, io as _io
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
@@ -3401,153 +3623,6 @@ async def _build_backup_zip() -> tuple[bytes, str]:
 
     zip_buf.seek(0)
     return zip_buf.read(), f"MMMotors_Backup_{today}.zip"
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Nightly Email Backup
-# ═══════════════════════════════════════════════════════════════════════════════
-
-async def _upload_backup_to_b2(zip_bytes: bytes, filename: str) -> dict:
-    """Upload backup ZIP to Backblaze B2 via S3-compatible API.
-    Returns {'ok': bool, 'key': str, 'error': str|None}."""
-    key_id     = os.getenv("B2_KEY_ID", "").strip()
-    app_key    = os.getenv("B2_APP_KEY", "").strip()
-    bucket     = os.getenv("B2_BUCKET", "").strip()
-    endpoint   = os.getenv("B2_ENDPOINT", "").strip().rstrip("/")
-
-    # Auto-prepend scheme if missing (common misconfig)
-    if endpoint and not endpoint.startswith(("http://", "https://")):
-        endpoint = "https://" + endpoint
-
-    if not (key_id and app_key and bucket and endpoint):
-        return {"ok": False, "key": None, "error": "B2 env vars missing (B2_KEY_ID, B2_APP_KEY, B2_BUCKET, B2_ENDPOINT)"}
-
-    try:
-        import boto3
-        from botocore.config import Config
-        # Run blocking boto3 call in thread pool
-        loop = asyncio.get_event_loop()
-        def _upload():
-            client = boto3.client(
-                "s3",
-                endpoint_url=endpoint,
-                aws_access_key_id=key_id,
-                aws_secret_access_key=app_key,
-                config=Config(signature_version="s3v4", retries={"max_attempts": 3}),
-            )
-            key = f"backups/{utcnow().strftime('%Y/%m')}/{filename}"
-            client.put_object(
-                Bucket=bucket, Key=key, Body=zip_bytes,
-                ContentType="application/zip",
-                Metadata={"generated": utcnow().isoformat()},
-            )
-            return key
-        key = await loop.run_in_executor(None, _upload)
-        return {"ok": True, "key": key, "error": None}
-    except Exception as e:
-        return {"ok": False, "key": None, "error": str(e)[:500]}
-
-
-async def _email_backup_notification(subject: str, body: str) -> bool:
-    """Send plain-text notification email. No attachment. Returns True if sent."""
-    import smtplib, ssl
-    from email.message import EmailMessage
-
-    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(os.getenv("SMTP_PORT", "465"))
-    smtp_user = os.getenv("SMTP_USER", "").strip()
-    smtp_pass = os.getenv("SMTP_PASS", "").strip()
-    to_addr   = os.getenv("BACKUP_EMAIL_TO", "").strip()
-
-    if not (smtp_user and smtp_pass and to_addr):
-        return False
-
-    try:
-        msg = EmailMessage()
-        msg["Subject"] = subject
-        msg["From"]    = smtp_user
-        msg["To"]      = to_addr
-        msg.set_content(body)
-        ctx = ssl.create_default_context()
-        with smtplib.SMTP_SSL(smtp_host, smtp_port, context=ctx, timeout=60) as server:
-            server.login(smtp_user, smtp_pass)
-            server.send_message(msg)
-        return True
-    except Exception as e:
-        print(f"[BACKUP] Email notification failed: {e}")
-        return False
-
-
-async def _email_backup_to_owner() -> dict:
-    """Build backup, upload to B2, send email notification.
-    (Function name kept for scheduler binding compatibility.)"""
-    status = {"ts": utcnow(), "ok": False, "size_bytes": 0, "error": None,
-              "destination": "b2", "key": None}
-    try:
-        zip_bytes, filename = await _build_backup_zip()
-        status["size_bytes"] = len(zip_bytes)
-        status["filename"]   = filename
-        size_mb = len(zip_bytes) / (1024 * 1024)
-
-        upload = await _upload_backup_to_b2(zip_bytes, filename)
-        status["ok"]  = upload["ok"]
-        status["key"] = upload["key"]
-        if not upload["ok"]:
-            status["error"] = upload["error"]
-
-        # Notification (best-effort — do not fail backup if email fails)
-        if status["ok"]:
-            subject = f"MM Motors Backup OK — {size_mb:.1f}MB · {utcnow().strftime('%d %b')}"
-            body    = (f"Backup uploaded to Backblaze B2.\n\n"
-                       f"File: {filename}\nSize: {size_mb:.2f} MB\n"
-                       f"Path: {upload['key']}\nBucket: {os.getenv('B2_BUCKET', '')}\n"
-                       f"Time (UTC): {utcnow().isoformat()}\n")
-        else:
-            subject = f"⚠ MM Motors Backup FAILED — {utcnow().strftime('%d %b')}"
-            body    = (f"Backup failed.\n\nError: {status['error']}\n"
-                       f"Size: {size_mb:.2f} MB\nTime (UTC): {utcnow().isoformat()}\n\n"
-                       f"Check /admin/backup-log for history.")
-        await _email_backup_notification(subject, body)
-
-        await db.backup_log.insert_one(status)
-        print(f"[BACKUP] {'OK' if status['ok'] else 'FAIL'} · {size_mb:.2f}MB · {status.get('key') or status['error']}")
-        return status
-    except Exception as e:
-        status["error"] = str(e)[:500]
-        await db.backup_log.insert_one(status)
-        await _email_backup_notification(
-            f"⚠ MM Motors Backup CRASHED — {utcnow().strftime('%d %b')}",
-            f"Backup crashed before completion.\n\nError: {e}\nTime: {utcnow().isoformat()}",
-        )
-        print(f"[BACKUP] Crashed: {e}")
-        return status
-
-
-@api_router.post("/admin/trigger-backup")
-async def trigger_backup_now(current_user=Depends(require_admin)):
-    """Manual backup trigger — owner only. Fire-and-forget: returns immediately.
-    Poll GET /admin/backup-log for result."""
-    asyncio.create_task(_email_backup_to_owner())
-    return {
-        "queued": True,
-        "message": "Backup started. Check backup log in 30-60s for result.",
-    }
-
-
-@api_router.get("/admin/backup-log")
-async def backup_log(limit: int = Query(20, ge=1, le=100), current_user=Depends(require_admin)):
-    """Recent backup attempts — success + failure."""
-    docs = await db.backup_log.find().sort("ts", -1).limit(limit).to_list(limit)
-    return [{
-        "ts":          d.get("ts").isoformat() if d.get("ts") else None,
-        "ok":          d.get("ok", False),
-        "size_bytes":  d.get("size_bytes", 0),
-        "filename":    d.get("filename", ""),
-        "destination": d.get("destination", "email"),
-        "key":         d.get("key"),
-        "error":       d.get("error"),
-    } for d in docs]
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Accident Estimates
