@@ -168,8 +168,6 @@ export const expensesApi = {
 
 export const backupApi = {
   export:  () => api.get('/backup/export', { responseType: 'blob' }),
-  trigger: () => api.post('/admin/trigger-backup'),
-  log:     (limit = 20) => api.get('/admin/backup-log', { params: { limit } }),
 };
 
 export const reportsApi = {
@@ -179,6 +177,7 @@ export const reportsApi = {
   topParts:     (params) => api.get('/reports/top-parts', { params }),
   complimentary:(params) => api.get('/reports/complimentary', { params }),
   dailyClosing: (date)   => api.get('/reports/daily-closing', { params: { date } }),
+  gstr1:        (month)  => api.get('/reports/gstr1', { params: { month }, responseType: 'blob' }),
 };
 
 // ── Import ──────────────────────────────────────────────────────────
