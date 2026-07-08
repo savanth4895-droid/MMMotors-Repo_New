@@ -16,24 +16,4 @@ services:
         sync: false   # set to your Vercel URL, e.g. https://mmmotors-frontend.vercel.app
       - key: SERVICE_DUE_CUTOFF
         value: "2026-05-01"   # YYYY-MM-DD — vehicles sold before this date excluded from Service Due
-      - key: SMTP_HOST
-        value: "smtp.gmail.com"
-      - key: SMTP_PORT
-        value: "465"
-      - key: SMTP_USER
-        sync: false   # your Gmail address (e.g. mmmotors.backup@gmail.com)
-      - key: SMTP_PASS
-        sync: false   # Gmail App Password (NOT your login password) — https://myaccount.google.com/apppasswords
-      - key: BACKUP_EMAIL_TO
-        sync: false   # owner email to receive nightly backup
-      - key: ENABLE_BACKUP_SCHEDULER
-        value: "true"
-      - key: B2_KEY_ID
-        sync: false   # Backblaze B2 Application Key ID
-      - key: B2_APP_KEY
-        sync: false   # Backblaze B2 Application Key
-      - key: B2_BUCKET
-        sync: false   # bucket name, e.g. mmmotors-backups
-      - key: B2_ENDPOINT
-        sync: false   # S3 endpoint URL, e.g. https://s3.us-west-004.backblazeb2.com
     healthCheckPath: /health
