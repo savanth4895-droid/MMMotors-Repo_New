@@ -147,6 +147,7 @@ export const partsApi = {
   adjustStockByNumber:  (partNum, d) => api.post(`/parts/${partNum}/adjust-stock-by-number`, d),
   createBill:           (data)       => api.post('/parts-bills', data),
   listBills:            (params)     => api.get('/parts-bills', { params }),
+  getBill:              (id)         => api.get(`/parts-bills/${id}`),
   deleteBill:           (id)         => api.delete(`/parts-bills/${id}`),
   updateBill:  (id, d)  => api.put(`/parts-bills/${id}`, d),
 };
