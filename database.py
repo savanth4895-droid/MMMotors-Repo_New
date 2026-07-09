@@ -162,26 +162,31 @@ def now() -> str:
     return utcnow().isoformat()
 
 # ── GST calculation ─────────────────────────────────────────────────────────────
-def calc_gst_line(price: float, qty: int, gst_rate: float) -> dict:
-    # price is GST-inclusive; extract taxable and GST from it
-    total   = round(price * qty, 2)
-    taxable = round(total / (1 + gst_rate / 100), 2) if gst_rate else total
-    gst_amt = round(total - taxable, 2)
-    cgst    = round(gst_amt / 2, 2)
-    sgst    = round(gst_amt / 2, 2)
+def calc_gst_line(price: float, qty: int, gst_rate: float, discount: float = 0) -> dict:
+    # price is GST-inclusive per unit; discount is rupee amount off line total (inclusive)
+    gross     = round(price * qty, 2)
+    discount  = max(0.0, min(float(discount or 0), gross))
+    net       = round(gross - discount, 2)
+    taxable   = round(net / (1 + gst_rate / 100), 2) if gst_rate else net
+    gst_amt   = round(net - taxable, 2)
+    cgst      = round(gst_amt / 2, 2)
+    sgst      = round(gst_amt / 2, 2)
     return {
-        "taxable": taxable, "cgst": cgst, "sgst": sgst,
-        "gst_total": gst_amt, "total": total,
+        "gross":    gross,
+        "discount": discount,
+        "taxable":  taxable, "cgst": cgst, "sgst": sgst,
+        "gst_total": gst_amt, "total": net,
     }
 
 def calc_bill_totals(items: list) -> dict:
-    subtotal = gst_total = 0.0
+    subtotal = gst_total = disc_total = 0.0
     gst_break: dict = {}
     for item in items:
         rate = item.get("gst_rate", 18)
-        line = calc_gst_line(item["unit_price"], item["qty"], rate)
-        subtotal  += line["taxable"]
-        gst_total += line["gst_total"]
+        line = calc_gst_line(item["unit_price"], item["qty"], rate, item.get("discount", 0))
+        subtotal   += line["taxable"]
+        gst_total  += line["gst_total"]
+        disc_total += line["discount"]
         slab = str(rate)
         if slab not in gst_break:
             gst_break[slab] = {"taxable": 0, "cgst": 0, "sgst": 0}
@@ -189,10 +194,11 @@ def calc_bill_totals(items: list) -> dict:
         gst_break[slab]["cgst"]    += line["cgst"]
         gst_break[slab]["sgst"]    += line["sgst"]
     return {
-        "subtotal":    round(subtotal, 2),
-        "gst_total":   round(gst_total, 2),
-        "grand_total": round(subtotal + gst_total, 2),
-        "gst_breakup": gst_break,
+        "subtotal":       round(subtotal, 2),
+        "gst_total":      round(gst_total, 2),
+        "line_discount":  round(disc_total, 2),
+        "grand_total":    round(subtotal + gst_total, 2),
+        "gst_breakup":    gst_break,
     }
 
 # ── Number to words ─────────────────────────────────────────────────────────────
