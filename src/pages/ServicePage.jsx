@@ -23,7 +23,7 @@ function numWords(n) {
   return numWords(Math.floor(n/10000000))+' Crore'+(n%10000000?' '+numWords(n%10000000):'');
 }
 
-const emptyRow = () => ({ description:'', hsn:'9987', qty:1, unit_price:0, gst_rate:18, complimentary:false, _key:Math.random() });
+const emptyRow = () => ({ description:'', hsn:'9987', qty:1, unit_price:0, gst_rate:18, discount:0, discIsPct:false, complimentary:false, _key:Math.random() });
 
 // ─── Style tokens ─────────────────────────────────────────────────────────────
 const C = {
@@ -1010,6 +1010,8 @@ export function ServiceBillModal({ job, onClose }) {
         qty:           it.qty          || 1,
         unit_price:    it.complimentary ? (Number(it.mrp) || 0) : (Number(it.unit_price) || 0),
         gst_rate:      it.complimentary ? 18 : (it.gst_rate || 18),
+        discount:      Number(it.discount) || 0,
+        discIsPct:     false,
         complimentary: !!it.complimentary,
         _savedQty:     it.qty          || 0,
         _partNumber:   it.part_number  || null,
@@ -1042,15 +1044,27 @@ export function ServiceBillModal({ job, onClose }) {
     unit_price:part.selling_price||0, gst_rate:part.gst_rate||18, _partNumber:part.part_number||null,
   } : r));
 
+  // Per-line discount → rupees
+  const lineDiscRs = (r) => {
+    if (r.complimentary) return 0;
+    const gross = r.unit_price * r.qty;
+    const raw = r.discIsPct ? gross * (Number(r.discount) || 0) / 100 : (Number(r.discount) || 0);
+    return Math.max(0, Math.min(gross, raw));
+  };
   const validRows      = rows.filter(r => r.description && (r.unit_price > 0 || r.complimentary));
   const paidRows       = validRows.filter(r => !r.complimentary);
   const freeRows       = validRows.filter(r => r.complimentary);
-  const total          = paidRows.reduce((s,r) => s + r.unit_price*r.qty, 0);
-  const taxable        = paidRows.reduce((s,r) => s + (r.unit_price*r.qty) / (1 + (r.gst_rate||0)/100), 0);
-  const gstTotal       = total - taxable;
+  const grossTotal     = paidRows.reduce((s,r) => s + r.unit_price*r.qty, 0);
+  const lineDiscTotal  = paidRows.reduce((s,r) => s + lineDiscRs(r), 0);
+  const netTotal       = grossTotal - lineDiscTotal;
+  const taxable        = paidRows.reduce((s,r) => {
+    const net = r.unit_price*r.qty - lineDiscRs(r);
+    return s + net / (1 + (r.gst_rate||0)/100);
+  }, 0);
+  const gstTotal       = netTotal - taxable;
   const cgst           = gstTotal / 2;
   const sgst           = gstTotal / 2;
-  const preDiscount    = Math.round(total);
+  const preDiscount    = Math.round(netTotal);
   const discountVal    = Math.max(0, Math.min(Number(discount)||0, preDiscount));
   const grandTotal     = preDiscount - discountVal;
   const freeItemsValue = freeRows.reduce((s,r) => s + r.unit_price*r.qty, 0);
@@ -1064,6 +1078,7 @@ export function ServiceBillModal({ job, onClose }) {
           description: r.description, hsn_code: r.hsn||'9987',
           qty: Number(r.qty), unit_price: Number(r.unit_price),
           gst_rate: Number(r.gst_rate), part_number: r._partNumber||'',
+          discount: Math.round(lineDiscRs(r) * 100) / 100,
           complimentary: !!r.complimentary,
         })),
       };
@@ -1113,9 +1128,9 @@ export function ServiceBillModal({ job, onClose }) {
             <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
               <thead>
                 <tr style={{ background:'#1A1A1A' }}>
-                  {['Description / Part','HSN','Qty','Unit Price (₹)','Free','GST%','CGST%','SGST%','Amount',''].map((h,i) => (
-                    <th key={i} style={{ padding:'8px 10px', color:C.gold, fontWeight:700, fontSize:10,
-                      letterSpacing:'.06em', textAlign:i>=2 && i!==4?'right':(i===4?'center':'left'), whiteSpace:'nowrap' }}>{h}</th>
+                  {['Description / Part','HSN','Qty','Unit Price (₹)','Discount','Free','GST%','CGST%','SGST%','Amount',''].map((h,i) => (
+                    <th key={i} style={{ padding:'8px 8px', color:C.gold, fontWeight:700, fontSize:10,
+                      letterSpacing:'.06em', textAlign:i>=2 && i!==5?'right':(i===5?'center':'left'), whiteSpace:'nowrap' }}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -1170,6 +1185,12 @@ export function ServiceBillModal({ job, onClose }) {
           )}
           <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:16 }}>
             <div style={{ minWidth:260 }}>
+              {lineDiscTotal > 0 && (
+                <>
+                  <TotRow label="Gross"          val={`${RS}${fmtI(Math.round(grossTotal))}`} />
+                  <TotRow label="Line Discount"  val={`− ${RS}${fmtI(Math.round(lineDiscTotal))}`} />
+                </>
+              )}
               <TotRow label="Taxable Amount" val={`${RS}${fmt(taxable)}`} />
               <TotRow label="CGST"           val={`${RS}${fmt(cgst)}`} />
               <TotRow label="SGST"           val={`${RS}${fmt(sgst)}`} />
@@ -1237,7 +1258,10 @@ function BillRow({ row, idx, allParts, onChange, onRemove, onSelectPart }) {
       ).slice(0,8)
     : [];
 
-  const amount = row.complimentary ? 0 : row.unit_price * row.qty; // price includes GST
+  const gross    = row.unit_price * row.qty;
+  const rawDisc  = row.complimentary ? 0 : (row.discIsPct ? gross * (Number(row.discount)||0) / 100 : (Number(row.discount)||0));
+  const dRs      = Math.max(0, Math.min(gross, rawDisc));
+  const amount   = row.complimentary ? 0 : gross - dRs;
 
   return (
     <tr style={{ background: row.complimentary ? 'rgba(184,134,11,.06)' : (idx%2===0?'transparent':C.s2) }}>
@@ -1277,11 +1301,24 @@ function BillRow({ row, idx, allParts, onChange, onRemove, onSelectPart }) {
           onChange={e=>onChange(row._key,'qty',Math.max(1,Number(e.target.value)))}
           style={{ ...inp, textAlign:'right' }}/>
       </td>
-      <td style={{ padding:'6px 6px', width:106 }}>
+      <td style={{ padding:'6px 6px', width:100 }}>
         <input type="number" min="0" value={row.unit_price}
           onChange={e=>onChange(row._key,'unit_price',Number(e.target.value))}
           disabled={row.complimentary}
           style={{ ...inp, textAlign:'right', textDecoration: row.complimentary ? 'line-through' : 'none', opacity: row.complimentary ? .5 : 1 }}/>
+      </td>
+      <td style={{ padding:'6px 4px', width:110 }}>
+        <div style={{ display:'flex', gap:2, alignItems:'center' }}>
+          <input type="number" min="0" value={row.discount || 0}
+            disabled={row.complimentary}
+            onChange={e => onChange(row._key,'discount',Math.max(0, Number(e.target.value)))}
+            style={{ ...inp, textAlign:'right', width:64, opacity: row.complimentary ? .5 : 1 }} />
+          <button type="button" disabled={row.complimentary}
+            onClick={() => { onChange(row._key,'discIsPct', !row.discIsPct); onChange(row._key,'discount',0); }}
+            style={{ background: row.discIsPct ? C.gold : 'transparent', border:`1px solid ${C.border}`, borderRadius:3, padding:'4px 6px', color: row.discIsPct ? '#0c0c0d' : C.muted, fontSize:10, fontWeight:700, cursor: row.complimentary?'default':'pointer', opacity: row.complimentary?.4:1 }}>
+            {row.discIsPct ? '%' : '₹'}
+          </button>
+        </div>
       </td>
       <td style={{ padding:'6px 6px', width:56, textAlign:'center' }} title="Free / complimentary">
         <input type="checkbox" checked={!!row.complimentary}
