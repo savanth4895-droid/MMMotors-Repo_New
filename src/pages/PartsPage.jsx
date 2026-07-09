@@ -293,6 +293,8 @@ function PartsBillModal({ onClose }) {
   const [cart, setCart]       = useState([]);
   const [psearch, setPsearch] = useState('');
   const [payMode, setPayMode] = useState('Cash');
+  const [billDiscount, setBillDiscount] = useState(0);
+  const [billDiscIsPct, setBillDiscIsPct] = useState(false);
   const [saving, setSaving]   = useState(false);
   const [doneBill, setDoneBill] = useState(null);
 
@@ -332,7 +334,7 @@ function PartsBillModal({ onClose }) {
         if (ex.qty >= part.stock) { toast.error('Not enough stock'); return prev; }
         return prev.map(c => c.id === part.id ? { ...c, qty: c.qty + 1 } : c);
       }
-      return [...prev, { ...part, qty: 1 }];
+      return [...prev, { ...part, qty: 1, discount: 0, discIsPct: false, complimentary: false }];
     });
     setPsearch('');
   };
@@ -343,10 +345,35 @@ function PartsBillModal({ onClose }) {
     setCart(prev => qty <= 0 ? prev.filter(c => c.id !== id) : prev.map(c => c.id === id ? { ...c, qty } : c));
   };
 
-  const pbTotal   = cart.reduce((s, c) => s + (c.selling_price || 0) * c.qty, 0);
-  const pbTaxable = cart.reduce((s, c) => s + (c.selling_price || 0) * c.qty / (1 + ((c.gst_rate || 18) / 100)), 0);
-  const pbGst     = pbTotal - pbTaxable;
-  const total     = Math.round(pbTotal);
+  const setLineDiscount = (id, val) => setCart(prev => prev.map(c => c.id === id ? { ...c, discount: Math.max(0, Number(val) || 0) } : c));
+  const toggleDiscPct   = (id) => setCart(prev => prev.map(c => c.id === id ? { ...c, discIsPct: !c.discIsPct, discount: 0 } : c));
+  const toggleCartFree  = (id) => setCart(prev => prev.map(c => c.id === id ? { ...c, complimentary: !c.complimentary, discount: 0 } : c));
+
+  // Per-line: convert discount input to rupee amount
+  const lineDiscRs = (c) => {
+    if (c.complimentary) return 0;
+    const gross = (c.selling_price || 0) * c.qty;
+    const raw = c.discIsPct ? gross * (Number(c.discount) || 0) / 100 : Number(c.discount) || 0;
+    return Math.max(0, Math.min(gross, raw));
+  };
+
+  const pbGross   = cart.reduce((s, c) => s + (c.complimentary ? 0 : (c.selling_price || 0) * c.qty), 0);
+  const pbLineDisc= cart.reduce((s, c) => s + lineDiscRs(c), 0);
+  const pbNet     = pbGross - pbLineDisc;
+  const pbTaxable = cart.reduce((s, c) => {
+    if (c.complimentary) return s;
+    const gross = (c.selling_price || 0) * c.qty;
+    const net   = gross - lineDiscRs(c);
+    return s + net / (1 + ((c.gst_rate || 18) / 100));
+  }, 0);
+  const pbGst     = pbNet - pbTaxable;
+  const grandBeforeBillDisc = pbNet;
+
+  // Bill-level discount
+  const billDiscRs = billDiscIsPct
+    ? Math.max(0, Math.min(grandBeforeBillDisc, grandBeforeBillDisc * (Number(billDiscount) || 0) / 100))
+    : Math.max(0, Math.min(grandBeforeBillDisc, Number(billDiscount) || 0));
+  const total       = Math.round(grandBeforeBillDisc - billDiscRs);
 
   const handleGenerate = async () => {
     if (!cart.length) return toast.error('Add at least one part');
@@ -357,14 +384,17 @@ function PartsBillModal({ onClose }) {
         customer_mobile:  cust.mobile,
         customer_vehicle: cust.vehicle,
         payment_mode:     payMode,
+        discount:         Math.round(billDiscRs * 100) / 100,
         items: cart.map(c => ({
-          part_id:     c.id,
-          part_number: c.part_number || '',
-          name:        c.name,
-          hsn_code:    c.hsn_code || '8714',
-          qty:         c.qty,
-          unit_price:  c.selling_price || 0,
-          gst_rate:    c.gst_rate || 18,
+          part_id:       c.id,
+          part_number:   c.part_number || '',
+          name:          c.name,
+          hsn_code:      c.hsn_code || '8714',
+          qty:           c.qty,
+          unit_price:    c.selling_price || 0,
+          gst_rate:      c.gst_rate || 18,
+          discount:      Math.round(lineDiscRs(c) * 100) / 100,
+          complimentary: !!c.complimentary,
         })),
       });
       setDoneBill(res.data);
@@ -483,8 +513,8 @@ function PartsBillModal({ onClose }) {
                 <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12, marginBottom:10 }}>
                   <thead>
                     <tr style={{ background:'#1A1A1A' }}>
-                      {['Part','Part No.','Qty','Unit Price','GST%','CGST%','SGST%','Amount',''].map((h, i) => (
-                        <th key={i} style={{ padding:'7px 10px', color:C.gold, fontWeight:700, fontSize:10, letterSpacing:'.06em', textAlign: i >= 2 ? 'right' : 'left' }}>{h}</th>
+                      {['Part','Part No.','Qty','Unit Price','Discount','Free','GST%','CGST%','SGST%','Amount',''].map((h, i) => (
+                        <th key={i} style={{ padding:'7px 8px', color:C.gold, fontWeight:700, fontSize:10, letterSpacing:'.06em', textAlign: i >= 2 ? 'right' : 'left' }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -492,22 +522,42 @@ function PartsBillModal({ onClose }) {
                     {cart.map((item, idx) => {
                       const gstR   = item.gst_rate || 18;
                       const half   = (gstR / 2).toFixed(1).replace('.0', '');
-                      const amount = (item.selling_price || 0) * item.qty;
+                      const gross  = (item.selling_price || 0) * item.qty;
+                      const dRs    = lineDiscRs(item);
+                      const amount = item.complimentary ? 0 : Math.round(gross - dRs);
+                      const dim    = item.complimentary;
                       return (
-                        <tr key={item.id} style={{ background: idx%2===0 ? 'transparent' : C.s2, borderBottom:`1px solid ${C.border}` }}>
-                          <td style={{ padding:'8px 10px', fontWeight:600 }}>{item.name}</td>
-                          <td style={{ padding:'8px 10px', fontFamily:'monospace', fontSize:11, color:C.muted }}>{item.part_number}</td>
-                          <td style={{ padding:'8px 6px', textAlign:'right' }}>
+                        <tr key={item.id} style={{ background: dim ? 'rgba(184,134,11,.06)' : (idx%2===0 ? 'transparent' : C.s2), borderBottom:`1px solid ${C.border}` }}>
+                          <td style={{ padding:'8px 8px', fontWeight:600, textDecoration: dim?'line-through':'none', opacity: dim?.6:1 }}>{item.name}</td>
+                          <td style={{ padding:'8px 8px', fontFamily:'monospace', fontSize:11, color:C.muted }}>{item.part_number}</td>
+                          <td style={{ padding:'8px 4px', textAlign:'right' }}>
                             <input type="number" min="1" max={item.stock} value={item.qty}
                               onChange={e => setQty(item.id, Number(e.target.value))}
-                              style={{ background:C.s2, border:`1px solid ${C.border}`, borderRadius:3, padding:'3px 6px', color:C.text, fontSize:11, fontFamily:'IBM Plex Sans,sans-serif', width:52, textAlign:'right', outline:'none' }} />
+                              style={{ background:C.s2, border:`1px solid ${C.border}`, borderRadius:3, padding:'3px 6px', color:C.text, fontSize:11, fontFamily:'IBM Plex Sans,sans-serif', width:48, textAlign:'right', outline:'none' }} />
                           </td>
-                          <td style={{ padding:'8px 10px', textAlign:'right' }}>₹{item.selling_price}</td>
-                          <td style={{ padding:'8px 10px', textAlign:'right', color:C.muted }}>{gstR}%</td>
-                          <td style={{ padding:'8px 10px', textAlign:'right', color:C.muted }}>{half}%</td>
-                          <td style={{ padding:'8px 10px', textAlign:'right', color:C.muted }}>{half}%</td>
-                          <td style={{ padding:'8px 10px', textAlign:'right', fontWeight:700, color:C.gold }}>₹{fmtI(Math.round(amount))}</td>
-                          <td style={{ padding:'8px 6px' }}>
+                          <td style={{ padding:'8px 8px', textAlign:'right', textDecoration: dim?'line-through':'none', opacity: dim?.5:1 }}>₹{item.selling_price}</td>
+                          <td style={{ padding:'8px 4px', textAlign:'right' }}>
+                            <div style={{ display:'flex', gap:2, justifyContent:'flex-end', alignItems:'center' }}>
+                              <input type="number" min="0" value={item.discount || 0}
+                                disabled={dim}
+                                onChange={e => setLineDiscount(item.id, e.target.value)}
+                                style={{ background:C.s2, border:`1px solid ${C.border}`, borderRadius:3, padding:'3px 5px', color:dim?C.muted:C.text, fontSize:11, fontFamily:'IBM Plex Sans,sans-serif', width:54, textAlign:'right', outline:'none', opacity: dim?.5:1 }} />
+                              <button type="button" disabled={dim} onClick={() => toggleDiscPct(item.id)}
+                                style={{ background: item.discIsPct ? C.gold : 'transparent', border:`1px solid ${C.border}`, borderRadius:3, padding:'3px 6px', color: item.discIsPct ? '#0c0c0d' : C.muted, fontSize:10, fontWeight:700, cursor: dim?'default':'pointer', opacity: dim?.4:1 }}>
+                                {item.discIsPct ? '%' : '₹'}
+                              </button>
+                            </div>
+                          </td>
+                          <td style={{ padding:'8px 4px', textAlign:'center' }}>
+                            <input type="checkbox" checked={!!item.complimentary}
+                              onChange={() => toggleCartFree(item.id)}
+                              style={{ cursor:'pointer', accentColor:C.gold }} />
+                          </td>
+                          <td style={{ padding:'8px 8px', textAlign:'right', color:C.muted, opacity: dim?.5:1 }}>{gstR}%</td>
+                          <td style={{ padding:'8px 8px', textAlign:'right', color:C.muted, opacity: dim?.5:1 }}>{half}%</td>
+                          <td style={{ padding:'8px 8px', textAlign:'right', color:C.muted, opacity: dim?.5:1 }}>{half}%</td>
+                          <td style={{ padding:'8px 8px', textAlign:'right', fontWeight:700, color: dim?C.muted:C.gold }}>₹{fmtI(amount)}</td>
+                          <td style={{ padding:'8px 4px' }}>
                             <button onClick={() => setCart(p => p.filter(c => c.id !== item.id))}
                               style={{ background:'transparent', border:'none', color:C.red, cursor:'pointer', fontSize:16, padding:0 }}>×</button>
                           </td>
@@ -517,13 +567,42 @@ function PartsBillModal({ onClose }) {
                   </tbody>
                 </table>
                 <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:12 }}>
-                  <div style={{ minWidth:260 }}>
-                    {[['Taxable Amount', `₹${fmtI(pbTaxable)}`], ['CGST', `₹${fmtI(pbGst / 2)}`], ['SGST', `₹${fmtI(pbGst / 2)}`]].map(([k,v]) => (
-                      <div key={k} style={{ display:'flex', justifyContent:'space-between', padding:'5px 0', fontSize:12, color:C.muted, borderBottom:`1px solid ${C.border}` }}>
-                        <span>{k}</span><span>{v}</span>
+                  <div style={{ minWidth:280 }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', padding:'5px 0', fontSize:12, color:C.muted, borderBottom:`1px solid ${C.border}` }}>
+                      <span>Subtotal (gross)</span><span>₹{fmtI(pbGross)}</span>
+                    </div>
+                    {pbLineDisc > 0 && (
+                      <div style={{ display:'flex', justifyContent:'space-between', padding:'5px 0', fontSize:12, color:C.muted, borderBottom:`1px solid ${C.border}` }}>
+                        <span>Line Discount</span><span>− ₹{fmtI(pbLineDisc)}</span>
                       </div>
-                    ))}
-                    <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', fontSize:15, fontWeight:800, color:C.gold }}>
+                    )}
+                    <div style={{ display:'flex', justifyContent:'space-between', padding:'5px 0', fontSize:12, color:C.muted, borderBottom:`1px solid ${C.border}` }}>
+                      <span>Taxable</span><span>₹{fmtI(pbTaxable)}</span>
+                    </div>
+                    <div style={{ display:'flex', justifyContent:'space-between', padding:'5px 0', fontSize:12, color:C.muted, borderBottom:`1px solid ${C.border}` }}>
+                      <span>CGST</span><span>₹{fmtI(pbGst/2)}</span>
+                    </div>
+                    <div style={{ display:'flex', justifyContent:'space-between', padding:'5px 0', fontSize:12, color:C.muted, borderBottom:`1px solid ${C.border}` }}>
+                      <span>SGST</span><span>₹{fmtI(pbGst/2)}</span>
+                    </div>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'6px 0', fontSize:12, color:C.muted, borderBottom:`1px solid ${C.border}` }}>
+                      <span>Bill Discount</span>
+                      <div style={{ display:'flex', gap:4, alignItems:'center' }}>
+                        <input type="number" min="0" value={billDiscount}
+                          onChange={e => setBillDiscount(e.target.value)}
+                          style={{ background:C.s2, border:`1px solid ${C.border}`, borderRadius:3, padding:'3px 6px', color:C.text, fontSize:11, fontFamily:'IBM Plex Sans,sans-serif', width:70, textAlign:'right', outline:'none' }} />
+                        <button type="button" onClick={() => { setBillDiscIsPct(v => !v); setBillDiscount(0); }}
+                          style={{ background: billDiscIsPct ? C.gold : 'transparent', border:`1px solid ${C.border}`, borderRadius:3, padding:'3px 8px', color: billDiscIsPct ? '#0c0c0d' : C.muted, fontSize:10, fontWeight:700, cursor:'pointer' }}>
+                          {billDiscIsPct ? '%' : '₹'}
+                        </button>
+                      </div>
+                    </div>
+                    {billDiscRs > 0 && (
+                      <div style={{ display:'flex', justifyContent:'space-between', padding:'4px 0', fontSize:11, color:C.muted }}>
+                        <span>&nbsp;</span><span>− ₹{fmtI(billDiscRs)}</span>
+                      </div>
+                    )}
+                    <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', fontSize:15, fontWeight:800, color:C.gold, borderTop:`1px solid ${C.border}` }}>
                       <span>Total</span><span>₹{fmtI(total)}</span>
                     </div>
                   </div>
