@@ -2255,16 +2255,81 @@ async def daily_closing_report(date: Optional[str] = Query(None), current_user=D
         get_totals("parts_sales","sale_date","$grand_total"),
     )
     summary = {}
-    for source, data in [("Vehicles",sales_r),("Service",service_r),("Parts",parts_r)]:
+    for source, data in [("Sales",sales_r),("Service",service_r),("Parts",parts_r)]:
         for item in data:
             mode = (item["_id"] or "unknown").title()
             if mode not in summary:
-                summary[mode] = {"total":0,"Vehicles":0,"Service":0,"Parts":0}
+                summary[mode] = {"total":0,"Sales":0,"Service":0,"Parts":0}
             summary[mode][source] += item["total"]
             summary[mode]["total"] += item["total"]
     result = [{"payment_mode":k,**v} for k,v in summary.items()]
     result.sort(key=lambda x: 0 if x["payment_mode"]=="Cash" else 1)
     return {"date":target_date,"breakdown":result,"grand_total":sum(r["total"] for r in result)}
+
+
+@api_router.get("/reports/monthly-counts")
+async def monthly_counts(months: int = Query(6, ge=1, le=24), current_user=Depends(verify_token)):
+    """Monthly transaction counts — vehicle sales, service bills, parts bills + parts sales."""
+    # Sales: parse sale_date (multi-format like GSTR1 does)
+    sales_pipe = [
+        {"$addFields": {
+            "p1": {"$dateFromString": {"dateString": "$sale_date", "format": "%d %b %Y", "onError": None, "onNull": None}},
+            "p2": {"$dateFromString": {"dateString": {"$substr": ["$sale_date", 0, 10]}, "format": "%Y-%m-%d", "onError": None, "onNull": None}},
+            "p3": {"$dateFromString": {"dateString": "$sale_date", "format": "%d/%m/%Y", "onError": None, "onNull": None}},
+        }},
+        {"$addFields": {"parsed": {"$ifNull": ["$p1", {"$ifNull": ["$p2", "$p3"]}]}}},
+        {"$addFields": {"month_key": {"$cond": [{"$ne": ["$parsed", None]},
+            {"$dateToString": {"format": "%Y-%m", "date": "$parsed"}},
+            {"$substr": ["$created_at", 0, 7]}]}}},
+        {"$group": {"_id": "$month_key", "count": {"$sum": 1}}},
+        {"$sort": {"_id": -1}}, {"$limit": months},
+    ]
+    # Service bills: use bill_date ("DD Mon YYYY") — same field daily-closing uses
+    svc_pipe = [
+        {"$addFields": {
+            "p1": {"$dateFromString": {"dateString": "$bill_date", "format": "%d %b %Y", "onError": None, "onNull": None}},
+        }},
+        {"$addFields": {"month_key": {"$cond": [{"$ne": ["$p1", None]},
+            {"$dateToString": {"format": "%Y-%m", "date": "$p1"}},
+            {"$substr": ["$created_at", 0, 7]}]}}},
+        {"$group": {"_id": "$month_key", "count": {"$sum": 1}}},
+        {"$sort": {"_id": -1}}, {"$limit": months},
+    ]
+    # Parts bills (walk-in billing — primary source)
+    parts_bills_pipe = [
+        {"$addFields": {"month_key": {"$substr": ["$created_at", 0, 7]}}},
+        {"$group": {"_id": "$month_key", "count": {"$sum": 1}}},
+        {"$sort": {"_id": -1}}, {"$limit": months},
+    ]
+    # Parts sales (counter bills with stock deduction — secondary source)
+    parts_sales_pipe = [
+        {"$addFields": {"month_key": {"$substr": ["$created_at", 0, 7]}}},
+        {"$group": {"_id": "$month_key", "count": {"$sum": 1}}},
+        {"$sort": {"_id": -1}}, {"$limit": months},
+    ]
+    sales_r, svc_r, pb_r, ps_r = await asyncio.gather(
+        db.sales.aggregate(sales_pipe).to_list(months),
+        db.service_bills.aggregate(svc_pipe).to_list(months),
+        db.parts_bills.aggregate(parts_bills_pipe).to_list(months),
+        db.parts_sales.aggregate(parts_sales_pipe).to_list(months),
+    )
+    # Merge parts_bills + parts_sales counts per month
+    parts_map: dict = {}
+    for doc in pb_r:
+        m = doc["_id"] or ""
+        if m: parts_map[m] = parts_map.get(m, 0) + doc["count"]
+    for doc in ps_r:
+        m = doc["_id"] or ""
+        if m: parts_map[m] = parts_map.get(m, 0) + doc["count"]
+    parts_merged = sorted(
+        [{"month": m, "count": c} for m, c in parts_map.items()],
+        key=lambda x: x["month"], reverse=True
+    )[:months]
+    return {
+        "sales":   [{"month": d["_id"], "count": d["count"]} for d in sales_r if d["_id"]],
+        "service": [{"month": d["_id"], "count": d["count"]} for d in svc_r   if d["_id"]],
+        "parts":   parts_merged,
+    }
 
 @api_router.post("/migrations/backfill-service-dates")
 async def backfill_service_dates(current_user=Depends(require_admin)):
