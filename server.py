@@ -383,12 +383,14 @@ class BillLineItem(BaseModel):
     qty:           int           = 1
     unit_price:    float
     gst_rate:      float         = 18
+    discount:      Optional[float] = 0
     complimentary: Optional[bool] = False
 
 class ServiceBillCreate(BaseModel):
     job_id:          str
     labour_charges:  Optional[float] = 0
     labour_gst_rate: Optional[float] = 18
+    labour_discount: Optional[float] = 0
     items:           Optional[List[BillLineItem]] = []
     payment_mode:    Optional[str] = "Cash"
     notes:           Optional[str] = ""
@@ -461,6 +463,7 @@ class PartsBillItem(BaseModel):
     qty:             int             = 1
     unit_price:      float
     gst_rate:        float           = 18.0
+    discount:        Optional[float] = 0
     complimentary:   Optional[bool]  = False
 
 class PartsBillCreate(BaseModel):
@@ -469,6 +472,15 @@ class PartsBillCreate(BaseModel):
     customer_vehicle: Optional[str] = ""
     payment_mode:     Optional[str] = "Cash"
     items:            List[PartsBillItem] = []
+    discount:         Optional[float] = 0
+
+class PartsBillUpdate(BaseModel):
+    customer_name:    Optional[str] = None
+    customer_mobile:  Optional[str] = None
+    customer_vehicle: Optional[str] = None
+    payment_mode:     Optional[str] = None
+    items:            Optional[List[PartsBillItem]] = None
+    discount:         Optional[float] = None
 
 
 # ─── Accident Estimates ───────────────────────────────────────────────────────
@@ -1561,14 +1573,15 @@ async def create_service_bill(body: ServiceBillCreate, current_user=Depends(veri
         # Return the existing bill instead of 409 — frontend uses GET to load anyway
         return JSONResponse(content=oid(existing), status_code=200)
 
-    # Build line items with GST
+    # Build line items with GST + per-line discount
     items_out = []
     for item in (body.items or []):
         if item.complimentary:
-            # Zero-value line but preserve part_number for stock deduction downstream
-            line = {"taxable": 0.0, "cgst": 0.0, "sgst": 0.0, "gst_total": 0.0, "total": 0.0}
+            line = {"gross":0.0,"discount":0.0,"taxable":0.0,"cgst":0.0,"sgst":0.0,"gst_total":0.0,"total":0.0}
+            item_disc = 0.0
         else:
-            line = calc_gst_line(item.unit_price, item.qty, item.gst_rate)
+            item_disc = max(0.0, float(item.discount or 0))
+            line = calc_gst_line(item.unit_price, item.qty, item.gst_rate, item_disc)
         items_out.append({
             "description":   item.description,
             "part_number":   item.part_number or "",
@@ -1577,22 +1590,25 @@ async def create_service_bill(body: ServiceBillCreate, current_user=Depends(veri
             "unit_price":    0 if item.complimentary else item.unit_price,
             "mrp":           item.unit_price if item.complimentary else item.unit_price,
             "gst_rate":      0 if item.complimentary else item.gst_rate,
+            "discount":      0 if item.complimentary else item_disc,
             "complimentary": bool(item.complimentary),
             **line,
         })
 
     # Labour as separate line
     if body.labour_charges and body.labour_charges > 0:
-        lab_line = calc_gst_line(body.labour_charges, 1, body.labour_gst_rate or 18)
+        lab_disc = max(0.0, float(body.labour_discount or 0))
+        lab_line = calc_gst_line(body.labour_charges, 1, body.labour_gst_rate or 18, lab_disc)
         items_out.insert(0, {
             "description": "Labour charges",
             "part_number": "", "hsn_code": "9987",
             "qty": 1, "unit_price": body.labour_charges,
             "gst_rate": body.labour_gst_rate or 18,
+            "discount": lab_disc,
             **lab_line,
         })
 
-    totals  = calc_bill_totals([{"unit_price": i["unit_price"], "qty": i["qty"], "gst_rate": i["gst_rate"]} for i in items_out])
+    totals  = calc_bill_totals([{"unit_price": i["unit_price"], "qty": i["qty"], "gst_rate": i["gst_rate"], "discount": i.get("discount", 0)} for i in items_out])
     # Apply discount off grand_total (post-GST). Clamped 0..grand_total.
     discount = max(0.0, min(float(body.discount or 0), totals["grand_total"]))
     net_total = round(totals["grand_total"] - discount, 2)
@@ -1647,9 +1663,11 @@ async def update_service_bill(bill_id: str, body: ServiceBillCreate, current_use
     items_out = []
     for item in (body.items or []):
         if item.complimentary:
-            line = {"taxable": 0.0, "cgst": 0.0, "sgst": 0.0, "gst_total": 0.0, "total": 0.0}
+            line = {"gross":0.0,"discount":0.0,"taxable":0.0,"cgst":0.0,"sgst":0.0,"gst_total":0.0,"total":0.0}
+            item_disc = 0.0
         else:
-            line = calc_gst_line(item.unit_price, item.qty, item.gst_rate)
+            item_disc = max(0.0, float(item.discount or 0))
+            line = calc_gst_line(item.unit_price, item.qty, item.gst_rate, item_disc)
         items_out.append({
             "description":   item.description,
             "part_number":   item.part_number or "",
@@ -1658,12 +1676,13 @@ async def update_service_bill(bill_id: str, body: ServiceBillCreate, current_use
             "unit_price":    0 if item.complimentary else item.unit_price,
             "mrp":           item.unit_price,
             "gst_rate":      0 if item.complimentary else item.gst_rate,
+            "discount":      0 if item.complimentary else item_disc,
             "complimentary": bool(item.complimentary),
             **line,
         })
 
     totals = calc_bill_totals([
-        {"unit_price": i["unit_price"], "qty": i["qty"], "gst_rate": i["gst_rate"]}
+        {"unit_price": i["unit_price"], "qty": i["qty"], "gst_rate": i["gst_rate"], "discount": i.get("discount", 0)}
         for i in items_out
     ])
     # Discount: use new value if provided, else keep existing
@@ -1964,9 +1983,11 @@ async def create_parts_bill(body: PartsBillCreate, current_user=Depends(verify_t
             )
 
         if item.complimentary:
-            line = {"taxable": 0.0, "cgst": 0.0, "sgst": 0.0, "gst_total": 0.0, "total": 0.0}
+            line = {"gross":0.0,"discount":0.0,"taxable":0.0,"cgst":0.0,"sgst":0.0,"gst_total":0.0,"total":0.0}
+            item_disc = 0.0
         else:
-            line = calc_gst_line(item.unit_price, item.qty, item.gst_rate)
+            item_disc = max(0.0, float(item.discount or 0))
+            line = calc_gst_line(item.unit_price, item.qty, item.gst_rate, item_disc)
         items_out.append({
             "part_id":       str(part["_id"]) if part else (item.part_id or ""),
             "part_number":   item.part_number or (part.get("part_number","") if part else ""),
@@ -1976,11 +1997,15 @@ async def create_parts_bill(body: PartsBillCreate, current_user=Depends(verify_t
             "unit_price":    0 if item.complimentary else item.unit_price,
             "mrp":           item.unit_price,
             "gst_rate":      0 if item.complimentary else item.gst_rate,
+            "discount":      0 if item.complimentary else item_disc,
             "complimentary": bool(item.complimentary),
             **line,
         })
 
-    totals  = calc_bill_totals([{"unit_price":i["unit_price"],"qty":i["qty"],"gst_rate":i["gst_rate"]} for i in items_out])
+    totals  = calc_bill_totals([{"unit_price":i["unit_price"],"qty":i["qty"],"gst_rate":i["gst_rate"],"discount":i.get("discount",0)} for i in items_out])
+    # Bill-level discount off grand_total (post-GST). Clamped 0..grand_total.
+    bill_discount = max(0.0, min(float(body.discount or 0), totals["grand_total"]))
+    net_total = round(totals["grand_total"] - bill_discount, 2)
     bill_no = await next_sequence("part_bill")   # shared counter with parts_sales
 
     doc = {
@@ -1990,7 +2015,9 @@ async def create_parts_bill(body: PartsBillCreate, current_user=Depends(verify_t
         "customer_vehicle": body.customer_vehicle or "",
         "payment_mode":     body.payment_mode or "Cash",
         "items":            items_out,
-        "amount_in_words":  amount_in_words(totals["grand_total"]),
+        "discount":         bill_discount,
+        "net_total":        net_total,
+        "amount_in_words":  amount_in_words(net_total),
         "sold_by":          current_user.get("name",""),
         "bill_date":        utcnow().strftime("%d %b %Y"),
         "created_at":       utcnow().isoformat(),
@@ -2009,6 +2036,99 @@ async def get_parts_bill(bill_id: str, current_user=Depends(verify_token)):
     if not doc:
         raise HTTPException(status_code=404, detail="Parts bill not found")
     return oid(doc)
+
+
+@api_router.put("/parts-bills/{bill_id}")
+async def update_parts_bill(bill_id: str, body: PartsBillUpdate, current_user=Depends(verify_token)):
+    """Update parts bill. If items changed, restore old stock then re-deduct new stock.
+    Discount recomputed per-line + bill-level. Complimentary rows ignore discount."""
+    bill = await db.parts_bills.find_one({"_id": obj_id(bill_id)})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Parts bill not found")
+
+    update: dict = {"updated_at": utcnow().isoformat()}
+    if body.customer_name    is not None: update["customer_name"]    = body.customer_name
+    if body.customer_mobile  is not None: update["customer_mobile"]  = body.customer_mobile
+    if body.customer_vehicle is not None: update["customer_vehicle"] = body.customer_vehicle
+    if body.payment_mode     is not None: update["payment_mode"]     = body.payment_mode
+
+    if body.items is not None:
+        # Restore stock from old items first
+        for old_it in bill.get("items", []):
+            query = {}
+            if old_it.get("part_id"):
+                try:
+                    from bson import ObjectId as _OID
+                    query = {"_id": _OID(old_it["part_id"])}
+                except Exception:
+                    query = {"part_number": old_it.get("part_number","")}
+            elif old_it.get("part_number"):
+                query = {"part_number": old_it["part_number"]}
+            if query and old_it.get("qty", 0) > 0:
+                await db.spare_parts.update_one(query, {"$inc": {"stock": old_it["qty"]}})
+
+        # Build new items + deduct stock
+        items_out = []
+        for item in body.items:
+            part = None
+            if item.part_id:
+                part = await db.spare_parts.find_one({"_id": obj_id(item.part_id)})
+            if not part and item.part_number:
+                part = await db.spare_parts.find_one({"part_number": item.part_number})
+            if part:
+                current_stock = part.get("stock") or 0
+                if current_stock < item.qty:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Insufficient stock for {item.name} (have {current_stock}, need {item.qty})"
+                    )
+                new_stock = max(0, current_stock - item.qty)
+                await db.spare_parts.update_one(
+                    {"_id": part["_id"]},
+                    {"$set": {"stock": new_stock}, "$push": {"stock_log": {
+                        "qty": -item.qty, "action": "subtract",
+                        "reason": "complimentary" if item.complimentary else "parts_bill_edit",
+                        "new_stock": new_stock, "date": utcnow().isoformat(),
+                    }}}
+                )
+
+            if item.complimentary:
+                line = {"gross":0.0,"discount":0.0,"taxable":0.0,"cgst":0.0,"sgst":0.0,"gst_total":0.0,"total":0.0}
+                item_disc = 0.0
+            else:
+                item_disc = max(0.0, float(item.discount or 0))
+                line = calc_gst_line(item.unit_price, item.qty, item.gst_rate, item_disc)
+            items_out.append({
+                "part_id":       str(part["_id"]) if part else (item.part_id or ""),
+                "part_number":   item.part_number or (part.get("part_number","") if part else ""),
+                "name":          item.name,
+                "hsn_code":      item.hsn_code or (part.get("hsn_code","8714") if part else "8714"),
+                "qty":           item.qty,
+                "unit_price":    0 if item.complimentary else item.unit_price,
+                "mrp":           item.unit_price,
+                "gst_rate":      0 if item.complimentary else item.gst_rate,
+                "discount":      0 if item.complimentary else item_disc,
+                "complimentary": bool(item.complimentary),
+                **line,
+            })
+        totals = calc_bill_totals([{"unit_price":i["unit_price"],"qty":i["qty"],"gst_rate":i["gst_rate"],"discount":i.get("discount",0)} for i in items_out])
+        update["items"] = items_out
+        update.update(totals)
+    else:
+        totals = {k: bill.get(k, 0) for k in ("subtotal","gst_total","line_discount","grand_total","gst_breakup")}
+
+    # Bill-level discount
+    disc_raw = body.discount if body.discount is not None else bill.get("discount", 0)
+    grand = update.get("grand_total", bill.get("grand_total", 0))
+    bill_discount = max(0.0, min(float(disc_raw or 0), float(grand)))
+    net_total = round(float(grand) - bill_discount, 2)
+    update["discount"]        = bill_discount
+    update["net_total"]       = net_total
+    update["amount_in_words"] = amount_in_words(net_total)
+
+    await db.parts_bills.update_one({"_id": obj_id(bill_id)}, {"$set": update})
+    updated = await db.parts_bills.find_one({"_id": obj_id(bill_id)})
+    return JSONResponse(content=oid(updated))
 
 
 @api_router.delete("/parts-bills/{bill_id}")
@@ -2238,14 +2358,13 @@ async def top_parts_report(limit: int = Query(10), current_user=Depends(require_
     return [{"name":d["_id"],"qty_sold":d["qty"],"revenue":round(d["revenue"],2)} for d in docs]
 
 
-# ─── GSTR-1 Export ─────────────────────────────────────────────────────────────
-# Monthly GST return export. Karnataka intra-state assumed (CGST + SGST split).
-# Vehicle sales: no GST breakdown stored — treat total_amount as inclusive at 28%.
-# Service bills: GST already computed per line + totals on doc.
-# HSN column left blank per current data (no HSN mapping table yet).
-# Rounds GST to 2 decimals per invoice (not per line).
+# ─── GSTR-1 Export (CA flat format) ────────────────────────────────────────────
+# Single-sheet flat report matching accountant's template.
+# 3 header rows + 34-col table + totals row.
+# 18% GST inclusive back-calc, CGST+SGST split, DD/MM/YYYY dates.
+# One row per bill (service_bills = SERVICES BILL, sales = SALES BILL).
 
-_GSTR1_VEHICLE_GST_RATE = 28.0  # Two-wheeler GST rate
+_GSTR1_GST_RATE = 18.0  # Service + showroom charges
 
 def _parse_month_range(month: str):
     """month = 'YYYY-MM' → (start_dt, end_dt_exclusive, label)."""
@@ -2257,8 +2376,8 @@ def _parse_month_range(month: str):
     return start, end, month
 
 def _split_gst_inclusive(total: float, rate: float):
-    """Back-calculate taxable + CGST + SGST from GST-inclusive total.
-    Karnataka intra-state → equal CGST/SGST split. Rounds to 2dp per invoice."""
+    """Back-calc taxable + CGST + SGST from GST-inclusive total.
+    Rounds to 2dp per invoice. Karnataka intra-state → equal CGST/SGST."""
     total = float(total or 0)
     taxable = round(total / (1 + rate / 100), 2)
     gst_total = round(total - taxable, 2)
@@ -2293,168 +2412,191 @@ async def _gstr1_fetch_service_bills(start, end):
     ]
     return await db.service_bills.aggregate(pipeline).to_list(20000)
 
-def _build_gstr1_workbook(month_label, sales, service_bills):
-    """Build multi-sheet xlsx per GSTR-1 sections."""
-    from openpyxl.styles import Font, PatternFill, Alignment
+def _fmt_ddmmyyyy(parsed):
+    """MongoDB Motor returns datetime for parsed date. Fallback to blank."""
+    from datetime import datetime as _dt
+    if isinstance(parsed, _dt):
+        return parsed.strftime("%d/%m/%Y")
+    return ""
+
+def _customer_display(name, mobile):
+    name = (name or "").strip()
+    mob  = (mobile or "").strip()
+    if mob and mob not in name:
+        return f"{name} {mob}".strip()
+    return name
+
+def _build_gstr1_workbook(month_label, sales, service_bills, period_from, period_to):
+    """Build CA's flat single-sheet GST report."""
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from datetime import datetime as _dt
+
     wb = Workbook()
-    wb.remove(wb.active)
+    ws = wb.active
+    ws.title = "GST"
 
-    header_font = Font(bold=True, color="FFFFFF")
+    title_font  = Font(name="Arial", bold=True, size=12)
+    sub_font    = Font(name="Arial", size=10)
+    header_font = Font(name="Arial", bold=True, color="FFFFFF", size=10)
     header_fill = PatternFill("solid", fgColor="1F3864")
-    center = Alignment(horizontal="center", vertical="center")
+    body_font   = Font(name="Arial", size=9)
+    center      = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    thin        = Side(border_style="thin", color="999999")
+    box         = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    def add_sheet(name, headers, rows):
-        ws = wb.create_sheet(name)
-        ws.append(headers)
-        for c in ws[1]:
-            c.font = header_font; c.fill = header_fill; c.alignment = center
-        for row in rows:
-            ws.append(row)
-        for i, h in enumerate(headers, 1):
-            col = ws.cell(row=1, column=i).column_letter
-            ws.column_dimensions[col].width = max(14, min(30, len(str(h)) + 4))
-        ws.freeze_panes = "A2"
+    # Header rows (3)
+    ws.cell(row=1, column=1, value="M M MOTORS").font = title_font
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=34)
+    ws.cell(row=2, column=1, value="Bengaluru Main Road, Beside Ruchi Bakery, Malur, 563130  Ph : 7026263123  GSTIN: 29CUJPM6814P1ZQ").font = sub_font
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=34)
+    period_str = f"Sales Invoice       From {period_from.strftime('%d/%m/%Y')} To {(period_to - timedelta(days=1)).strftime('%d/%m/%Y')}"
+    ws.cell(row=3, column=1, value=period_str).font = sub_font
+    ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=34)
 
-    b2b_rows, b2cl_rows, b2cs_agg, hsn_agg, docs = [], [], {}, {}, []
-    B2CL_THRESHOLD = 250000.0
+    # Column header row (row 4, matching CA template exactly)
+    headers = [
+        "Branch Name","FormatName","Date","Bill No.","Bill/Reff. Date","Bill Reff. No.",
+        "Customer Name","Party GSTIN","Item","AdditionalDescription","Item Group",
+        "Quantity","Free Quantity","Rate","Item MRP","Billed Qty","Billed UOM","Billed Rate",
+        "TaxAmount","Unit","Gross Amount","Disc %","Discount Amount","Taxable Value",
+        "Pre Tax","Post Tax","Round Off","Net Amount","SGST Amount","CGST Amount",
+        "IGST Amount","HSN/SAC Code","Cess Amount","Bill Amount",
+    ]
+    for col_idx, h in enumerate(headers, 1):
+        c = ws.cell(row=4, column=col_idx, value=h)
+        c.font = header_font; c.fill = header_fill; c.alignment = center; c.border = box
 
-    def acc_hsn(hsn, desc, uqc, qty, taxable, cgst, sgst, rate):
-        key = (hsn or "", desc or "", rate)
-        row = hsn_agg.setdefault(key, {"qty": 0.0, "taxable": 0.0, "cgst": 0.0, "sgst": 0.0})
-        row["qty"] += float(qty or 0)
-        row["taxable"] += taxable
-        row["cgst"] += cgst
-        row["sgst"] += sgst
+    # Data rows
+    rows = []  # list of (parsed_date, format_name, dict of values)
 
-    def acc_b2cs(rate, taxable, cgst, sgst):
-        row = b2cs_agg.setdefault(rate, {"taxable": 0.0, "cgst": 0.0, "sgst": 0.0})
-        row["taxable"] += taxable
-        row["cgst"]    += cgst
-        row["sgst"]    += sgst
-
-    # Vehicle sales
-    for s in sales:
-        inv_no = s.get("invoice_number") or str(s.get("_id",""))[-8:]
-        inv_dt = s.get("sale_date","")
-        total  = float(s.get("total_amount") or s.get("sale_price") or 0)
-        if total <= 0:
-            continue
-        gstin  = (s.get("customer_gstin") or "").strip().upper()
-        taxable, cgst, sgst = _split_gst_inclusive(total, _GSTR1_VEHICLE_GST_RATE)
-        customer = s.get("customer_name","")
-
-        docs.append(("Sales Invoice", inv_no, inv_dt))
-
-        if gstin:
-            b2b_rows.append([gstin, customer, inv_no, inv_dt, round(total,2), _GSTR1_VEHICLE_GST_RATE,
-                             taxable, cgst, sgst, "", "29-Karnataka"])
-        elif total > B2CL_THRESHOLD:
-            b2cl_rows.append([inv_no, inv_dt, round(total,2), "29-Karnataka", _GSTR1_VEHICLE_GST_RATE,
-                              taxable, cgst, sgst, customer])
-        else:
-            acc_b2cs(_GSTR1_VEHICLE_GST_RATE, taxable, cgst, sgst)
-
-        acc_hsn("", "Two-wheeler", "NOS", 1, taxable, cgst, sgst, _GSTR1_VEHICLE_GST_RATE)
-
-    # Service bills
+    # Service bills → SERVICES BILL
     for b in service_bills:
-        inv_no = b.get("bill_number") or str(b.get("_id",""))[-8:]
-        inv_dt = b.get("bill_date","")
-        total  = float(b.get("net_total") or b.get("grand_total") or 0)
+        total = float(b.get("net_total") or b.get("grand_total") or 0)
         if total <= 0:
             continue
-        gstin  = (b.get("customer_gstin") or "").strip().upper()
-        customer = b.get("customer_name","")
+        taxable, cgst, sgst = _split_gst_inclusive(total, _GSTR1_GST_RATE)
+        tax_total = round(cgst + sgst, 2)
+        bill_amt  = round(taxable + tax_total)  # CA rounds to whole rupee
+        round_off = round(bill_amt - (taxable + tax_total), 2)
+        rows.append({
+            "parsed":       b.get("parsed"),
+            "format_name":  "SERVICES BILL",
+            "date":         _fmt_ddmmyyyy(b.get("parsed")),
+            "bill_no":      b.get("bill_number", ""),
+            "customer":     _customer_display(b.get("customer_name",""), b.get("customer_mobile","")),
+            "gstin":        (b.get("customer_gstin","") or "").strip().upper(),
+            "item":         "Service",
+            "taxable":      taxable,
+            "tax_total":    tax_total,
+            "cgst":         cgst,
+            "sgst":         sgst,
+            "round_off":    round_off,
+            "bill_amount":  bill_amt,
+        })
 
-        taxable_sum = round(sum(float(it.get("taxable",0)) for it in b.get("items",[])), 2)
-        cgst_sum    = round(sum(float(it.get("cgst",0))    for it in b.get("items",[])), 2)
-        sgst_sum    = round(sum(float(it.get("sgst",0))    for it in b.get("items",[])), 2)
-        by_rate = {}
-        for it in b.get("items", []):
-            if it.get("complimentary"):
-                continue
-            r = float(it.get("gst_rate", 0) or 0)
-            bucket = by_rate.setdefault(r, {"taxable": 0.0, "cgst": 0.0, "sgst": 0.0})
-            bucket["taxable"] += float(it.get("taxable", 0))
-            bucket["cgst"]    += float(it.get("cgst", 0))
-            bucket["sgst"]    += float(it.get("sgst", 0))
-            acc_hsn(it.get("hsn_code",""), it.get("description",""), "NOS",
-                    it.get("qty",1), float(it.get("taxable",0)),
-                    float(it.get("cgst",0)), float(it.get("sgst",0)), r)
+    # Sales → SALES BILL
+    for s in sales:
+        total = float(s.get("total_amount") or s.get("sale_price") or 0)
+        if total <= 0:
+            continue
+        taxable, cgst, sgst = _split_gst_inclusive(total, _GSTR1_GST_RATE)
+        tax_total = round(cgst + sgst, 2)
+        bill_amt  = round(taxable + tax_total)
+        round_off = round(bill_amt - (taxable + tax_total), 2)
+        rows.append({
+            "parsed":       s.get("parsed"),
+            "format_name":  "SALES BILL",
+            "date":         _fmt_ddmmyyyy(s.get("parsed")),
+            "bill_no":      s.get("invoice_number", ""),
+            "customer":     _customer_display(s.get("customer_name",""), s.get("customer_mobile","")),
+            "gstin":        (s.get("customer_gstin","") or "").strip().upper(),
+            "item":         "Showroom Charges/CONSULTATION",
+            "taxable":      taxable,
+            "tax_total":    tax_total,
+            "cgst":         cgst,
+            "sgst":         sgst,
+            "round_off":    round_off,
+            "bill_amount":  bill_amt,
+        })
 
-        docs.append(("Service Bill", inv_no, inv_dt))
-        top_rate = max(by_rate.keys(), default=18.0)
+    # Sort by parsed date then format
+    rows.sort(key=lambda r: (r["parsed"] or _dt.min, r["format_name"]))
 
-        if gstin:
-            b2b_rows.append([gstin, customer, inv_no, inv_dt, round(total,2), top_rate,
-                             taxable_sum, cgst_sum, sgst_sum, "", "29-Karnataka"])
-        elif total > B2CL_THRESHOLD:
-            b2cl_rows.append([inv_no, inv_dt, round(total,2), "29-Karnataka", top_rate,
-                              taxable_sum, cgst_sum, sgst_sum, customer])
-        else:
-            for r, bucket in by_rate.items():
-                acc_b2cs(r, round(bucket["taxable"],2), round(bucket["cgst"],2), round(bucket["sgst"],2))
+    r_idx = 5  # data starts row 5
+    for r in rows:
+        ws.cell(row=r_idx, column=1,  value="Main Location")
+        ws.cell(row=r_idx, column=2,  value=r["format_name"])
+        ws.cell(row=r_idx, column=3,  value=r["date"])
+        ws.cell(row=r_idx, column=4,  value=r["bill_no"])
+        ws.cell(row=r_idx, column=5,  value="")   # Bill/Reff. Date
+        ws.cell(row=r_idx, column=6,  value="")   # Bill Reff. No.
+        ws.cell(row=r_idx, column=7,  value=r["customer"])
+        ws.cell(row=r_idx, column=8,  value=r["gstin"])
+        ws.cell(row=r_idx, column=9,  value=r["item"])
+        ws.cell(row=r_idx, column=10, value="")   # AdditionalDescription
+        ws.cell(row=r_idx, column=11, value="Main Group")
+        ws.cell(row=r_idx, column=12, value=1)      # Quantity
+        ws.cell(row=r_idx, column=13, value=0)      # Free Quantity
+        ws.cell(row=r_idx, column=14, value=r["taxable"])   # Rate
+        ws.cell(row=r_idx, column=15, value=0.00)   # Item MRP
+        ws.cell(row=r_idx, column=16, value=1)      # Billed Qty
+        ws.cell(row=r_idx, column=17, value="Amt")  # Billed UOM
+        ws.cell(row=r_idx, column=18, value=r["taxable"])   # Billed Rate
+        ws.cell(row=r_idx, column=19, value=r["tax_total"]) # TaxAmount
+        ws.cell(row=r_idx, column=20, value="Amt")  # Unit
+        ws.cell(row=r_idx, column=21, value=r["taxable"])   # Gross Amount
+        ws.cell(row=r_idx, column=22, value=0)      # Disc %
+        ws.cell(row=r_idx, column=23, value=0.00)   # Discount Amount
+        ws.cell(row=r_idx, column=24, value=r["taxable"])   # Taxable Value
+        ws.cell(row=r_idx, column=25, value=0)      # Pre Tax
+        ws.cell(row=r_idx, column=26, value=0)      # Post Tax
+        ws.cell(row=r_idx, column=27, value=r["round_off"]) # Round Off
+        ws.cell(row=r_idx, column=28, value=r["taxable"])   # Net Amount
+        ws.cell(row=r_idx, column=29, value=r["sgst"])      # SGST Amount
+        ws.cell(row=r_idx, column=30, value=r["cgst"])      # CGST Amount
+        ws.cell(row=r_idx, column=31, value=0)      # IGST Amount
+        ws.cell(row=r_idx, column=32, value="")     # HSN/SAC Code
+        ws.cell(row=r_idx, column=33, value=0)      # Cess Amount
+        ws.cell(row=r_idx, column=34, value=r["bill_amount"])
+        for col_idx in range(1, 35):
+            c = ws.cell(row=r_idx, column=col_idx)
+            c.font = body_font
+            c.border = box
+        r_idx += 1
 
-    add_sheet("b2b",
-        ["GSTIN/UIN of Recipient","Receiver Name","Invoice Number","Invoice Date",
-         "Invoice Value","Rate","Taxable Value","CGST","SGST","HSN","Place of Supply"],
-        b2b_rows)
+    # Totals row (formulas, not hardcoded)
+    if rows:
+        from openpyxl.utils import get_column_letter as _gcl
+        first_data_row = 5
+        last_data_row  = r_idx - 1
+        totals_row     = r_idx
+        # Only sum numeric columns per CA template: Quantity(12), Free Qty(13),
+        # TaxAmount(19), Gross Amount(21), Disc Amt(23), Taxable(24), Pre Tax(25),
+        # Post Tax(26), Round Off(27), Net Amount(28), SGST(29), CGST(30),
+        # IGST(31), Cess(33), Bill Amount(34)
+        sum_cols = [12, 13, 19, 21, 23, 24, 25, 26, 27, 28, 29, 30, 31, 33, 34]
+        for col_idx in sum_cols:
+            col_letter = _gcl(col_idx)
+            ws.cell(row=totals_row, column=col_idx,
+                    value=f"=SUM({col_letter}{first_data_row}:{col_letter}{last_data_row})")
+        for col_idx in range(1, 35):
+            c = ws.cell(row=totals_row, column=col_idx)
+            c.font = Font(name="Arial", size=9, bold=True)
+            c.border = box
+            c.fill = PatternFill("solid", fgColor="FFF2CC")
 
-    add_sheet("b2cl",
-        ["Invoice Number","Invoice Date","Invoice Value","Place of Supply","Rate",
-         "Taxable Value","CGST","SGST","Receiver Name"],
-        b2cl_rows)
+    # Column widths
+    from openpyxl.utils import get_column_letter as _gcl2
+    widths = {
+        1:14, 2:14, 3:12, 4:12, 5:12, 6:12, 7:26, 8:16, 9:22, 10:16, 11:14,
+        12:10, 13:10, 14:12, 15:10, 16:10, 17:10, 18:12, 19:12, 20:8,
+        21:14, 22:8, 23:12, 24:14, 25:10, 26:10, 27:10, 28:14, 29:12, 30:12,
+        31:12, 32:14, 33:10, 34:14,
+    }
+    for col_idx, w in widths.items():
+        ws.column_dimensions[_gcl2(col_idx)].width = w
 
-    b2cs_rows = []
-    for rate, agg in sorted(b2cs_agg.items()):
-        b2cs_rows.append(["OE", rate, round(agg["taxable"],2), "29-Karnataka",
-                          round(agg["cgst"],2), round(agg["sgst"],2)])
-    add_sheet("b2cs",
-        ["Type","Rate","Taxable Value","Place of Supply","CGST","SGST"],
-        b2cs_rows)
-
-    hsn_rows = []
-    for (hsn, desc, rate), agg in hsn_agg.items():
-        total_val = agg["taxable"] + agg["cgst"] + agg["sgst"]
-        hsn_rows.append([hsn, desc, "NOS", round(agg["qty"],2), round(agg["taxable"],2),
-                         rate, round(agg["cgst"],2), round(agg["sgst"],2), round(total_val,2)])
-    add_sheet("hsn",
-        ["HSN","Description","UQC","Total Qty","Taxable Value","Rate","CGST","SGST","Total Value"],
-        hsn_rows)
-
-    add_sheet("docs",
-        ["Doc Type","Invoice Number","Invoice Date"],
-        docs)
-
-    # Summary sheet first
-    ws = wb.create_sheet("summary", 0)
-    ws.append(["GSTR-1 Export"])
-    ws.append(["Period", month_label])
-    ws.append(["Generated", utcnow().strftime("%d %b %Y %H:%M UTC")])
-    ws.append([])
-    ws.append(["Section","Count","Taxable","CGST","SGST","Total"])
-    for c in ws[5]:
-        c.font = header_font; c.fill = header_fill
-    b2b_t  = round(sum(r[6] for r in b2b_rows), 2)
-    b2b_c  = round(sum(r[7] for r in b2b_rows), 2)
-    b2b_s  = round(sum(r[8] for r in b2b_rows), 2)
-    b2cl_t = round(sum(r[5] for r in b2cl_rows), 2)
-    b2cl_c = round(sum(r[6] for r in b2cl_rows), 2)
-    b2cl_s = round(sum(r[7] for r in b2cl_rows), 2)
-    b2cs_t = round(sum(r[2] for r in b2cs_rows), 2)
-    b2cs_c = round(sum(r[4] for r in b2cs_rows), 2)
-    b2cs_s = round(sum(r[5] for r in b2cs_rows), 2)
-    ws.append(["B2B",  len(b2b_rows),  b2b_t,  b2b_c,  b2b_s,  round(b2b_t+b2b_c+b2b_s,2)])
-    ws.append(["B2CL", len(b2cl_rows), b2cl_t, b2cl_c, b2cl_s, round(b2cl_t+b2cl_c+b2cl_s,2)])
-    ws.append(["B2CS", len(b2cs_rows), b2cs_t, b2cs_c, b2cs_s, round(b2cs_t+b2cs_c+b2cs_s,2)])
-    ws.append([])
-    ws.append(["Notes"])
-    ws.append(["- HSN codes blank — fill manually before portal upload."])
-    ws.append(["- Vehicle sales: GST back-calculated at 28% inclusive."])
-    ws.append(["- Place of supply hardcoded 29-Karnataka (intra-state)."])
-    ws.append(["- B2B rows use customer_gstin field (currently absent → all sales route to B2CL/B2CS)."])
-    for i in range(1, 7):
-        ws.column_dimensions[chr(64+i)].width = 18
+    ws.freeze_panes = "A5"
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -2466,8 +2608,9 @@ async def gstr1_export(
     month: str = Query(..., regex=r"^\d{4}-\d{2}$"),
     current_user=Depends(require_admin),
 ):
-    """GSTR-1 export for given month (YYYY-MM). Returns xlsx blob.
-    Sheets: summary, b2b, b2cl, b2cs, hsn, docs. Karnataka intra-state."""
+    """GST monthly export in CA's flat format (YYYY-MM). Returns xlsx blob.
+    Single sheet: Business header + 34-col flat table + totals row.
+    18% inclusive GST back-calc, CGST/SGST equal split, Karnataka intra-state."""
     try:
         start, end, label = _parse_month_range(month)
     except Exception:
@@ -2476,11 +2619,11 @@ async def gstr1_export(
         _gstr1_fetch_sales(start, end),
         _gstr1_fetch_service_bills(start, end),
     )
-    buf = _build_gstr1_workbook(label, sales, service_bills)
+    buf = _build_gstr1_workbook(label, sales, service_bills, start, end)
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="GSTR1_{label}.xlsx"'},
+        headers={"Content-Disposition": f'attachment; filename="GST_{label}.xlsx"'},
     )
 
 
