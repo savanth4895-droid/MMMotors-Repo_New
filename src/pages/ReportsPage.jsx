@@ -204,10 +204,7 @@ export default function ReportsPage() {
     queryKey:['reports-brand'],
     queryFn: ()=>reportsApi.brandSales().then(r=>r.data),
   });
-  const { data:topParts, isLoading:partsLoading, error:partsError } = useQuery({
-    queryKey:['reports-top-parts'],
-    queryFn: ()=>reportsApi.topParts({ limit:10 }).then(r=>r.data),
-  });
+
   const { data:dashStats } = useQuery({
     queryKey:['dashboard-stats'],
     queryFn: ()=>dashboardApi.stats().then(r=>r.data),
@@ -233,17 +230,20 @@ export default function ReportsPage() {
   const monthlyData = (() => {
     if (!revenue) return [];
     const map = {};
-    (revenue.sales||[]).forEach(d => { map[d.id] = { ...map[d.id], month:d.id, sales: d.sales||0 }; });
-    (revenue.service||[]).forEach(d => { map[d.id] = { ...map[d.id], month:d.id, service: d.service||0 }; });
-    (revenue.parts||[]).forEach(d  => { map[d.id] = { ...map[d.id], month:d.id, parts: d.parts||0 }; });
+    (revenue.sales||[]).forEach(d => { map[d.id] = { ...map[d.id], month:d.id, sales: d.sales||0, sales_count: d.count||0 }; });
+    (revenue.service||[]).forEach(d => { map[d.id] = { ...map[d.id], month:d.id, service: d.service||0, svc_count: d.svc_count||0 }; });
+    (revenue.parts||[]).forEach(d  => { map[d.id] = { ...map[d.id], month:d.id, parts: d.parts||0, parts_count: d.parts_count||0 }; });
     return Object.values(map)
       .sort((a,b)=>a.month.localeCompare(b.month))
       .map(d => ({
-        month: d.month?.slice(0,7) || '',
-        sales:   Math.round(d.sales   || 0),
-        service: Math.round(d.service || 0),
-        parts:   Math.round(d.parts   || 0),
-        total:   Math.round((d.sales||0)+(d.service||0)+(d.parts||0)),
+        month:        d.month?.slice(0,7) || '',
+        sales:        Math.round(d.sales       || 0),
+        service:      Math.round(d.service     || 0),
+        parts:        Math.round(d.parts       || 0),
+        total:        Math.round((d.sales||0)+(d.service||0)+(d.parts||0)),
+        sales_count:  d.sales_count  || 0,
+        svc_count:    d.svc_count    || 0,
+        parts_count:  d.parts_count  || 0,
       }));
   })();
 
@@ -362,34 +362,89 @@ export default function ReportsPage() {
           )}
         </Section>
 
-        {/* Top parts */}
-        <Section title="Top-selling parts" sub="By quantity sold" loading={partsLoading} error={partsError}>
-          {!topParts?.length ? (
-            <div style={{ height:220, display:'flex', alignItems:'center', justifyContent:'center', color:'var(--dim)', fontSize:12 }}>No parts sales yet</div>
+        {/* Monthly transaction volume */}
+        <Section title="Monthly transaction volume" sub="Number of sales, services & parts bills" loading={revLoading}>
+          {!monthlyData.length ? (
+            <div style={{ height:220, display:'flex', alignItems:'center', justifyContent:'center', color:'var(--dim)', fontSize:12 }}>No data yet</div>
           ) : (
-            <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
-              {topParts.map((p,i)=>{
-                const maxQty = topParts[0]?.qty_sold || 1;
-                const pct    = Math.round((p.qty_sold/maxQty)*100);
-                return (
-                  <div key={p.name} style={{ padding:'10px 0', borderBottom:'1px solid var(--border)' }}>
-                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:5 }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                        <span className="mono" style={{ fontSize:10, color:'var(--dim)', minWidth:18 }}>#{i+1}</span>
-                        <span style={{ fontSize:11, fontWeight:500 }}>{p.name}</span>
-                      </div>
-                      <div style={{ display:'flex', gap:12 }}>
-                        <span style={{ fontSize:10, color:'var(--muted)' }}>{p.qty_sold} units</span>
-                        <span className="display" style={{ fontSize:12, color:'var(--accent)' }}>₹{Math.round(p.revenue||0).toLocaleString('en-IN')}</span>
-                      </div>
+            <>
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={monthlyData} barSize={14} barGap={3}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                  <XAxis dataKey="month" tick={axisStyle} axisLine={false} tickLine={false}
+                    tickFormatter={m => { const [y,mo]=m.split('-'); return new Date(y,+mo-1).toLocaleDateString('en-IN',{month:'short',year:'2-digit'}); }} />
+                  <YAxis tick={axisStyle} axisLine={false} tickLine={false} allowDecimals={false} width={28} />
+                  <Tooltip
+                    content={({ active, payload, label }) => {
+                      if (!active || !payload?.length) return null;
+                      const total = payload.reduce((s,p)=>s+p.value,0);
+                      const mo = label?.split('-');
+                      const moLabel = mo ? new Date(mo[0],+mo[1]-1).toLocaleDateString('en-IN',{month:'long',year:'numeric'}) : label;
+                      return (
+                        <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:4, padding:'10px 14px', fontSize:11 }}>
+                          <div style={{ color:'var(--muted)', marginBottom:6, fontSize:10 }}>{moLabel}</div>
+                          {payload.map(p => (
+                            <div key={p.name} style={{ display:'flex', justifyContent:'space-between', gap:16, color:p.color, marginBottom:2 }}>
+                              <span style={{ textTransform:'capitalize' }}>{p.name}</span>
+                              <span className="mono">{p.value} txns</span>
+                            </div>
+                          ))}
+                          <div style={{ borderTop:'1px solid var(--border)', marginTop:6, paddingTop:6, display:'flex', justifyContent:'space-between', fontWeight:600 }}>
+                            <span>Total</span>
+                            <span className="mono">{total} txns</span>
+                          </div>
+                        </div>
+                      );
+                    }}
+                    cursor={{ fill:'rgba(200,148,10,.06)' }}
+                  />
+                  <Bar dataKey="sales_count"  fill="#c8940a" radius={[2,2,0,0]} name="sales" />
+                  <Bar dataKey="svc_count"    fill="#4ade80" radius={[2,2,0,0]} name="service" />
+                  <Bar dataKey="parts_count"  fill="#60a5fa" radius={[2,2,0,0]} name="parts" />
+                </BarChart>
+              </ResponsiveContainer>
+
+              {/* Legend + monthly totals table */}
+              <div style={{ marginTop:14, display:'flex', flexDirection:'column', gap:0 }}>
+                {/* legend row */}
+                <div style={{ display:'flex', gap:16, marginBottom:10 }}>
+                  {[['#c8940a','Sales'],['#4ade80','Service'],['#60a5fa','Parts']].map(([c,l])=>(
+                    <div key={l} style={{ display:'flex', alignItems:'center', gap:6, fontSize:10, color:'var(--muted)' }}>
+                      <div style={{ width:10, height:10, background:c, borderRadius:2 }} />{l}
                     </div>
-                    <div style={{ height:3, background:'var(--surface2)', borderRadius:2 }}>
-                      <div style={{ height:3, width:`${pct}%`, background:COLORS[i%COLORS.length], borderRadius:2, transition:'width .4s ease' }} />
-                    </div>
+                  ))}
+                  <div style={{ marginLeft:'auto', fontSize:10, color:'var(--dim)' }}>
+                    Total: <span style={{ color:'var(--text)', fontWeight:600 }}>
+                      {monthlyData.reduce((s,d)=>s+d.sales_count+d.svc_count+d.parts_count,0)} transactions
+                    </span>
                   </div>
-                );
-              })}
-            </div>
+                </div>
+
+                {/* per-month rows */}
+                {[...monthlyData].reverse().slice(0,5).map(d => {
+                  const rowTotal = d.sales_count + d.svc_count + d.parts_count;
+                  const moLabel  = (() => { const [y,mo]=d.month.split('-'); return new Date(y,+mo-1).toLocaleDateString('en-IN',{month:'short',year:'2-digit'}); })();
+                  return (
+                    <div key={d.month} style={{ display:'flex', alignItems:'center', gap:0, padding:'7px 0', borderBottom:'1px solid var(--border)' }}>
+                      <span style={{ fontSize:11, fontWeight:600, width:52, flexShrink:0 }}>{moLabel}</span>
+                      <div style={{ flex:1, display:'flex', gap:0 }}>
+                        {[
+                          { val:d.sales_count,  color:'#c8940a', label:'sales'   },
+                          { val:d.svc_count,    color:'#4ade80', label:'svc'     },
+                          { val:d.parts_count,  color:'#60a5fa', label:'parts'   },
+                        ].map(({ val, color, label }) => (
+                          <div key={label} style={{ display:'flex', alignItems:'center', gap:5, marginRight:18 }}>
+                            <div style={{ width:6, height:6, background:color, borderRadius:1, flexShrink:0 }} />
+                            <span className="mono" style={{ fontSize:11, color }}>{val}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <span className="mono" style={{ fontSize:12, fontWeight:700, color:'var(--text)', flexShrink:0 }}>{rowTotal}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
           )}
         </Section>
       </div>
