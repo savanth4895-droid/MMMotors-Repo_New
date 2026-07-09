@@ -276,17 +276,32 @@ After deploy:
 - Backup export loads 100k docs per collection into memory — acceptable free-tier scale only.
 - CLAUDE.md previously said collection `parts` — actual name `spare_parts`.
 
-### GSTR-1 Export (added 08 Jul 2026)
+### Discount System (added 08 Jul 2026)
+
+- **Per-line + bill-level discount** on `parts_bills` and `service_bills`.
+- Inputs support **₹ (rupee amount) or % (percentage)** — UI toggle button (`₹` / `%`) beside each field.
+- Storage always in rupees. Frontend converts % → ₹ before send.
+- **Per-line:** reduces gross (inclusive) line total. GST re-split from discounted amount. Stored as `item.discount`. Complimentary items force discount = 0 and UI disables inputs.
+- **Bill-level:** applied **post-GST** off `grand_total`. Clamped `0 ≤ discount ≤ grand_total`. Stored as top-level `discount`. `net_total = grand_total - discount`.
+- `calc_gst_line(price, qty, gst_rate, discount=0)` — new signature (backward compatible; discount defaults to 0).
+- `calc_bill_totals(items)` — items may include `discount` key. Adds `line_discount` to output.
+- Service bills already had bill-level discount; now also per-line + `labour_discount` field on `ServiceBillCreate`.
+- Parts bills: new `PartsBillUpdate` model + `PUT /parts-bills/{id}` endpoint (restores + re-deducts stock like service bill PUT).
+- Backward compat: bills without `discount` → treated as 0, display normal.
+- **Frontend surgery:** `PartsPage.jsx` parts-bill modal + `ServicePage.jsx` service-bill modal + `BillRow` component. Both include Discount column with `₹`/`%` toggle + Free checkbox + amount recalc.
+- Follow-up: PDF templates still print old format — add discount column when time permits. Service-bill row Discount column added; parts-bill print (`printPartsBill`) not yet updated.
+
+### GST Export — CA flat format (updated 08 Jul 2026)
 
 - `GET /reports/gstr1?month=YYYY-MM` — admin only. Returns xlsx blob.
-- Sheets: `summary`, `b2b`, `b2cl`, `b2cs`, `hsn`, `docs`.
-- Karnataka intra-state assumed → CGST + SGST split (equal halves). No IGST.
-- Vehicle sales: `total_amount` treated as **GST-inclusive at 28%**. Taxable back-calculated. This is an approximation — vehicle GST breakdown not stored on the sales collection. If the actual mix is CGST/SGST at 14% each, this is correct.
-- Service bills: use per-line GST breakdown from `items[]`. Complimentary items excluded.
-- Rounding: GST rounded per-invoice to 2dp, not per line (portal convention).
-- B2CL threshold: ₹2.5L invoice value.
-- Classification: `customer_gstin` field on sale/bill → B2B. Else >₹2.5L → B2CL. Else → B2CS aggregated by rate.
-- HSN column left **blank** in all sheets — no HSN mapping table exists yet. CA fills manually before portal upload.
-- `customer_gstin` field not yet added to sales/service_bills schemas. Currently all rows route to B2CL/B2CS. Add field + form input when B2B invoicing begins.
-- Frontend: `GSTR1Section` on Dashboard (owner/admin only). Month picker + blob download via `URL.createObjectURL`.
-- Follow-up before production use: (a) add `customer_gstin` field + form, (b) build HSN mapping table + `hsn_code` on sales items, (c) verify with CA against actual portal upload for one month.
+- **Single sheet** (`GST`), 34 columns, matching CA template exactly.
+- 3 header rows (business name + address/GSTIN + period), 1 column-header row, N data rows, 1 totals row.
+- Row per bill (no line-item explosion). Service bills → `FormatName = SERVICES BILL`, `Item = Service`. Vehicle sales → `FormatName = SALES BILL`, `Item = Showroom Charges/CONSULTATION`.
+- **18% GST inclusive** back-calc for both categories (matches CA sample). Karnataka intra-state → CGST=SGST=tax/2, IGST=0.
+- Rounding: `Bill Amount = round(taxable + tax)`. `Round Off = Bill Amount - (taxable + tax)`.
+- Totals row uses `=SUM()` formulas (not hardcoded), yellow fill.
+- Date format `DD/MM/YYYY`. Customer name appended with mobile if present.
+- Party GSTIN blank until `customer_gstin` field is added to sales/service_bills schemas.
+- HSN/SAC Code column blank — no mapping table yet.
+- Filename: `GST_YYYY-MM.xlsx`. Frontend button: "Download GST Report".
+- Follow-up: (a) add `customer_gstin` field + form input, (b) HSN mapping, (c) verify against CA's next filing.
