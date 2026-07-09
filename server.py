@@ -2245,26 +2245,67 @@ async def revenue_report(months: int = Query(6, ge=1, le=24), current_user=Depen
 
 @api_router.get("/reports/daily-closing")
 async def daily_closing_report(date: Optional[str] = Query(None), current_user=Depends(require_admin)):
-    target_date = date or utcnow().strftime("%d %b %Y")
+    """Daily closing tally.
+    Matches on parsed date (not raw string) — handles 'DD Mon YYYY', 'YYYY-MM-DD',
+    'DD/MM/YYYY', and 'YYYY-MM-DDTHH:MM:SS' formats stored across collections.
+    Amounts grouped by payment mode.
+    """
+    # Accept either "DD Mon YYYY" (from frontend) or "YYYY-MM-DD" (ISO)
+    target_str = date or utcnow().strftime("%d %b %Y")
+    # Parse target to a single canonical date object for range match
+    target_dt = None
+    for fmt in ("%d %b %Y", "%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            target_dt = datetime.strptime(target_str.strip(), fmt)
+            break
+        except ValueError:
+            continue
+    if target_dt is None:
+        raise HTTPException(status_code=400, detail=f"Invalid date: {target_str}")
+    day_start = target_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end   = day_start + timedelta(days=1)
+
     async def get_totals(collection, date_field, amount_field):
-        pipeline = [{"$match":{date_field:target_date}},{"$group":{"_id":{"$toLower":"$payment_mode"},"total":{"$sum":amount_field}}}]
+        """Aggregate a collection: parse the date field defensively, match the target day,
+        group by payment_mode, sum the amount field."""
+        pipeline = [
+            {"$addFields": {
+                "p1": {"$dateFromString": {"dateString": f"${date_field}", "format": "%d %b %Y", "onError": None, "onNull": None}},
+                "p2": {"$dateFromString": {"dateString": {"$substr": [f"${date_field}", 0, 10]}, "format": "%Y-%m-%d", "onError": None, "onNull": None}},
+                "p3": {"$dateFromString": {"dateString": f"${date_field}", "format": "%d/%m/%Y", "onError": None, "onNull": None}},
+            }},
+            {"$addFields": {"parsed": {"$ifNull": ["$p1", {"$ifNull": ["$p2", "$p3"]}]}}},
+            {"$match": {"parsed": {"$gte": day_start, "$lt": day_end}}},
+            {"$group": {"_id": {"$toLower": "$payment_mode"}, "total": {"$sum": amount_field}}},
+        ]
         return await db[collection].aggregate(pipeline).to_list(None)
-    sales_r, service_r, parts_r = await asyncio.gather(
-        get_totals("sales","sale_date","$total_amount"),
-        get_totals("service_bills","bill_date","$grand_total"),
-        get_totals("parts_sales","sale_date","$grand_total"),
+
+    sales_r, service_r, parts_sales_r, parts_bills_r = await asyncio.gather(
+        get_totals("sales",         "sale_date",   "$total_amount"),
+        get_totals("service_bills", "bill_date",   "$grand_total"),
+        get_totals("parts_sales",   "sale_date",   "$grand_total"),
+        get_totals("parts_bills",   "created_at",  "$grand_total"),   # walk-in bills stamp created_at only
     )
+
+    # Merge parts_sales + parts_bills under one "Parts" bucket per payment mode
+    parts_r: dict = {}
+    for item in parts_sales_r + parts_bills_r:
+        m = item["_id"] or "unknown"
+        parts_r[m] = parts_r.get(m, 0) + item["total"]
+    parts_merged = [{"_id": m, "total": t} for m, t in parts_r.items()]
+
     summary = {}
-    for source, data in [("Sales",sales_r),("Service",service_r),("Parts",parts_r)]:
+    for source, data in [("Sales", sales_r), ("Service", service_r), ("Parts", parts_merged)]:
         for item in data:
             mode = (item["_id"] or "unknown").title()
             if mode not in summary:
-                summary[mode] = {"total":0,"Sales":0,"Service":0,"Parts":0}
+                summary[mode] = {"total": 0, "Sales": 0, "Service": 0, "Parts": 0}
             summary[mode][source] += item["total"]
             summary[mode]["total"] += item["total"]
-    result = [{"payment_mode":k,**v} for k,v in summary.items()]
-    result.sort(key=lambda x: 0 if x["payment_mode"]=="Cash" else 1)
-    return {"date":target_date,"breakdown":result,"grand_total":sum(r["total"] for r in result)}
+
+    result = [{"payment_mode": k, **v} for k, v in summary.items()]
+    result.sort(key=lambda x: 0 if x["payment_mode"] == "Cash" else 1)
+    return {"date": target_str, "breakdown": result, "grand_total": sum(r["total"] for r in result)}
 
 
 @api_router.get("/reports/monthly-counts")
