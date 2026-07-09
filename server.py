@@ -2237,9 +2237,9 @@ async def revenue_report(months: int = Query(6, ge=1, le=24), current_user=Depen
         {"$sort": {"_id": -1}}, {"$limit": months},
     ]
     sales_by_month = await db.sales.aggregate(pipeline).to_list(months)
-    svc_pipeline   = [{"$addFields":{"month_key":{"$substr":["$created_at",0,7]}}},{"$group":{"_id":"$month_key","service":{"$sum":"$grand_total"}}},{"$sort":{"_id":-1}},{"$limit":months}]
+    svc_pipeline   = [{"$addFields":{"month_key":{"$substr":["$created_at",0,7]}}},{"$group":{"_id":"$month_key","service":{"$sum":"$grand_total"},"svc_count":{"$sum":1}}},{"$sort":{"_id":-1}},{"$limit":months}]
     svc_by_month   = await db.service_bills.aggregate(svc_pipeline).to_list(months)
-    parts_pipeline = [{"$addFields":{"month_key":{"$substr":["$created_at",0,7]}}},{"$group":{"_id":"$month_key","parts":{"$sum":"$grand_total"}}},{"$sort":{"_id":-1}},{"$limit":months}]
+    parts_pipeline = [{"$addFields":{"month_key":{"$substr":["$created_at",0,7]}}},{"$group":{"_id":"$month_key","parts":{"$sum":"$grand_total"},"parts_count":{"$sum":1}}},{"$sort":{"_id":-1}},{"$limit":months}]
     parts_by_month = await db.parts_sales.aggregate(parts_pipeline).to_list(months)
     return {"sales":oids(sales_by_month),"service":oids(svc_by_month),"parts":oids(parts_by_month)}
 
