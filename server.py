@@ -16,7 +16,7 @@ import asyncio
 import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 
 from fastapi import FastAPI, Depends, HTTPException, status, Query, Request, UploadFile, File, Form, Response, Cookie
 from fastapi.middleware.cors import CORSMiddleware
@@ -311,6 +311,7 @@ class SaleCreate(BaseModel):
     hsrp_back_id:      Optional[str]   = ""
     hsrp_date:         Optional[str]   = ""
     hsrp_notes:        Optional[str]   = ""
+    milestones:        Optional[Dict[str, bool]] = None
 
 class SaleUpdate(BaseModel):
     status:            Optional[str]   = None
@@ -337,6 +338,19 @@ class SaleUpdate(BaseModel):
     hsrp_back_id:      Optional[str]   = None
     hsrp_date:         Optional[str]   = None
     hsrp_notes:        Optional[str]   = None
+    milestones:        Optional[Dict[str, bool]] = None
+
+
+# ─── Sale Milestones ───────────────────────────────────────────────────────
+SALE_MILESTONE_KEYS = ["documents", "invoice", "insurance", "tax_paid", "number_plate"]
+
+def default_milestones() -> Dict[str, bool]:
+    return {k: False for k in SALE_MILESTONE_KEYS}
+
+
+class MilestoneUpdate(BaseModel):
+    key:   str
+    value: bool
 
 # ── Service Jobs ──────────────────────────────────────────────────────────────
 class ServiceJobCreate(BaseModel):
@@ -1096,6 +1110,7 @@ async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
         "hsrp_back_id":    body.hsrp_back_id or "",
         "hsrp_date":       body.hsrp_date or "",
         "hsrp_notes":      body.hsrp_notes or "",
+        "milestones":      {**default_milestones(), **(body.milestones or {})},
         "created_at":      utcnow().isoformat(),
     }
     result = await db.sales.insert_one(doc)
@@ -1179,6 +1194,22 @@ async def update_sale(sale_id: str, body: SaleUpdate, current_user=Depends(verif
         raise HTTPException(status_code=400, detail="Nothing to update")
     await db.sales.update_one({"_id": obj_id(sale_id)}, {"$set": update})
     return oid(await db.sales.find_one({"_id": obj_id(sale_id)}))
+
+
+@api_router.patch("/sales/{sale_id}/milestone")
+async def update_sale_milestone(sale_id: str, body: MilestoneUpdate, current_user=Depends(verify_token)):
+    """Toggle a single sale milestone (documents/invoice/insurance/tax_paid/number_plate)."""
+    if body.key not in SALE_MILESTONE_KEYS:
+        raise HTTPException(status_code=400, detail=f"Invalid milestone key. Allowed: {SALE_MILESTONE_KEYS}")
+    sale = await db.sales.find_one({"_id": obj_id(sale_id)}, {"_id": 1, "milestones": 1})
+    if not sale:
+        raise HTTPException(status_code=404, detail="Sale not found")
+    # Backfill missing milestones dict if this is a legacy sale
+    current = {**default_milestones(), **(sale.get("milestones") or {})}
+    current[body.key] = bool(body.value)
+    await db.sales.update_one({"_id": obj_id(sale_id)}, {"$set": {"milestones": current}})
+    return {"id": sale_id, "milestones": current}
+
 
 @api_router.delete("/sales/{sale_id}")
 async def delete_sale(sale_id: str, current_user=Depends(require_admin)):
