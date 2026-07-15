@@ -790,6 +790,60 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
   );
 }
 
+// ── Sale Milestones ─────────────────────────────────────────────────
+// Order matches business flow: docs collected → invoice generated →
+// insurance done → tax paid → number plate fitted.
+const MILESTONE_DEFS = [
+  { key:'documents',    label:'Documents',    short:'D', color:'#c8940a' },
+  { key:'invoice',      label:'Invoice',      short:'I', color:'#c8940a' },
+  { key:'insurance',    label:'Insurance',    short:'N', color:'#c8940a' },
+  { key:'tax_paid',     label:'Tax Paid',     short:'T', color:'#c8940a' },
+  { key:'number_plate', label:'Number Plate', short:'P', color:'#c8940a' },
+];
+
+function MilestoneRow({ sale, onToggle, disabled }) {
+  const m = sale.milestones || {};
+  const done = MILESTONE_DEFS.filter(d => m[d.key]).length;
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:4, minWidth:170 }}>
+      <div style={{ display:'flex', gap:4, alignItems:'center' }}>
+        {MILESTONE_DEFS.map(def => {
+          const checked = !!m[def.key];
+          return (
+            <button
+              key={def.key}
+              type="button"
+              title={`${def.label} — ${checked ? 'Done' : 'Pending'} (click to toggle)`}
+              disabled={disabled}
+              onClick={(e) => { e.stopPropagation(); onToggle(sale.id, def.key, !checked); }}
+              style={{
+                width:22, height:22, borderRadius:4,
+                background: checked ? def.color : 'transparent',
+                border: `1.5px solid ${checked ? def.color : 'var(--border)'}`,
+                color:   checked ? '#fff' : 'var(--dim)',
+                fontSize:9, fontWeight:700, letterSpacing:'.02em',
+                cursor: disabled ? 'not-allowed' : 'pointer',
+                display:'flex', alignItems:'center', justifyContent:'center',
+                fontFamily:'IBM Plex Sans,sans-serif',
+                transition:'all .15s ease',
+                padding:0,
+              }}
+              onMouseEnter={e => { if (!disabled && !checked) e.currentTarget.style.borderColor = def.color; }}
+              onMouseLeave={e => { if (!disabled && !checked) e.currentTarget.style.borderColor = 'var(--border)'; }}
+            >
+              {checked ? '✓' : def.short}
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ fontSize:9, color: done === 5 ? '#4ade80' : 'var(--dim)', letterSpacing:'.05em', fontWeight: done === 5 ? 600 : 500 }}>
+        {done}/5 {done === 5 ? 'complete' : ''}
+      </div>
+    </div>
+  );
+}
+
+
 // ── Main page ────────────────────────────────────────────────────────
 export default function SalesPage() {
   const confirm = useConfirm();
@@ -870,6 +924,28 @@ const createMut = useMutation({
     onError:   e => toast.error(errMsg(e, 'Cannot delete')),
   });
 
+  // ─── Milestone toggle with optimistic update ─────────────────────────
+  const milestoneMut = useMutation({
+    mutationFn: ({ id, key, value }) => salesApi.updateMilestone(id, key, value),
+    onMutate: async ({ id, key, value }) => {
+      await qc.cancelQueries({ queryKey: ['sales'] });
+      const previous = qc.getQueriesData({ queryKey: ['sales'] });
+      qc.setQueriesData({ queryKey: ['sales'] }, (old) => {
+        if (!Array.isArray(old)) return old;
+        return old.map(s => s.id === id
+          ? { ...s, milestones: { ...(s.milestones || {}), [key]: value } }
+          : s);
+      });
+      return { previous };
+    },
+    onError: (err, _vars, ctx) => {
+      // Roll back
+      if (ctx?.previous) ctx.previous.forEach(([qk, data]) => qc.setQueryData(qk, data));
+      toast.error(errMsg(err, 'Milestone update failed'));
+    },
+    onSettled: () => { qc.invalidateQueries(['sales']); },
+  });
+
   const sales = Array.isArray(data) ? data : [];
   const { sorted: sortedSales, Th: SalesTh } = useSortable(sales, 'sale_date', 'desc');
   const st = stats || {};
@@ -928,7 +1004,7 @@ const createMut = useMutation({
           <table style={{ width:'100%', borderCollapse:'collapse' }}>
             <thead>
               <tr style={{ borderBottom:'1px solid var(--border)' }}>
-                {[['Invoice #','invoice_number'],['Date','sale_date'],['Customer','customer_name'],['Vehicle','vehicle_model'],['Amount','total_amount'],['Payment','payment_mode'],['Status','status'],['','']].map(([h,f])=>(
+                {[['Invoice #','invoice_number'],['Date','sale_date'],['Customer','customer_name'],['Vehicle','vehicle_model'],['Amount','total_amount'],['Payment','payment_mode'],['Status','status'],['Milestones',null],['','']].map(([h,f])=>(
                   <SalesTh key={h} field={f||null} style={{ padding:'9px 16px', textAlign:'left', fontSize:9, letterSpacing:'.07em', color:'var(--dim)', fontWeight:500, textTransform:'uppercase' }}>{h}</SalesTh>
                 ))}
               </tr>
@@ -953,6 +1029,15 @@ const createMut = useMutation({
                     }}>
                       {s.status==='completed' || s.status==='delivered' ? 'Delivered' : 'Pending'}
                     </span>
+                  </td>
+
+                  {/* Milestones column */}
+                  <td style={{ padding:'10px 16px' }}>
+                    <MilestoneRow
+                      sale={s}
+                      disabled={milestoneMut.isPending}
+                      onToggle={(id, key, value) => milestoneMut.mutate({ id, key, value })}
+                    />
                   </td>
 
                   <td style={{ padding:'10px 16px' }}>
