@@ -91,12 +91,13 @@ export const vehiclesApi = {
 
 // ── Sales ───────────────────────────────────────────────────────────
 export const salesApi = {
-  list:   (params) => api.get('/sales', { params }),
-  get:    (id)     => api.get(`/sales/${id}`),
-  create: (data)   => api.post('/sales', data),
-  update: (id, d)  => api.put(`/sales/${id}`, d),
-  delete: (id)     => api.delete(`/sales/${id}`),
-  stats:  ()       => api.get('/sales/stats/summary'),
+  list:             (params)         => api.get('/sales', { params }),
+  get:              (id)             => api.get(`/sales/${id}`),
+  create:           (data)           => api.post('/sales', data),
+  update:           (id, d)          => api.put(`/sales/${id}`, d),
+  delete:           (id)             => api.delete(`/sales/${id}`),
+  stats:            ()               => api.get('/sales/stats/summary'),
+  updateMilestone:  (id, key, value) => api.patch(`/sales/${id}/milestone`, { key, value }),
 };
 
 // ── Service ─────────────────────────────────────────────────────────
