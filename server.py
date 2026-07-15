@@ -2437,6 +2437,33 @@ async def backfill_service_dates(current_user=Depends(require_admin)):
             "message": f"✅ {updated} service jobs backfilled with correct dates. Run once only."}
 
 
+@api_router.post("/migrations/backfill-delivered-milestones")
+async def backfill_delivered_milestones(
+    include_pending_completed: bool = Query(False, description="If true, also include sales with status=completed"),
+    current_user=Depends(require_admin),
+):
+    """
+    One-time migration: sets all 5 milestones to True for every sale with
+    status='delivered' (and optionally 'completed'). Idempotent — safe to
+    re-run. Uses a single bulk update.
+    """
+    all_true = {k: True for k in SALE_MILESTONE_KEYS}
+    status_filter = ["delivered"]
+    if include_pending_completed:
+        status_filter.append("completed")
+
+    result = await db.sales.update_many(
+        {"status": {"$in": status_filter}},
+        {"$set": {"milestones": all_true}},
+    )
+    return {
+        "matched":  result.matched_count,
+        "modified": result.modified_count,
+        "status_filter": status_filter,
+        "message": f"✅ {result.modified_count} delivered sales marked with all 5 milestones complete.",
+    }
+
+
 @api_router.post("/migrations/backfill-sale-addresses")
 async def backfill_sale_addresses(current_user=Depends(require_admin)):
     """
