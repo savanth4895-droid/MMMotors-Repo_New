@@ -94,6 +94,7 @@ async def verify_token(
         if not user:
             raise HTTPException(status_code=401, detail="User not found or inactive")
         user["id"] = str(user["_id"])
+        user.pop("_id", None)
         return user
     except (JWTError, InvalidId):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
