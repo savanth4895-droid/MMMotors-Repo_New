@@ -24,7 +24,7 @@ const MODELS = {
     'Hness CB350', 'CB350RS', 'CB350', 'Dio', 'Dio 125'
   ],
   BAJAJ: [
-    'Pulsar 125', 'Pulsar 150', 'Pulsar N150', 'Pulsar N160', 'Pulsar NS160', 
+    'Pulsar 125', 'Pulsar 150', 'Pulsar N150', 'Pulsar 220F', 'Pulsar N160', 'Pulsar NS160', 
     'Pulsar NS200', 'Pulsar N250', 'Pulsar NS400Z', 'Platina 100', 'Platina 110', 
     'CT 110X', 'Avenger Street 160', 'Avenger Cruise 220', 'Dominar 250', 
     'Dominar 400', 'Chetak'
