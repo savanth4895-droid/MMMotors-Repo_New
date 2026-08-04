@@ -151,6 +151,26 @@ export const partsApi = {
   getBill:              (id)         => api.get(`/parts-bills/${id}`),
   deleteBill:           (id)         => api.delete(`/parts-bills/${id}`),
   updateBill:  (id, d)  => api.put(`/parts-bills/${id}`, d),
+  searchAlias: (params) => api.get('/parts/search-alias', { params }),  // vendor-aware autocomplete
+};
+
+// ── Vendors (spare-parts suppliers) ─────────────────────────────────
+export const vendorsApi = {
+  list:    (params) => api.get('/vendors', { params }),
+  get:     (id)     => api.get(`/vendors/${id}`),
+  create:  (data)   => api.post('/vendors', data),
+  update:  (id, d)  => api.put(`/vendors/${id}`, d),
+  delete:  (id)     => api.delete(`/vendors/${id}`),
+  summary: (id)     => api.get(`/vendors/${id}/summary`),
+};
+
+// ── Purchase Bills (incoming stock from vendors) ────────────────────
+export const purchaseBillsApi = {
+  list:   (params) => api.get('/purchase-bills', { params }),
+  get:    (id)     => api.get(`/purchase-bills/${id}`),
+  create: (data)   => api.post('/purchase-bills', data),
+  update: (id, d)  => api.put(`/purchase-bills/${id}`, d),
+  delete: (id)     => api.delete(`/purchase-bills/${id}`),
 };
 
 // ── Dashboard & Reports ─────────────────────────────────────────────
