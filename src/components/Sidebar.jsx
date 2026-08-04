@@ -11,6 +11,8 @@ const NAV = [
   { id: 'service-due', label: 'Service Due', roles: ['owner','service_advisor'] },
   { id: 'vehicles',  label: 'Vehicles',     roles: ['owner','sales'] },
   { id: 'parts',     label: 'Parts',        roles: ['owner','parts_counter'] },
+  { id: 'vendors',        label: 'Vendors',        roles: ['owner','parts_counter'] },
+  { id: 'purchase-bills', label: 'Purchase Bills', roles: ['owner','parts_counter'] },
   { id: 'customers', label: 'Customers',    roles: ['owner','sales','service_advisor'] },
   { id: 'debt',        label: 'Debt Ledger',  roles: ['owner','sales'] },
   { id: 'expenses',    label: 'Expenses',     roles: ['owner'] },
