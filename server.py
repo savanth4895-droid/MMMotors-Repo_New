@@ -14,6 +14,7 @@ Render env vars required:
 
 import asyncio
 import traceback
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Optional, List, Any, Dict
@@ -156,6 +157,16 @@ async def _ensure_indexes():
     await db.parts_bills.create_index("bill_number")
     await db.parts_bills.create_index("customer_mobile")
     await db.parts_bills.create_index("bill_date")
+    # vendors — spare-parts suppliers
+    await db.vendors.create_index("name")
+    await db.vendors.create_index("gstin", sparse=True)
+    # purchase_bills — one doc per vendor invoice; multi-line
+    await db.purchase_bills.create_index([("vendor_id", 1), ("bill_number", 1)], unique=True, sparse=True)
+    await db.purchase_bills.create_index("bill_date")
+    await db.purchase_bills.create_index("vendor_id")
+    # spare_parts additions: index the alias list for vendor-scoped search
+    await db.spare_parts.create_index("aliases.vendor_id")
+    await db.spare_parts.create_index("aliases.part_number")
     # login_attempts — TTL 30 min
     await db.login_attempts.create_index(
         "created_at", expireAfterSeconds=LOGIN_LOCKOUT_MIN * 60
@@ -449,6 +460,63 @@ class StockAdjust(BaseModel):
     qty:    int    # positive = stock in, negative = adjustment
     action: Optional[str] = "add"   # "add" | "subtract"
     reason: Optional[str] = ""
+
+
+# ── Vendors ──────────────────────────────────────────────────────────────────
+class VendorCreate(BaseModel):
+    name:         str
+    gstin:        Optional[str] = ""
+    address:      Optional[str] = ""
+    phone:        Optional[str] = ""
+    email:        Optional[str] = ""
+    bank_name:    Optional[str] = ""
+    bank_account: Optional[str] = ""
+    bank_ifsc:    Optional[str] = ""
+    notes:        Optional[str] = ""
+
+class VendorUpdate(BaseModel):
+    name:         Optional[str] = None
+    gstin:        Optional[str] = None
+    address:      Optional[str] = None
+    phone:        Optional[str] = None
+    email:        Optional[str] = None
+    bank_name:    Optional[str] = None
+    bank_account: Optional[str] = None
+    bank_ifsc:    Optional[str] = None
+    notes:        Optional[str] = None
+
+
+# ── Purchase Bills (from vendors) ────────────────────────────────────────────
+class PurchaseBillItemIn(BaseModel):
+    part_id:        Optional[str] = None   # null = create new spare_part
+    part_name:      str
+    part_number:    Optional[str] = ""     # vendor's SKU
+    hsn:            Optional[str] = ""
+    qty:            float
+    unit:           Optional[str] = "PCS"
+    rate:           float                  # per-unit rate before discount
+    discount_pct:   Optional[float] = 0
+    gst_pct:        Optional[float] = 18
+    # Optional per-line sale price update, and new-part hints
+    new_sale_price: Optional[float] = None
+    new_part_selling_price: Optional[float] = None  # only used if creating new part
+
+class PurchaseBillCreate(BaseModel):
+    vendor_id:        str
+    bill_number:      str
+    bill_date:        str                  # DD Mon YYYY preferred
+    place_of_supply:  Optional[str] = ""
+    items:            List[PurchaseBillItemIn]
+    round_off:        Optional[float] = 0
+    notes:            Optional[str] = ""
+
+class PurchaseBillUpdate(BaseModel):
+    bill_number:      Optional[str] = None
+    bill_date:        Optional[str] = None
+    place_of_supply:  Optional[str] = None
+    items:            Optional[List[PurchaseBillItemIn]] = None
+    round_off:        Optional[float] = None
+    notes:            Optional[str] = None
 
 # ── Parts Sales ───────────────────────────────────────────────────────────────
 class PartsSaleItem(BaseModel):
@@ -1758,6 +1826,378 @@ async def delete_service_bill(bill_id: str, current_user=Depends(require_admin))
         {"$set": {"status": "in_progress"}, "$unset": {"bill_number": ""}}
     )
     return {"message": "Deleted"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  VENDORS  (spare-parts suppliers)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@api_router.get("/vendors")
+async def list_vendors(
+    search: Optional[str] = Query(None),
+    current_user=Depends(verify_token),
+):
+    query: dict = {}
+    if search:
+        esc = re.escape(search)
+        query["$or"] = [
+            {"name":  {"$regex": esc, "$options": "i"}},
+            {"gstin": {"$regex": esc, "$options": "i"}},
+            {"phone": {"$regex": esc, "$options": "i"}},
+        ]
+    docs = await db.vendors.find(query).sort("name", 1).to_list(500)
+    return oids(docs)
+
+@api_router.post("/vendors", status_code=201)
+async def create_vendor(body: VendorCreate, current_user=Depends(verify_token)):
+    doc = body.dict()
+    doc["name"] = doc["name"].strip()
+    if not doc["name"]:
+        raise HTTPException(status_code=400, detail="Vendor name required")
+    doc["gstin"] = (doc.get("gstin") or "").strip().upper()
+    # Soft-uniqueness: warn if same name or GSTIN already exists, but don't block
+    doc["created_at"] = utcnow().isoformat()
+    result = await db.vendors.insert_one(doc)
+    doc["id"] = str(result.inserted_id); doc.pop("_id", None)
+    return doc
+
+@api_router.get("/vendors/{vendor_id}")
+async def get_vendor(vendor_id: str, current_user=Depends(verify_token)):
+    doc = await db.vendors.find_one({"_id": obj_id(vendor_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    return oid(doc)
+
+@api_router.put("/vendors/{vendor_id}")
+async def update_vendor(vendor_id: str, body: VendorUpdate, current_user=Depends(verify_token)):
+    update = {k: v for k, v in body.dict().items() if v is not None}
+    if "name" in update:
+        update["name"] = update["name"].strip()
+    if "gstin" in update:
+        update["gstin"] = (update["gstin"] or "").strip().upper()
+    if not update:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    r = await db.vendors.update_one({"_id": obj_id(vendor_id)}, {"$set": update})
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    return oid(await db.vendors.find_one({"_id": obj_id(vendor_id)}))
+
+@api_router.delete("/vendors/{vendor_id}")
+async def delete_vendor(vendor_id: str, current_user=Depends(require_admin)):
+    # Block delete if any purchase bills reference this vendor
+    ref_count = await db.purchase_bills.count_documents({"vendor_id": vendor_id})
+    if ref_count > 0:
+        raise HTTPException(status_code=409,
+            detail=f"Cannot delete: {ref_count} purchase bill(s) reference this vendor")
+    r = await db.vendors.delete_one({"_id": obj_id(vendor_id)})
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    return {"deleted": True}
+
+@api_router.get("/vendors/{vendor_id}/summary")
+async def vendor_summary(vendor_id: str, current_user=Depends(verify_token)):
+    """Total spend + bill count + last-bill date for this vendor."""
+    pipeline = [
+        {"$match": {"vendor_id": vendor_id}},
+        {"$group": {
+            "_id": None,
+            "total_spend":  {"$sum": "$grand_total"},
+            "bill_count":   {"$sum": 1},
+            "last_bill":    {"$max": "$bill_date"},
+        }},
+    ]
+    result = await db.purchase_bills.aggregate(pipeline).to_list(1)
+    if not result:
+        return {"total_spend": 0, "bill_count": 0, "last_bill": None}
+    r = result[0]
+    r.pop("_id", None)
+    return r
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PURCHASE BILLS  (incoming stock from vendors)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _pb_compute_line(item: dict) -> dict:
+    """Compute taxable_amt, cgst, sgst, line_total for one bill line.
+    Rate is the per-unit price BEFORE discount. GST is added on top of the
+    discounted taxable amount (standard trade invoice convention)."""
+    qty          = float(item.get("qty") or 0)
+    rate         = float(item.get("rate") or 0)
+    discount_pct = float(item.get("discount_pct") or 0)
+    gst_pct      = float(item.get("gst_pct") or 0)
+    gross        = qty * rate
+    discount     = gross * (discount_pct / 100.0)
+    taxable      = round(gross - discount, 2)
+    gst_total    = round(taxable * (gst_pct / 100.0), 2)
+    cgst         = round(gst_total / 2, 2)
+    sgst         = round(gst_total - cgst, 2)  # keep balance exact
+    line_total   = round(taxable + cgst + sgst, 2)
+    return {**item,
+            "taxable_amt": taxable, "cgst": cgst, "sgst": sgst,
+            "line_total":  line_total}
+
+def _pb_compute_totals(items: List[dict], round_off: float = 0.0) -> dict:
+    subtotal    = round(sum(i.get("taxable_amt", 0) for i in items), 2)
+    total_cgst  = round(sum(i.get("cgst", 0)        for i in items), 2)
+    total_sgst  = round(sum(i.get("sgst", 0)        for i in items), 2)
+    grand       = round(subtotal + total_cgst + total_sgst + (round_off or 0), 2)
+    return {"subtotal": subtotal, "total_cgst": total_cgst,
+            "total_sgst": total_sgst, "grand_total": grand,
+            "round_off": round(round_off or 0, 2)}
+
+async def _pb_apply_stock_deltas(items: List[dict], vendor_id: str, vendor_name: str,
+                                  bill_date: str, sign: int = +1):
+    """Apply +qty (sign=+1) or -qty (sign=-1) to stock for each line.
+    Also update aliases + last_purchase_rate on the linked part."""
+    for it in items:
+        part_id = it.get("part_id")
+        if not part_id: continue
+        qty     = float(it.get("qty") or 0) * sign
+        # Net cost per unit AFTER discount, INCLUDING GST (what you actually paid)
+        line_total = float(it.get("line_total") or 0)
+        base_qty   = float(it.get("qty") or 0)
+        net_unit   = round(line_total / base_qty, 2) if base_qty else 0
+        try:
+            oid_p = obj_id(part_id)
+        except HTTPException:
+            continue
+        update: dict = {"$inc": {"stock": int(qty)}}
+        # Only update purchase_price/aliases/last_purchase_rate on the ADD path
+        if sign > 0:
+            update["$set"] = {
+                "last_purchase_rate":     net_unit,
+                "last_purchase_date":     bill_date,
+                "last_purchase_vendor":   vendor_name,
+            }
+            # Store this vendor's naming as an alias (upsert-style: add if new)
+            alias_entry = {
+                "vendor_id":    vendor_id,
+                "vendor_name":  vendor_name,
+                "part_number":  (it.get("part_number") or "").strip(),
+                "part_name":    (it.get("part_name")   or "").strip(),
+            }
+            # Only add alias if part_number or part_name is non-empty AND not already present
+            if alias_entry["part_number"] or alias_entry["part_name"]:
+                await db.spare_parts.update_one(
+                    {"_id": oid_p, "aliases": {
+                        "$not": {"$elemMatch": {
+                            "vendor_id":   vendor_id,
+                            "part_number": alias_entry["part_number"],
+                        }}
+                    }},
+                    {"$push": {"aliases": alias_entry}},
+                )
+            # Optional caller-driven sale-price change
+            if it.get("new_sale_price") is not None:
+                update["$set"]["selling_price"] = float(it["new_sale_price"])
+        await db.spare_parts.update_one({"_id": oid_p}, update)
+
+async def _pb_create_new_parts(items: List[dict], current_user: dict) -> List[dict]:
+    """For lines with part_id=None: create a fresh spare_part and stamp part_id on the item.
+    Returns the mutated items list."""
+    out = []
+    for it in items:
+        item = dict(it)
+        if item.get("part_id"):
+            out.append(item); continue
+        # Auto-generate part number if vendor didn't provide one
+        pn = (item.get("part_number") or "").strip()
+        if not pn:
+            pn = await next_sequence("part")
+        else:
+            # Collision safety: append seq if number already taken
+            if await db.spare_parts.find_one({"part_number": pn}):
+                pn = f"{pn}-{await next_sequence('part')}"
+        line_total = float(item.get("line_total") or 0)
+        base_qty   = float(item.get("qty") or 0)
+        net_unit   = round(line_total / base_qty, 2) if base_qty else 0
+        # Default selling price = net_unit * 1.25 (25% margin) unless caller overrode
+        selling  = item.get("new_part_selling_price")
+        if selling is None:
+            selling = round(net_unit * 1.25, 2)
+        new_part = {
+            "part_number":     pn,
+            "name":            (item.get("part_name") or "").strip(),
+            "category":        "",
+            "brand":           "",
+            "compatible_with": [],
+            "stock":           0,   # will get incremented by _pb_apply_stock_deltas
+            "reorder_level":   5,
+            "purchase_price":  net_unit,
+            "selling_price":   float(selling),
+            "gst_rate":        float(item.get("gst_pct") or 18),
+            "hsn_code":        (item.get("hsn") or "").strip(),
+            "location":        "",
+            "aliases":         [],
+            "created_at":      utcnow().isoformat(),
+            "created_by":      current_user.get("username", ""),
+        }
+        res = await db.spare_parts.insert_one(new_part)
+        item["part_id"] = str(res.inserted_id)
+        out.append(item)
+    return out
+
+@api_router.get("/purchase-bills")
+async def list_purchase_bills(
+    vendor_id: Optional[str] = Query(None),
+    search:    Optional[str] = Query(None),
+    p=Depends(paginate_params),
+    current_user=Depends(verify_token),
+):
+    query: dict = {}
+    if vendor_id: query["vendor_id"] = vendor_id
+    if search:
+        esc = re.escape(search)
+        query["$or"] = [
+            {"bill_number": {"$regex": esc, "$options": "i"}},
+            {"vendor_name": {"$regex": esc, "$options": "i"}},
+        ]
+    docs  = await db.purchase_bills.find(query).skip(p["skip"]).limit(p["limit"]).sort("created_at", -1).to_list(p["limit"])
+    total = await db.purchase_bills.count_documents(query)
+    return JSONResponse(content=oids(docs), headers={"X-Total-Count": str(total)})
+
+@api_router.get("/purchase-bills/{bill_id}")
+async def get_purchase_bill(bill_id: str, current_user=Depends(verify_token)):
+    doc = await db.purchase_bills.find_one({"_id": obj_id(bill_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Purchase bill not found")
+    return oid(doc)
+
+@api_router.post("/purchase-bills", status_code=201)
+async def create_purchase_bill(body: PurchaseBillCreate, current_user=Depends(verify_token)):
+    # Fetch vendor (denorm name onto bill)
+    vendor = await db.vendors.find_one({"_id": obj_id(body.vendor_id)})
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    if not body.items:
+        raise HTTPException(status_code=400, detail="Bill must have at least one line")
+
+    # Duplicate check: same vendor + same bill_number
+    bill_num = body.bill_number.strip()
+    if not bill_num:
+        raise HTTPException(status_code=400, detail="Bill number required")
+    dup = await db.purchase_bills.find_one({"vendor_id": body.vendor_id, "bill_number": bill_num})
+    if dup:
+        raise HTTPException(status_code=409, detail=f"Bill number {bill_num} already recorded for this vendor")
+
+    # Compute per-line taxes + totals
+    items = [_pb_compute_line(i.dict()) for i in body.items]
+    # Auto-create any new parts (part_id=None); returns items with part_id filled
+    items = await _pb_create_new_parts(items, current_user)
+    totals = _pb_compute_totals(items, body.round_off or 0)
+
+    vendor_name = vendor.get("name", "")
+    doc = {
+        "vendor_id":       body.vendor_id,
+        "vendor_name":     vendor_name,
+        "vendor_gstin":    vendor.get("gstin", ""),
+        "bill_number":     bill_num,
+        "bill_date":       body.bill_date.strip(),
+        "place_of_supply": body.place_of_supply or "",
+        "items":           items,
+        "notes":           body.notes or "",
+        **totals,
+        "created_at":      utcnow().isoformat(),
+        "created_by":      current_user.get("username", ""),
+    }
+    result = await db.purchase_bills.insert_one(doc)
+    doc["id"] = str(result.inserted_id); doc.pop("_id", None)
+
+    # Apply stock deltas + aliases + last_purchase_rate
+    await _pb_apply_stock_deltas(items, body.vendor_id, vendor_name, body.bill_date.strip(), sign=+1)
+    return doc
+
+@api_router.put("/purchase-bills/{bill_id}")
+async def update_purchase_bill(bill_id: str, body: PurchaseBillUpdate,
+                               current_user=Depends(require_admin)):
+    """Owner-only. Reverses old stock deltas, then applies new."""
+    existing = await db.purchase_bills.find_one({"_id": obj_id(bill_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Purchase bill not found")
+
+    updates = {k: v for k, v in body.dict().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+
+    # Reverse old stock
+    await _pb_apply_stock_deltas(
+        existing.get("items") or [],
+        existing.get("vendor_id"),
+        existing.get("vendor_name", ""),
+        existing.get("bill_date", ""),
+        sign=-1,
+    )
+
+    # Rebuild items if provided
+    if "items" in updates:
+        new_items = [_pb_compute_line(dict(i) if isinstance(i, dict) else i.dict())
+                     for i in updates["items"]]
+        new_items = await _pb_create_new_parts(new_items, current_user)
+        updates["items"] = new_items
+        round_off = updates.get("round_off", existing.get("round_off", 0))
+        updates.update(_pb_compute_totals(new_items, round_off or 0))
+
+    updates["updated_at"] = utcnow().isoformat()
+    updates["updated_by"] = current_user.get("username", "")
+    await db.purchase_bills.update_one({"_id": obj_id(bill_id)}, {"$set": updates})
+
+    # Re-fetch fresh doc and re-apply stock in +direction
+    fresh = await db.purchase_bills.find_one({"_id": obj_id(bill_id)})
+    await _pb_apply_stock_deltas(
+        fresh.get("items") or [],
+        fresh.get("vendor_id"),
+        fresh.get("vendor_name", ""),
+        fresh.get("bill_date", ""),
+        sign=+1,
+    )
+    return oid(fresh)
+
+@api_router.delete("/purchase-bills/{bill_id}")
+async def delete_purchase_bill(bill_id: str, current_user=Depends(require_admin)):
+    """Owner-only. Reverses stock, then deletes."""
+    existing = await db.purchase_bills.find_one({"_id": obj_id(bill_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Purchase bill not found")
+    await _pb_apply_stock_deltas(
+        existing.get("items") or [],
+        existing.get("vendor_id"),
+        existing.get("vendor_name", ""),
+        existing.get("bill_date", ""),
+        sign=-1,
+    )
+    await db.purchase_bills.delete_one({"_id": obj_id(bill_id)})
+    return {"deleted": True}
+
+
+# ─── Parts search: vendor-aware fuzzy match (for purchase-bill autocomplete) ──
+@api_router.get("/parts/search-alias")
+async def parts_search_alias(
+    q:         str          = Query(..., min_length=1),
+    vendor_id: Optional[str] = Query(None),
+    limit:     int          = Query(20, ge=1, le=100),
+    current_user=Depends(verify_token),
+):
+    """Search parts by name, part_number, OR alias.part_number (vendor-scoped).
+    Returns up to `limit` matches; vendor-alias hits ranked first when vendor_id passed."""
+    esc = re.escape(q)
+    # Alias-match branch (vendor-scoped when vendor_id provided)
+    alias_branch = {"aliases": {"$elemMatch": {
+        "$or": [
+            {"part_number": {"$regex": esc, "$options": "i"}},
+            {"part_name":   {"$regex": esc, "$options": "i"}},
+        ]
+    }}}
+    if vendor_id:
+        alias_branch["aliases"]["$elemMatch"]["vendor_id"] = vendor_id
+    query = {"$or": [
+        {"name":        {"$regex": esc, "$options": "i"}},
+        {"part_number": {"$regex": esc, "$options": "i"}},
+        alias_branch,
+    ]}
+    docs = await db.spare_parts.find(query).limit(limit).to_list(limit)
+    return oids(docs)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
