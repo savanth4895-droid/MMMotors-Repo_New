@@ -23,6 +23,9 @@ export default function Topbar({ active, onMenuToggle }) {
     dashboard: 'Dashboard', sales: 'Sales', service: 'Service',
     vehicles: 'Vehicles', parts: 'Parts', customers: 'Customers',
     reports: 'Reports', staff: 'Staff', import: 'Import data',
+    vendors: 'Vendors', 'purchase-bills': 'Purchase Bills',
+    debt: 'Debt Ledger', 'service-due': 'Service Due',
+    expenses: 'Expenses', 'accident-estimate': 'Accident Estimate',
   };
 
   return (
