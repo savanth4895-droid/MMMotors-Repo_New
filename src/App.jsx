@@ -20,6 +20,8 @@ import DebtPage      from './pages/DebtPage';
 import ServiceDuePage from './pages/ServiceDuePage';
 import ExpensesPage          from './pages/ExpensesPage';
 import AccidentEstimatePage  from './pages/AccidentEstimatePage';
+import VendorsPage           from './pages/VendorsPage';
+import PurchaseBillsPage     from './pages/PurchaseBillsPage';
 import Sidebar from './components/Sidebar';
 import Topbar  from './components/Topbar';
 
@@ -76,6 +78,8 @@ function AppLayout() {
               <Route path="/expenses"     element={<ExpensesPage />} />
               <Route path="/accident-estimate" element={<AccidentEstimatePage />} />
               <Route path="/parts"     element={<PartsPage />} />
+              <Route path="/vendors"        element={<VendorsPage />} />
+              <Route path="/purchase-bills" element={<PurchaseBillsPage />} />
               <Route path="/reports"   element={<ReportsPage />} />
               <Route path="/staff"     element={<StaffPage />} />
               <Route path="/import"    element={<ImportPage />} />
