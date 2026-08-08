@@ -191,7 +191,7 @@ async def _seed_owner():
             "join_date":  utcnow().strftime("%d %b %Y"),
             "created_at": utcnow().isoformat(),
         })
-      print("[MM Motors] Default owner created  username=owner  password=mm@123456")
+        print("[MM Motors] Default owner created  username=owner  password=mm@123456")
     else:
         # Make sure the existing owner account is active
         await db.users.update_one(
