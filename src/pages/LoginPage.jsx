@@ -118,30 +118,6 @@ export default function LoginPage() {
             >{loading ? 'Signing in…' : 'Sign in →'}</button>
           </form>
 
-          {/* Demo accounts */}
-          <div style={{ marginTop: 28 }}>
-            <div className="label-xs" style={{ marginBottom: 8 }}>Default account</div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {DEMO_ACCOUNTS.map((a) => (
-                <button
-                  key={a.username}
-                  onClick={() => setForm({ username: a.username, password: a.password })}
-                  style={{
-                    padding: '5px 12px', background: 'var(--surface2)',
-                    border: '1px solid var(--border)', borderRadius: 3,
-                    color: 'var(--muted)', cursor: 'pointer',
-                    fontSize: 11, fontFamily: 'IBM Plex Sans, sans-serif',
-                  }}
-                >{a.label}</button>
-              ))}
-            </div>
-            <div style={{ marginTop: 8, fontSize: 10, color: 'var(--dim)' }}>
-              Password: <span className="mono" style={{ color: 'var(--muted)' }}>mm@123456</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
       {/* Right — marketing panel */}
       <div style={{
         flex: 1, display: 'flex', flexDirection: 'column',
