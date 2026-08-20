@@ -8,7 +8,7 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
 
 | Layer    | Tech                                              |
 |----------|---------------------------------------------------|
-| Frontend | React 19, Vite 8, React Router 7, TanStack Query |
+| Frontend | React 19, Vite 8, React Router 7, TanStack Query, Recharts, react-hot-toast |
 | Backend  | FastAPI, Uvicorn, Motor (async MongoDB driver)    |
 | Database | MongoDB Atlas                                     |
 | Auth     | JWT (HS256) via `python-jose`, bcrypt passwords   |
@@ -21,42 +21,53 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
 
 ```
 .
-├── server.py          # FastAPI app, all route handlers, Pydantic models
+├── server.py          # FastAPI app, all route handlers, Pydantic models (~4,470 lines)
 ├── database.py        # Shared DB state, auth helpers, GST utils, normalizers
-├── requirements.txt   # Python deps
-├── render.yaml        # Render deployment config
-├── package.json       # Frontend deps
+├── requirements.txt
+├── render.yaml
+├── package.json
 ├── vite.config.js
+├── vercel.json        # SPA rewrite → index.html
 ├── index.html
+├── mm_logo.png
+├── CLAUDE.md · DEPLOY.md · README.md
+├── public/
+│   ├── favicon.svg
+│   └── icons.svg
 └── src/
     ├── main.jsx
     ├── App.jsx           # Routes, AppLayout, QueryClient setup
     ├── index.css
     ├── api/
-    │   └── client.js     # Axios instance + all API call functions
+    │   └── client.js     # Single Axios instance + all API call functions
     ├── context/
     │   └── AuthContext.jsx
+    ├── hooks/
+    │   └── useDraft.jsx  # Autosave-to-localStorage form draft hook (must be .jsx)
     ├── components/
-    │   ├── Sidebar.jsx
+    │   ├── Sidebar.jsx        # Filters NAV by user.allowed_pages
     │   ├── Topbar.jsx
-    │   ├── ConfirmModal.jsx
-    │   ├── ErrorBoundary.jsx
-    │   ├── FileUpload.jsx
-    │   └── ui.jsx         # Shared UI primitives
+    │   ├── ConfirmModal.jsx   # via ConfirmProvider
+    │   ├── ErrorBoundary.jsx  # wraps every route
+    │   ├── FileUpload.jsx     # uses filesApi.getFileBlobUrl
+    │   └── ui.jsx             # Shared UI primitives
     └── pages/
         ├── LoginPage.jsx
         ├── DashboardPage.jsx
         ├── VehiclesPage.jsx
-        ├── SalesPage.jsx
-        ├── ServicePage.jsx
+        ├── SalesPage.jsx           # ~1,073 lines, includes print + PDF path
+        ├── ServicePage.jsx         # ~1,602 lines, largest page
         ├── ServiceDuePage.jsx
-        ├── PartsPage.jsx
+        ├── PartsPage.jsx           # ~1,511 lines, parts + parts-bill modal
         ├── CustomersPage.jsx
         ├── StaffPage.jsx
         ├── ReportsPage.jsx
         ├── ImportPage.jsx
         ├── DebtPage.jsx
-        └── ExpensesPage.jsx
+        ├── ExpensesPage.jsx
+        ├── VendorsPage.jsx
+        ├── PurchaseBillsPage.jsx
+        └── AccidentEstimatePage.jsx
 ```
 
 ---
@@ -64,15 +75,19 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
 ## Architecture
 
 **Two-module backend** — never circular-import:
-- `database.py` — config, DB globals, auth, helpers. No FastAPI app dependency.
-- `server.py` — imports from `database.py`. Owns the FastAPI `app` and all routers.
+- `database.py` — config, DB globals, auth, helpers, GST calc, number-to-words. No FastAPI app dependency.
+- `server.py` — imports from `database.py`. Owns the FastAPI `app`, all Pydantic models, and both routers.
 
-**Three routers mounted at `/api/v1`:**
-- `api_router` — core CRUD (customers, vehicles, sales, service, parts, staff, dashboard, reports)
-- `import_router` — bulk Excel import at `/api/v1/import/`
-- Both include `/upload` and `/files/{file_id}` for GridFS file storage
+**Two routers, both mounted directly under `/api`:**
+- `api_router = APIRouter(prefix="/api")` — everything (auth, CRUD, reports, dashboard, files, migrations, backup)
+- `import_router = APIRouter(prefix="/api/import")` — Excel bulk import
 
-**DB globals** (`client`, `db`, `fs`) live in `database.py`, populated by `server.py`'s lifespan on startup.
+> NOTE: There is **no `/api/v1`** prefix. Frontend calls hit `/api/...` directly.
+> `src/api/client.js` sets `baseURL: "${VITE_API_URL}/api"` — do not double-prefix.
+
+**DB globals** (`client`, `db`, `fs`) live in `database.py`, populated by `server.py`'s lifespan on startup. `server.py` keeps module-level `db`/`fs` aliases mirroring `_db.db`/`_db.fs`.
+
+**HTTP middleware:** `_service_due_cache_invalidator` — on any 2xx `POST/PUT/PATCH/DELETE` whose path contains `/sales` or `/service`, clears the in-memory `/service/due` TTL cache.
 
 ---
 
@@ -84,7 +99,7 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
 |-----------------|----------|------------------------------------------------|
 | `MONGO_URL`     | ✓        | MongoDB Atlas connection string                |
 | `DB_NAME`       | ✓        | Default: `mmmotors`                            |
-| `JWT_SECRET_KEY`| ✓        | 64-char hex. Server exits without this.        |
+| `JWT_SECRET_KEY`| ✓        | 64-char hex. Server exits on startup without this. |
 | `ALLOW_ORIGINS` | ✓        | Comma-separated Vercel URLs + `localhost:5173` |
 | `SERVICE_DUE_CUTOFF` |     | YYYY-MM-DD. Default `2026-05-01`. Vehicles sold before excluded from Service Due. |
 
@@ -97,7 +112,7 @@ python3 -c "import secrets; print(secrets.token_hex(32))"
 
 | Var            | Value                            |
 |----------------|----------------------------------|
-| `VITE_API_URL` | Render URL, no trailing slash    |
+| `VITE_API_URL` | Render base URL, no trailing slash, no `/api` |
 
 ---
 
@@ -112,7 +127,7 @@ export JWT_SECRET_KEY="your-hex"
 export ALLOW_ORIGINS="http://localhost:5173"
 uvicorn server:app --reload --port 8000
 
-# Frontend (new terminal)
+# Frontend
 npm install
 echo "VITE_API_URL=http://localhost:8000" > .env
 npm run dev   # → http://localhost:5173
@@ -122,74 +137,82 @@ npm run dev   # → http://localhost:5173
 
 ## Auth
 
-- JWT stored as `httpOnly` cookie (`mm_token`) **or** `Authorization: Bearer` header
+- JWT stored as `httpOnly` cookie (`mm_token`) **and** localStorage (`mm_token`) — dual transport for cross-origin safety
+- `verify_token` accepts either cookie or `Authorization: Bearer` header
 - Token expiry: 12 hours
-- Max login attempts: 5 · Lockout: 30 min
+- Max login attempts: 5 per `(username, ip)` · Lockout: 30 min (TTL-collection based)
 - Roles: `owner` (admin), `staff`
+- Page-level UI gating: `user.allowed_pages` array; `Sidebar.jsx` filters `NAV` by this list
 - `require_admin` — owner only
-- `require_roles([...])` — role list check
+- `require_roles("owner","staff",...)` — role list check (outer sync, inner async — safe as `Depends(require_roles(...))`)
 
 Default seed account (change immediately after first login):
 - Username: `owner` · Password: `mm@123456`
 
+> Seed idempotently upserts on every boot to keep `role: owner, status: active`. Deactivating the owner via UI is reverted on next Render restart — intentional footgun-guard.
+
 ---
 
-## API Routes (all under `/api/v1`)
+## API Routes
+
+All routes on `api_router` are under `/api`. Import routes under `/api/import`.
 
 | Resource         | Endpoints                                                                 |
 |------------------|---------------------------------------------------------------------------|
+| Health           | `GET /health`, `GET /ready` (app-level, no prefix)                        |
 | Auth             | `POST /auth/login`, `GET /auth/me`, `POST /auth/logout`                  |
-| Users/Staff      | CRUD `/users`, `/users/{id}/password`                                     |
+| Users/Staff      | CRUD `/users`, `/users/{id}/password` (all admin-only)                    |
 | Customers        | CRUD `/customers`, `/customers/{id}/timeline`                             |
 | Vehicles         | CRUD `/vehicles`, `/vehicles/stats/summary`                               |
-| Sales            | CRUD `/sales`, `/sales/stats/summary`, `GET /sales/{id}/pdf`             |
+| Sales            | CRUD `/sales`, `/sales/stats/summary`, `PATCH /sales/{id}/milestone` (accepts `{key, value, date?}` — date recorded when value=true, cleared when false), `GET /sales/{id}/pdf` |
 | Service Jobs     | CRUD `/service`, `/service/due`, `/service/stats`                        |
 | Service Due      | `/service/due/{vehicle_number}/notified`, `/service/due/notifications`   |
-| Service Bills    | CRUD `/service-bills`                                                     |
-| Parts            | CRUD `/parts`, `/parts/stats/summary`, `/parts/low-stock`, stock adjust  |
-| Parts Sales      | CRUD `/parts-sales`                                                       |
-| Parts Bills      | CRUD `/parts-bills`                                                       |
+| Service Bills    | CRUD `/service-bills` (delete admin-only)                                 |
+| Parts            | CRUD `/parts`, `/parts/stats/summary`, `/parts/low-stock`, `/parts/out-of-stock`, `/parts/{id}/adjust-stock`, `/parts/{part_number}/adjust-stock-by-number`, `/parts/search-alias` |
+| Parts Sales      | CRUD `/parts-sales` **[DEAD — no frontend caller, but endpoints still live and share `part_bill` counter; delete when convenient]** |
+| Parts Bills      | CRUD `/parts-bills` (delete admin-only, PUT restores + re-deducts stock)  |
+| Vendors          | CRUD `/vendors`, `/vendors/{id}/summary` (delete admin-only)              |
+| Purchase Bills   | CRUD `/purchase-bills` (PUT + DELETE admin-only)                          |
 | Dashboard        | `GET /dashboard/stats`, `GET /dashboard/recent-activity`                 |
-| Reports          | `/reports/revenue`, `/reports/daily-closing`, `/reports/brand-sales`, `/reports/top-parts`, `/reports/gstr1?month=YYYY-MM` |
-| Files            | `POST /upload`, `GET /files/{file_id}` (GridFS)                          |
-| Import           | `GET /import/template/{entity}`, `POST /import/preview/{entity}`, `POST /import/{entity}` |
-| Health           | `GET /health`, `GET /ready`                                               |
-| Migrations       | `POST /migrations/backfill-service-dates`, `/migrations/backfill-sale-addresses` |
-| Debts            | CRUD `/debts`, `/debts/summary`, `POST /debts/{id}/payments`              |
-| Expenses         | CRUD `/expenses`, `/expenses/stats/summary`                                |
+| Reports          | `/reports/revenue`, `/reports/daily-closing`, `/reports/brand-sales`, `/reports/brand-monthly`, `/reports/monthly-counts`, `/reports/top-parts`, `/reports/complimentary`, `/reports/gstr1?month=YYYY-MM`, `/reports/pnl` |
+| Files            | `POST /upload`, `GET /files/{file_id}` — both `verify_token`; frontend uses `filesApi.getFileBlobUrl` for authenticated blob fetch |
+| Import           | `GET /import/template/{entity}`, `POST /import/preview/{entity}`, `POST /import/{entity}`, `DELETE /import/clear/{entity}` (admin), `GET /import/counts` |
+| Migrations       | `POST /migrations/backfill-service-dates`, `/migrations/backfill-delivered-milestones`, `/migrations/backfill-sale-addresses` (all admin) |
+| Debts            | CRUD `/debts`, `/debts/summary`, `POST /debts/{id}/payments` (delete admin) |
+| Expenses         | CRUD `/expenses`, `/expenses/stats/summary` (delete admin)                 |
 | Accident Est.    | CRUD `/accident-estimates` (PUT recreates if deleted)                     |
-| Backup           | `GET /backup/export` (ZIP of per-entity Excel files, admin only, manual download) |
-| P&L              | `GET /reports/pnl`                                                         |
+| Backup           | `GET /backup/export` — ZIP of per-entity xlsx files, admin only, manual download |
 
-Import supports: `customers`, `vehicles`, `sales`, `service`, `parts`, `staff`
+Import supports entities: `customers`, `vehicles`, `sales`, `service`, `parts`, `staff`
 
 ---
 
 ## MongoDB Collections
 
-Derived from server usage:
-
-- `users` — staff accounts
+- `users` — staff accounts (`allowed_pages` optional array of page IDs)
 - `customers`
 - `vehicles`
 - `sales`
 - `service_jobs`
 - `service_bills`
-- `spare_parts` — parts inventory (NOT `parts`)
-- `parts_sales`
-- `parts_bills`
-- `debts` + embedded payments
+- `spare_parts` — parts inventory (has `stock_log[]` sub-doc for audit trail, `aliases[]` for vendor-scoped SKU lookup)
+- `parts_sales` — **[DEAD collection, ignore]**
+- `parts_bills` — active parts billing (shares `part_bill` counter with `parts_sales`)
+- `vendors` — spare-parts suppliers
+- `purchase_bills` — one doc per vendor invoice, multi-line
+- `debts` + embedded `payments[]`
 - `expenses`
 - `accident_estimates`
 - `service_notifications` — service-due contact log
-- `login_attempts` — TTL 30 min lockout tracking
+- `login_attempts` — TTL 30 min lockout tracking, keyed on `(username, ip)`
 - `counters` — auto-increment sequences via `next_sequence()`
 
 ---
 
 ## Key Conventions
 
-**Normalizers** (always call before writing):
+### Normalizers
+Always call before writing (all in `database.py`):
 ```python
 norm_status("IN STOCK")  # → "in_stock"
 norm_role("OWNER")       # → "owner"
@@ -197,43 +220,90 @@ norm_type("NEW")         # → "new"
 norm_brand("yamaha")     # → "YAMAHA"
 ```
 
-**Brands** (canonical list in `database.py`):
+### Brands
+Canonical list in `database.py`:
 `HERO, HONDA, BAJAJ, TVS, YAMAHA, SUZUKI, ROYAL ENFIELD, KTM, PIAGGIO, APRILIA, TRIUMPH`
 
-**GST rates**: `[5, 12, 18]` — use `calc_gst_line()` / `calc_bill_totals()`
+### GST
+Rates: `[5, 12, 18]`. Use `calc_gst_line(price, qty, gst_rate, discount=0)` / `calc_bill_totals(items)`.
+Prices are always GST-inclusive; taxable back-calculated. Karnataka intra-state → CGST = SGST = tax/2.
 
-**Discount on service bills**: `discount` field on `service_bills` collection. Applied post-GST off `grand_total`. Frontend clamps `0..subtotal`. Backend stores both `grand_total` (pre-discount) and `net_total` (post-discount). `amount_in_words` derived from `net_total`. Job's `grand_total` synced to `net_total`.
+### Discounts
+- **Per-line** (`item.discount`) — rupee amount off inclusive line total; GST re-split from discounted amount. Complimentary items force discount = 0.
+- **Bill-level** (top-level `discount`) — post-GST off `grand_total`. Clamped `0..grand_total`. Stored as `discount`; `net_total = grand_total - discount`; `amount_in_words` from `net_total`.
+- Frontend supports ₹/% toggle per input; storage always rupees.
 
-**Complimentary items (free)**: `complimentary: bool` flag per line item on both `service_bills` and `parts_bills`. When true: `unit_price` stored as 0, `mrp` preserves original price for reporting, `gst_rate`=0, `taxable/cgst/sgst/total` all 0. Stock deducts as normal (log reason `"complimentary"` for parts bills). Frontend: checkbox column in bill row, FREE badge, strike-through MRP. Report endpoint `GET /reports/complimentary?date_from&date_to` — groups across both collections by `part_number`, returns qty, occurrences, `mrp_value` forgone, `total_value`.
+### Complimentary items
+`complimentary: bool` flag per line on both `service_bills` and `parts_bills`. When true: `unit_price=0`, `mrp` preserves original, `gst_rate=0`, all tax/total = 0. Stock still deducts (log reason `"complimentary"`). UI shows FREE badge + strike-through MRP. Reported via `GET /reports/complimentary?date_from&date_to`.
 
-**ObjectId helpers**: `oid()`, `oids()`, `obj_id()` from `database.py`
+### Counters
+`next_sequence(name)` uses `ReturnDocument.AFTER`.
+Prefixes (`database.py:_PREFIX`):
+- `invoice` → `INV-000001`
+- `job` → `SRV-000001`
+- `part_bill` → `PRT-000001` (shared by parts_sales + parts_bills — parts_sales is dead)
+- `part` → `PT-000001`
+- `accident_estimate` → `EST-0001`
 
-**Pagination**: `paginate_params` dependency — standard `skip`/`limit`
+Service bill numbers **derive from job number** — `SRV-000001` → `SRV-B-000001`. No counter consumed.
 
-**SQL rule**: No f-strings in queries. Parameterized only. (`?` placeholders in any raw queries)
+### ObjectId helpers
+`oid()`, `oids()`, `obj_id()` from `database.py` — `oid()` renames `_id` → `id` and stringifies datetimes to ISO.
 
-**Security**: No `eval`/`exec`/`pickle`/`yaml.unsafe_load`. No `shell=True`. API keys from env vars only.
+### Pagination
+`paginate_params` dependency — standard `skip`/`limit`.
+
+### Datetime
+Always use `utcnow()` helper from `database.py` — returns naive UTC (`datetime.now(timezone.utc).replace(tzinfo=None)`). Naive preserved for string-format compatibility with existing DB records.
+
+### Numeric input validation
+Every numeric field on request models has `Field(ge=..., le=...)` — negative qty/price/discount/stock are rejected at the Pydantic layer, before any DB write. See "Recent hardening" below.
+
+### Regex search
+All user-supplied `search` params are wrapped in `re.escape()` before feeding to `{"$regex": ...}`. Users typing `(` / `[` / `*` cannot 500 the server or DoS Atlas via ReDoS.
+
+### Stock decrement
+Atomic guarded update:
+```python
+res = await db.spare_parts.update_one(
+    {"_id": part["_id"], "stock": {"$gte": qty}},
+    {"$inc": {"stock": -qty}, "$push": {"stock_log": {...}}},
+)
+if res.matched_count == 0:
+    # insufficient stock — no partial write happened
+```
+No check-then-write TOCTOU race.
+
+### Security
+- No `eval` / `exec` / `pickle` / `yaml.unsafe_load`. No `shell=True`. API keys from env vars only.
+- No f-strings in DB queries — parameterized only.
+- All `$regex` sites escape user input.
 
 ---
 
 ## Frontend Conventions
 
-- `src/api/client.js` — single Axios instance. All API calls here, nowhere else.
-- TanStack Query: `staleTime: 15_000`, `retry: 1`, refetch on focus/reconnect
-- Auth state lives in `AuthContext` — wraps entire app
-- `ConfirmModal` via `ConfirmProvider` for destructive actions
-- `ErrorBoundary` wraps all routes
-- Form drafts: `useDraft` hook + `DraftBar` component (`src/hooks/useDraft.jsx`). Auto-save every 3s to localStorage. Manual "Save Draft" button. Restore prompt shows when returning to form. Wired into Sales/Service/PartsBill/AccidentEstimate new-record forms only (skipped for edit modals via `enabled` flag). Draft cleared on successful submit. Keys: `mm_draft_sale`, `mm_draft_service`, `mm_draft_parts_bill`, `mm_draft_accident`. Note: file must be `.jsx` (contains JSX), Vite won't transform `.js`.
+- `src/api/client.js` — **the** single Axios instance. All API calls here, nowhere else. `errMsg(e, fallback)` helper unpacks FastAPI validation errors (which come back as arrays of `{loc,msg,...}`).
+- TanStack Query: `staleTime: 15_000`, `retry: 1`, refetch on focus/reconnect.
+- Auth state in `AuthContext` — wraps entire app. Restores user instantly from `mm_user` in localStorage, then background-validates via `/auth/me`. Network/500 errors don't log out; only true 401 does.
+- `ConfirmModal` via `ConfirmProvider` for destructive actions.
+- `ErrorBoundary` wraps every route.
+- Form drafts: `useDraft` hook + `DraftBar` component (`src/hooks/useDraft.jsx`). Autosave every 3s to localStorage. Manual "Save Draft" button. Restore prompt on return. Wired into Sales/Service/PartsBill/AccidentEstimate **new-record** forms only (skipped for edit modals via `enabled` flag). Draft cleared on successful submit. Keys: `mm_draft_sale`, `mm_draft_service`, `mm_draft_parts_bill`, `mm_draft_accident`.
+  - File **must** be `.jsx` (contains JSX) — Vite won't transform `.js`.
+- Print bills: `window.open()` + `document.write(html)` pattern in `SalesPage`, `ServicePage`, `PartsPage`, `AccidentEstimatePage`. **All interpolated strings must be HTML-escaped** before injection — customer names / notes are attacker-controlled. [TODO: add `esc()` helper]
+- File uploads: `FileUpload.jsx` uses `filesApi.getFileBlobUrl` (authenticated blob fetch + `URL.createObjectURL`); revoke on unmount.
 
 ---
 
 ## PDF Generation
 
-ReportLab on Render. Fonts registered once at module level:
+ReportLab on Render. Fonts registered once at module level via `_register_fonts()`:
 - `Sans` / `Sans-Bold` / `Sans-Italic` — Liberation Sans
 - `Mono` / `Mono-Bold` — DejaVu Sans Mono
 
 Font path: `/usr/share/fonts/truetype/liberation/` and `/usr/share/fonts/truetype/dejavu/`
+
+Sales invoice: navy/gold theme, two-column grids, amount-in-words, three-column signatures, service schedule table.
 
 ---
 
@@ -241,67 +311,81 @@ Font path: `/usr/share/fonts/truetype/liberation/` and `/usr/share/fonts/truetyp
 
 ```
 Frontend  →  Vercel     (Vite, output: dist/)
-Backend   →  Render     (Python, free tier, health: /health)
-Database  →  MongoDB Atlas
+Backend   →  Render     (Python 3.11, free tier, health: /health)
+Database  →  MongoDB Atlas M0 free tier
 ```
 
 Keep Render alive on free tier — UptimeRobot pings `/health` every 14 min.
 
+Python pinned to 3.11 (avoids Python 3.14 pydantic-core build failures).
+`bcrypt==3.2.2` pinned (works with passlib 1.7.4 — do **not** upgrade to 4.x without testing).
+
 After deploy:
-1. Set `ALLOW_ORIGINS` in Render to Vercel URL
-2. Change default owner password immediately
+1. Set `ALLOW_ORIGINS` in Render to Vercel URL.
+2. Change default owner password immediately.
 
 ---
 
-## Known Issues / Notes (audit 07 Jul 2026)
+## Known Issues / Open Items
 
-### Backup System (manual only · 08 Jul 2026)
+### Backup
+- **Manual only.** `GET /backup/export` (admin) → ZIP of per-entity xlsx.
+- `ManualBackupSection` on Dashboard (owner/admin) — "Download Backup" button, blob pattern.
+- **Runbook:** owner downloads weekly minimum, stores locally + cloud.
+- **Risk:** human forgets → data loss window equals days since last download.
+- Old B2 / APScheduler / boto3 / SMTP stripped 08 Jul 2026.
 
-- Automatic nightly backup, B2 upload, and email notification **removed** 08 Jul 2026.
-- Only path: `GET /backup/export` (admin only) → downloads ZIP of per-entity Excel files.
-- Frontend: `ManualBackupSection` on Dashboard (owner/admin only) — single "Download Backup" button. Uses `URL.createObjectURL` blob pattern.
-- **Runbook:** Owner downloads backup weekly (minimum) and stores locally on personal machine + optional cloud drive (Google Drive, OneDrive).
-- **Risk:** Human forgets to run. No alerts. If Atlas corrupts and last manual backup >7 days old, data loss window equals days since last download.
-- Removed: `apscheduler`, `boto3` from requirements. `SMTP_*`, `B2_*`, `BACKUP_EMAIL_TO`, `ENABLE_BACKUP_SCHEDULER` env vars removed from render.yaml. `backup_log` collection no longer written or indexed (existing docs harmless — TTL 90d already applied on prior deploys will let Mongo expire them; safe to `db.backup_log.drop()` manually).
+### Access-control gap **[open]**
+`allowed_pages` is enforced in `Sidebar.jsx` **only** — backend endpoints check role, not page. A staff user can hit `/api/expenses` or `/api/debts` directly via URL bar or API call and bypass the sidebar filter. Todo: map page → endpoint prefixes and enforce in a dependency.
 
-- ~~`GET /files/{file_id}` — **no auth**.~~ **FIXED 07 Jul 2026** — added `Depends(verify_token)`. Frontend `FileUpload.jsx` now uses blob-fetch pattern (`filesApi.getFileBlobUrl`) with `URL.createObjectURL` + cleanup on unmount. Legacy `filesApi.getFileUrl` retained but no longer functional anonymously.
-- `bcrypt==3.2.2` pinned (works with passlib 1.7.4; do not upgrade to 4.x without testing).
-- ~~`datetime.utcnow()` used ~51× — deprecated in Python 3.12+. Migrate to `datetime.now(timezone.utc)` eventually.~~ **FIXED 07 Jul 2026** — added `utcnow()` helper in `database.py` returning naive UTC via `datetime.now(timezone.utc).replace(tzinfo=None)`. All 51 call sites replaced. Naive preserved to keep string-format compatibility with existing DB records. Import added to server.py.
-- ~~`require_roles()` — returns checker coroutine; currently unused. Broken if used as `Depends(require_roles("x"))` directly — must call first.~~ **FIXED 07 Jul 2026** — outer made sync. Role comparison normalized via `norm_role()`. Now safe as `Depends(require_roles("owner","staff"))`.
-- JWT dual-transport: httpOnly cookie AND localStorage Bearer. localStorage path keeps XSS token-theft surface alive.
-- ~~Login lockout counts per-username, not per-IP — attacker can lock out any user (username enumeration + DoS).~~ **FIXED 07 Jul 2026** — lockout keyed on `(username, ip)`. Extracts IP via `X-Forwarded-For` (Render proxy) → `request.client.host` fallback. Compound index added. Distributed attackers still bypass; needs CAPTCHA/WAF for full defense.
-- ~~Service-due cutoff hardcoded: `SOLD_SINCE = datetime(2026, 5, 1)` in `/service/due`.~~ **FIXED 07 Jul 2026** — reads `SERVICE_DUE_CUTOFF` env var (YYYY-MM-DD). Falls back to `2026-05-01`. Added to `render.yaml`.
-- ~~Service-due loads all sales (20k cap) + aggregates all jobs per request — O(N) each call. Fine at current scale.~~ **FIXED 07 Jul 2026** — 60s in-memory TTL cache keyed by `days` param. HTTP middleware invalidates on any 2xx `POST/PUT/PATCH/DELETE` to `/sales*` or `/service*` paths. Safe for single-worker Render free tier. If scaling to multi-worker, replace with Redis.
-- ~~`next_sequence` uses `return_document=True` — should be `ReturnDocument.AFTER` enum; truthy value works but relies on pymongo coercion.~~ **FIXED 07 Jul 2026** — uses `ReturnDocument.AFTER` enum.
-- Backup export loads 100k docs per collection into memory — acceptable free-tier scale only.
-- CLAUDE.md previously said collection `parts` — actual name `spare_parts`.
+### Dead `parts_sales` code path **[open]**
+Full CRUD endpoints + collection still live in `server.py` (~lines 2340–2400). No frontend caller. Shares `part_bill` counter with `parts_bills`, so `_sync_counter` on `delete_parts_sale` can reset the sequence based on an unwritten collection. Delete the endpoints + collection when convenient.
 
-### Discount System (added 08 Jul 2026)
+### Print HTML injection **[open]**
+Six `document.write(html)` sites interpolate customer name / notes / part descriptions without escaping. Low exploitability (attacker = own staff), high embarrassment if triggered. Fix: single `esc()` helper wrapped around every `${...}` in print templates.
 
-- **Per-line + bill-level discount** on `parts_bills` and `service_bills`.
-- Inputs support **₹ (rupee amount) or % (percentage)** — UI toggle button (`₹` / `%`) beside each field.
-- Storage always in rupees. Frontend converts % → ₹ before send.
-- **Per-line:** reduces gross (inclusive) line total. GST re-split from discounted amount. Stored as `item.discount`. Complimentary items force discount = 0 and UI disables inputs.
-- **Bill-level:** applied **post-GST** off `grand_total`. Clamped `0 ≤ discount ≤ grand_total`. Stored as top-level `discount`. `net_total = grand_total - discount`.
-- `calc_gst_line(price, qty, gst_rate, discount=0)` — new signature (backward compatible; discount defaults to 0).
-- `calc_bill_totals(items)` — items may include `discount` key. Adds `line_discount` to output.
-- Service bills already had bill-level discount; now also per-line + `labour_discount` field on `ServiceBillCreate`.
-- Parts bills: new `PartsBillUpdate` model + `PUT /parts-bills/{id}` endpoint (restores + re-deducts stock like service bill PUT).
-- Backward compat: bills without `discount` → treated as 0, display normal.
-- **Frontend surgery:** `PartsPage.jsx` parts-bill modal + `ServicePage.jsx` service-bill modal + `BillRow` component. Both include Discount column with `₹`/`%` toggle + Free checkbox + amount recalc.
-- Follow-up: PDF templates still print old format — add discount column when time permits. Service-bill row Discount column added; parts-bill print (`printPartsBill`) not yet updated.
+### Service-bill stock deduction asymmetry **[open]**
+`create_service_bill` / `update_service_bill` do **not** decrement `spare_parts.stock` for parts consumed on a service line, but `delete_service_bill` **does** restore stock (`$inc: {stock: qty}`) for every line's `part_number`. Net effect: deleting a bill inflates inventory beyond ground truth. Either add the decrement on create/update or remove the restore on delete — pick one, not both.
 
-### GST Export — CA flat format (updated 08 Jul 2026)
+### No multi-doc transactions **[open]**
+Bill insert + N stock decrements + counter bump = separate operations. Failure mid-loop leaves partial state (stock decremented, bill unwritten). Atlas M0 supports transactions — worth adopting for `create_parts_bill` and `update_parts_bill`.
 
-- `GET /reports/gstr1?month=YYYY-MM` — admin only. Returns xlsx blob.
-- **Single sheet** (`GST`), 34 columns, matching CA template exactly.
-- 3 header rows (business name + address/GSTIN + period), 1 column-header row, N data rows, 1 totals row.
-- Row per bill (no line-item explosion). Service bills → `FormatName = SERVICES BILL`, `Item = Service`. Vehicle sales → `FormatName = SALES BILL`, `Item = Showroom Charges/CONSULTATION`.
-- **18% GST inclusive** back-calc for both categories (matches CA sample). Karnataka intra-state → CGST=SGST=tax/2, IGST=0.
-- Rounding: `Bill Amount = round(taxable + tax)`. `Round Off = Bill Amount - (taxable + tax)`.
-- Totals row uses `=SUM()` formulas (not hardcoded), yellow fill.
-- Date format `DD/MM/YYYY`. Customer name appended with mobile if present.
-- Party GSTIN blank until `customer_gstin` field is added to sales/service_bills schemas.
-- HSN/SAC Code column blank — no mapping table yet.
-- Filename: `GST_YYYY-MM.xlsx`. Frontend button: "Download GST Report".
-- Follow-up: (a) add `customer_gstin` field + form input, (b) HSN mapping, (c) verify against CA's next filing.
+### Login timing oracle **[minor]**
+`not user or not pwd_ctx.verify(...)` — missing user skips bcrypt (~200 ms), enabling username enumeration by timing. Lockout blunts it. Fix: verify against a fixed dummy hash when user is missing.
+
+### Lifespan swallows DB failure **[minor]**
+Startup `except Exception: print(WARNING)` then `yield`. `/health` still returns 200 even if `db is None`. UptimeRobot won't notice — every real request 500s. Fix: `/health` should ping DB, or lifespan should raise on DB failure.
+
+### GST Export (GSTR-1)
+- `GET /reports/gstr1?month=YYYY-MM` — admin, returns xlsx blob, single sheet `GST`, 34 columns matching CA flat template exactly.
+- 3 header rows + column-header row + N data rows + totals row (`=SUM()` formulas, yellow fill).
+- Row per bill (no line-item explosion). Service bills → `FormatName = SERVICES BILL, Item = Service`. Vehicle sales → `FormatName = SALES BILL, Item = Showroom Charges/CONSULTATION`.
+- 18% GST inclusive back-calc. Karnataka intra-state (CGST=SGST=tax/2, IGST=0).
+- **Open**: `customer_gstin` field not yet on sales/service_bills schemas → party GSTIN blank → all rows route B2CL/B2CS not B2B. HSN/SAC mapping table pending CA input. Verify against next CA filing.
+
+---
+
+## Recent Hardening (20 Aug 2026)
+
+**Sale milestone completion dates.** Sales list now captures the date each milestone (documents/invoice/insurance/tax_paid/number_plate) was achieved. Clicking an empty milestone button opens a date-picker popup (defaults to today, `max=today`); Save persists both the boolean flag and the date. Unchecking is instant — no popup, date removed. Storage: bool state in existing `sale.milestones`, dates in new sibling dict `sale.milestone_dates` — `{documents: "2026-08-20", ...}`. Backward compatible; legacy sales without the dict render fine, owner can retro-fill via the popup. Backend: `MilestoneUpdate` model gained optional `date` field (YYYY-MM-DD, validated via `re.fullmatch`); `PATCH /sales/{id}/milestone` persists both dicts and returns both; SaleCreate/SaleUpdate accept `milestone_dates` for import/backfill. Frontend: `MilestoneDateModal` in `SalesPage.jsx`; `MilestoneRow` tooltip now shows completion date (`"Done on DD Mon YYYY"`); optimistic mutation updates both dicts; `salesApi.updateMilestone(id, key, value, date)` signature extended. Reports and PDFs do not yet surface milestone dates — separate pass.
+
+**Three critical fixes applied in one patch, all in `server.py`:**
+
+1. **Numeric input validation.** Every numeric field on every request model now has `Field(ge=..., gt=..., le=...)` constraints. 45 field validators across 18 models covering: `qty`, `unit_price`, `gst_rate`, `discount`, `stock`, `reorder_level`, `purchase_price`, `selling_price`, `amount` (debt/expense/payment), `salary`, `labour_charges`. `PaymentCreate.amount` is `gt=0`; other legitimately-zero fields are `ge=0`; percentages are `le=100`. Blocks the negative-qty stock inflation attack — a bill with `qty=-5` no longer refills stock via the delete-restore path.
+2. **Regex injection / ReDoS.** All raw `{"$regex": search}` sites (29 fields across 8 list endpoints) replaced with `re.escape(search)` first. Users typing `(` / `[` / `*` in any search box no longer 500 the server; catastrophic-backtracking regexes no longer DoS Atlas M0. `expenses.month` (`YYYY-MM`) now validated with `re.fullmatch` before use.
+3. **Atomic stock decrement.** Three sites (`create_parts_sale`, `create_parts_bill`, `update_parts_bill`) rewritten from check-then-write to guarded `update_one({"_id": ..., "stock": {"$gte": qty}}, {"$inc": {"stock": -qty}, "$push": {"stock_log": ...}})`. If `matched_count == 0` → insufficient stock, re-read for accurate error message. Two concurrent bills for the same part can no longer oversell.
+
+CLAUDE.md rewritten same day to reflect actual routing (`/api`, not `/api/v1`), all pages/routes/collections that had drifted, and the four remaining open items above (page ACL, dead parts_sales, print injection, service-bill stock asymmetry).
+
+---
+
+## Earlier Hardening
+
+- **07 Jul 2026** — GridFS auth added (`verify_token` on `/files/{id}`); frontend switched to blob-fetch. `utcnow()` helper replaces `datetime.utcnow()` at 51 sites. `require_roles()` outer made sync + normalized comparison. Login lockout keyed on `(username, ip)` — no more DoS-any-user via username enumeration. Service-due cutoff moved to env var. `/service/due` gained 60s in-memory TTL cache with middleware invalidation. `next_sequence` switched to `ReturnDocument.AFTER` enum.
+- **08 Jul 2026** — Discount system unified (per-line + bill-level, ₹/% toggle) across parts_bills + service_bills. Backup system stripped (removed APScheduler, boto3, ten env vars). GSTR-1 export rewritten to CA's 34-column flat template.
+- **Deployment fixes** — DNS fix for mmmotors.biz at GoDaddy; `useDraft.js` → `useDraft.jsx` rename for Vite JSX transform; missing `utcnow` import crash on Render.
+- **Auth history** — migrated from localStorage JWT → httpOnly cookies → dual-token (both) for cross-origin safety.
+- **Accident estimate** — save bugs fixed (missing `"accident_estimate"` in `_PREFIX`, `:04d` type error on pre-formatted string), CORS on PUT for deleted estimates, six-tab page with print.
+- **Service due** — rewritten for 30-day first service (sold), 90-day subsequent, 90-day flat for service-only, configurable cutoff.
+
+---
