@@ -801,21 +801,93 @@ const MILESTONE_DEFS = [
   { key:'number_plate', label:'Number Plate', short:'P', color:'#c8940a' },
 ];
 
+// Format YYYY-MM-DD → DD Mon YYYY for display (falls back to raw on parse failure)
+function fmtMilestoneDate(iso) {
+  if (!iso) return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return iso;
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const mo = months[parseInt(m[2],10) - 1] || m[2];
+  return `${m[3]} ${mo} ${m[1]}`;
+}
+
+// Popup for entering the completion date when checking a milestone
+function MilestoneDateModal({ open, milestoneLabel, defaultDate, onSave, onCancel, saving }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [date, setDate] = useState(defaultDate || today);
+  // Reset date when opening for a different milestone
+  const [prevOpen, setPrevOpen] = useState(false);
+  if (open && !prevOpen) {
+    setDate(defaultDate || today);
+    setPrevOpen(true);
+  } else if (!open && prevOpen) {
+    setPrevOpen(false);
+  }
+
+  if (!open) return null;
+  return (
+    <div
+      onClick={onCancel}
+      style={{
+        position:'fixed', inset:0, background:'rgba(0,0,0,.55)',
+        display:'flex', alignItems:'center', justifyContent:'center', zIndex:1000,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background:'var(--card, #1a1a1c)', border:'1px solid var(--border, #333)',
+          borderRadius:6, padding:24, minWidth:320, maxWidth:'90vw',
+          boxShadow:'0 20px 60px rgba(0,0,0,.5)',
+        }}
+      >
+        <div style={{ fontSize:11, letterSpacing:'.15em', color:'var(--dim)', textTransform:'uppercase', marginBottom:6 }}>
+          Mark milestone complete
+        </div>
+        <div style={{ fontSize:18, fontWeight:700, marginBottom:18, color:'var(--text, #eee)' }}>
+          {milestoneLabel}
+        </div>
+        <Field label="Completion date">
+          <input
+            type="date"
+            value={date}
+            max={today}
+            onChange={(e) => setDate(e.target.value)}
+            autoFocus
+            style={{ width:'100%' }}
+          />
+        </Field>
+        <div style={{ display:'flex', gap:10, justifyContent:'flex-end', marginTop:22 }}>
+          <GhostBtn onClick={onCancel}>Cancel</GhostBtn>
+          <Btn onClick={() => onSave(date)} disabled={saving || !date}>
+            {saving ? 'Saving…' : 'Save'}
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MilestoneRow({ sale, onToggle, disabled }) {
-  const m = sale.milestones || {};
+  const m  = sale.milestones       || {};
+  const md = sale.milestone_dates  || {};
   const done = MILESTONE_DEFS.filter(d => m[d.key]).length;
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:4, minWidth:170 }}>
       <div style={{ display:'flex', gap:4, alignItems:'center' }}>
         {MILESTONE_DEFS.map(def => {
           const checked = !!m[def.key];
+          const dateStr = md[def.key] ? fmtMilestoneDate(md[def.key]) : '';
+          const title = checked
+            ? `${def.label} — Done${dateStr ? ` on ${dateStr}` : ''} (click to undo)`
+            : `${def.label} — Pending (click to mark done)`;
           return (
             <button
               key={def.key}
               type="button"
-              title={`${def.label} — ${checked ? 'Done' : 'Pending'} (click to toggle)`}
+              title={title}
               disabled={disabled}
-              onClick={(e) => { e.stopPropagation(); onToggle(sale.id, def.key, !checked); }}
+              onClick={(e) => { e.stopPropagation(); onToggle(sale, def, !checked); }}
               style={{
                 width:22, height:22, borderRadius:4,
                 background: checked ? def.color : 'transparent',
@@ -925,16 +997,26 @@ const createMut = useMutation({
   });
 
   // ─── Milestone toggle with optimistic update ─────────────────────────
+  // Popup state: when a user tries to CHECK a milestone, we open a date picker
+  // and defer the actual mutation until they confirm.
+  const [pendingMilestone, setPendingMilestone] = useState(null);
+  // { saleId, key, label, defaultDate }
+
   const milestoneMut = useMutation({
-    mutationFn: ({ id, key, value }) => salesApi.updateMilestone(id, key, value),
-    onMutate: async ({ id, key, value }) => {
+    mutationFn: ({ id, key, value, date }) => salesApi.updateMilestone(id, key, value, date),
+    onMutate: async ({ id, key, value, date }) => {
       await qc.cancelQueries({ queryKey: ['sales'] });
       const previous = qc.getQueriesData({ queryKey: ['sales'] });
       qc.setQueriesData({ queryKey: ['sales'] }, (old) => {
         if (!Array.isArray(old)) return old;
-        return old.map(s => s.id === id
-          ? { ...s, milestones: { ...(s.milestones || {}), [key]: value } }
-          : s);
+        return old.map(s => {
+          if (s.id !== id) return s;
+          const nextMs    = { ...(s.milestones      || {}), [key]: value };
+          const nextDates = { ...(s.milestone_dates || {}) };
+          if (value) nextDates[key] = date || nextDates[key] || new Date().toISOString().slice(0,10);
+          else       delete nextDates[key];
+          return { ...s, milestones: nextMs, milestone_dates: nextDates };
+        });
       });
       return { previous };
     },
@@ -943,8 +1025,24 @@ const createMut = useMutation({
       if (ctx?.previous) ctx.previous.forEach(([qk, data]) => qc.setQueryData(qk, data));
       toast.error(errMsg(err, 'Milestone update failed'));
     },
+    onSuccess: () => setPendingMilestone(null),
     onSettled: () => { qc.invalidateQueries(['sales']); },
   });
+
+  // Called by MilestoneRow buttons. Checking → open popup. Unchecking → mutate immediately.
+  const handleMilestoneToggle = (sale, def, nextValue) => {
+    if (!nextValue) {
+      milestoneMut.mutate({ id: sale.id, key: def.key, value: false });
+      return;
+    }
+    const existing = (sale.milestone_dates || {})[def.key];
+    setPendingMilestone({
+      saleId:      sale.id,
+      key:         def.key,
+      label:       def.label,
+      defaultDate: existing || new Date().toISOString().slice(0, 10),
+    });
+  };
 
   const sales = Array.isArray(data) ? data : [];
   const { sorted: sortedSales, Th: SalesTh } = useSortable(sales, 'sale_date', 'desc');
@@ -953,6 +1051,22 @@ const createMut = useMutation({
   return (
     <div>
       {selSale && <InvoiceModal sale={selSale} onClose={()=>setSelSale(null)} />}
+      <MilestoneDateModal
+        open={!!pendingMilestone}
+        milestoneLabel={pendingMilestone?.label || ''}
+        defaultDate={pendingMilestone?.defaultDate}
+        saving={milestoneMut.isPending}
+        onCancel={() => setPendingMilestone(null)}
+        onSave={(date) => {
+          if (!pendingMilestone) return;
+          milestoneMut.mutate({
+            id:    pendingMilestone.saleId,
+            key:   pendingMilestone.key,
+            value: true,
+            date,
+          });
+        }}
+      />
 
       {/* Edit Sale Modal */}
       {editSale && (
@@ -1036,7 +1150,7 @@ const createMut = useMutation({
                     <MilestoneRow
                       sale={s}
                       disabled={milestoneMut.isPending}
-                      onToggle={(id, key, value) => milestoneMut.mutate({ id, key, value })}
+                      onToggle={handleMilestoneToggle}
                     />
                   </td>
 
