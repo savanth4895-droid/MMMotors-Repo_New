@@ -223,7 +223,7 @@ class UserCreate(BaseModel):
     email:         Optional[str]       = ""
     role:          str                 = "sales"
     password:      str
-    salary:        Optional[float]     = 0
+    salary:        Optional[float]     = Field(0, ge=0)
     join_date:     Optional[str]       = ""
     status:        Optional[str]       = "active"
     allowed_pages: Optional[list[str]] = None  # None = use role defaults
@@ -233,7 +233,7 @@ class UserUpdate(BaseModel):
     mobile:        Optional[str]       = None
     email:         Optional[str]       = None
     role:          Optional[str]       = None
-    salary:        Optional[float]     = None
+    salary:        Optional[float]     = Field(None, ge=0)
     status:        Optional[str]       = None
     join_date:     Optional[str]       = None
     allowed_pages: Optional[list[str]] = None
@@ -323,6 +323,7 @@ class SaleCreate(BaseModel):
     hsrp_date:         Optional[str]   = ""
     hsrp_notes:        Optional[str]   = ""
     milestones:        Optional[Dict[str, bool]] = None
+    milestone_dates:   Optional[Dict[str, str]]  = None
 
 class SaleUpdate(BaseModel):
     status:            Optional[str]   = None
@@ -350,6 +351,7 @@ class SaleUpdate(BaseModel):
     hsrp_date:         Optional[str]   = None
     hsrp_notes:        Optional[str]   = None
     milestones:        Optional[Dict[str, bool]] = None
+    milestone_dates:   Optional[Dict[str, str]]  = None
 
 
 # ─── Sale Milestones ───────────────────────────────────────────────────────
@@ -362,6 +364,7 @@ def default_milestones() -> Dict[str, bool]:
 class MilestoneUpdate(BaseModel):
     key:   str
     value: bool
+    date:  Optional[str] = None   # YYYY-MM-DD; required-ish when value=True (defaults to today)
 
 # ── Service Jobs ──────────────────────────────────────────────────────────────
 class ServiceJobCreate(BaseModel):
@@ -405,27 +408,27 @@ class BillLineItem(BaseModel):
     description:   str
     part_number:   Optional[str] = ""
     hsn_code:      Optional[str] = ""
-    qty:           int           = 1
-    unit_price:    float
-    gst_rate:      float         = 18
-    discount:      Optional[float] = 0
+    qty:           int           = Field(1, ge=1)
+    unit_price:    float         = Field(..., ge=0)
+    gst_rate:      float         = Field(18, ge=0, le=100)
+    discount:      Optional[float] = Field(0, ge=0)
     complimentary: Optional[bool] = False
 
 class ServiceBillCreate(BaseModel):
     job_id:          str
-    labour_charges:  Optional[float] = 0
-    labour_gst_rate: Optional[float] = 18
-    labour_discount: Optional[float] = 0
+    labour_charges:  Optional[float] = Field(0, ge=0)
+    labour_gst_rate: Optional[float] = Field(18, ge=0, le=100)
+    labour_discount: Optional[float] = Field(0, ge=0)
     items:           Optional[List[BillLineItem]] = []
     payment_mode:    Optional[str] = "Cash"
     notes:           Optional[str] = ""
-    discount:        Optional[float] = 0
+    discount:        Optional[float] = Field(0, ge=0)
 
 class ServiceBillUpdate(BaseModel):
     items:           Optional[List[BillLineItem]] = None
     payment_mode:    Optional[str]   = None
     notes:           Optional[str]   = None
-    discount:        Optional[float] = None
+    discount:        Optional[float] = Field(None, ge=0)
 
 # ── Spare Parts ───────────────────────────────────────────────────────────────
 class SparePartCreate(BaseModel):
@@ -434,11 +437,11 @@ class SparePartCreate(BaseModel):
     category:        Optional[str] = ""
     brand:           Optional[str] = ""
     compatible_with: Optional[List[str]] = []
-    stock:           int    = 0
-    reorder_level:   int    = 5
-    purchase_price:  float
-    selling_price:   float
-    gst_rate:        float  = 18
+    stock:           int    = Field(0, ge=0)
+    reorder_level:   int    = Field(5, ge=0)
+    purchase_price:  float  = Field(..., ge=0)
+    selling_price:   float  = Field(..., ge=0)
+    gst_rate:        float  = Field(18, ge=0, le=100)
     hsn_code:        Optional[str] = ""
     location:        Optional[str] = ""
 
@@ -447,11 +450,11 @@ class SparePartUpdate(BaseModel):
     category:        Optional[str] = None
     brand:           Optional[str] = None
     compatible_with: Optional[List[str]] = None
-    stock:           Optional[int] = None
-    reorder_level:   Optional[int] = None
-    purchase_price:  Optional[float] = None
-    selling_price:   Optional[float] = None
-    gst_rate:        Optional[float] = None
+    stock:           Optional[int]   = Field(None, ge=0)
+    reorder_level:   Optional[int]   = Field(None, ge=0)
+    purchase_price:  Optional[float] = Field(None, ge=0)
+    selling_price:   Optional[float] = Field(None, ge=0)
+    gst_rate:        Optional[float] = Field(None, ge=0, le=100)
     hsn_code:        Optional[str] = None
     location:        Optional[str] = None
 
@@ -492,14 +495,14 @@ class PurchaseBillItemIn(BaseModel):
     part_name:      str
     part_number:    Optional[str] = ""     # vendor's SKU
     hsn:            Optional[str] = ""
-    qty:            float
+    qty:            float           = Field(..., gt=0)
     unit:           Optional[str] = "PCS"
-    rate:           float                  # per-unit rate before discount
-    discount_pct:   Optional[float] = 0
-    gst_pct:        Optional[float] = 18
+    rate:           float           = Field(..., ge=0)   # per-unit rate before discount
+    discount_pct:   Optional[float] = Field(0, ge=0, le=100)
+    gst_pct:        Optional[float] = Field(18, ge=0, le=100)
     # Optional per-line sale price update, and new-part hints
-    new_sale_price: Optional[float] = None
-    new_part_selling_price: Optional[float] = None  # only used if creating new part
+    new_sale_price: Optional[float] = Field(None, ge=0)
+    new_part_selling_price: Optional[float] = Field(None, ge=0)  # only used if creating new part
 
 class PurchaseBillCreate(BaseModel):
     vendor_id:        str
@@ -524,9 +527,9 @@ class PartsSaleItem(BaseModel):
     part_number: str
     name:        str
     hsn_code:    Optional[str] = ""
-    qty:         int
-    unit_price:  float
-    gst_rate:    float = 18
+    qty:         int    = Field(..., ge=1)
+    unit_price:  float  = Field(..., ge=0)
+    gst_rate:    float  = Field(18, ge=0, le=100)
 
 class PartsSaleCreate(BaseModel):
     customer_name:  Optional[str] = ""
@@ -542,10 +545,10 @@ class PartsBillItem(BaseModel):
     part_number:     Optional[str]   = ""
     name:            str
     hsn_code:        Optional[str]   = "8714"
-    qty:             int             = 1
-    unit_price:      float
-    gst_rate:        float           = 18.0
-    discount:        Optional[float] = 0
+    qty:             int             = Field(1, ge=1)
+    unit_price:      float           = Field(..., ge=0)
+    gst_rate:        float           = Field(18.0, ge=0, le=100)
+    discount:        Optional[float] = Field(0, ge=0)
     complimentary:   Optional[bool]  = False
 
 class PartsBillCreate(BaseModel):
@@ -554,7 +557,7 @@ class PartsBillCreate(BaseModel):
     customer_vehicle: Optional[str] = ""
     payment_mode:     Optional[str] = "Cash"
     items:            List[PartsBillItem] = []
-    discount:         Optional[float] = 0
+    discount:         Optional[float] = Field(0, ge=0)
 
 class PartsBillUpdate(BaseModel):
     customer_name:    Optional[str] = None
@@ -562,7 +565,7 @@ class PartsBillUpdate(BaseModel):
     customer_vehicle: Optional[str] = None
     payment_mode:     Optional[str] = None
     items:            Optional[List[PartsBillItem]] = None
-    discount:         Optional[float] = None
+    discount:         Optional[float] = Field(None, ge=0)
 
 
 # ─── Accident Estimates ───────────────────────────────────────────────────────
@@ -570,14 +573,14 @@ class AccidentEstimatePartItem(BaseModel):
     part_name:  str   = ""
     part_number: str  = ""
     condition:  str   = "New OEM"
-    qty:        float = 1
-    unit_price: float = 0
-    gst:        float = 18
+    qty:        float = Field(1, ge=0)
+    unit_price: float = Field(0, ge=0)
+    gst:        float = Field(18, ge=0, le=100)
 
 class AccidentEstimateLabourItem(BaseModel):
     description: str   = ""
-    hours:       float = 1
-    rate:        float = 0
+    hours:       float = Field(1, ge=0)
+    rate:        float = Field(0, ge=0)
 
 class AccidentEstimateCreate(BaseModel):
     vehicle:     dict = {}
@@ -781,10 +784,11 @@ async def list_customers(
 ):
     query: dict = {}
     if search:
+        s = re.escape(search)
         query["$or"] = [
-            {"name":   {"$regex": search, "$options": "i"}},
-            {"mobile": {"$regex": search, "$options": "i"}},
-            {"email":  {"$regex": search, "$options": "i"}},
+            {"name":   {"$regex": s, "$options": "i"}},
+            {"mobile": {"$regex": s, "$options": "i"}},
+            {"email":  {"$regex": s, "$options": "i"}},
         ]
     if tag:
         query["tags"] = tag
@@ -859,11 +863,12 @@ async def list_vehicles(
     if status: query["status"] = status
     if type:   query["type"]   = type
     if search:
+        s = re.escape(search)
         query["$or"] = [
-            {"model":          {"$regex": search, "$options": "i"}},
-            {"chassis_number": {"$regex": search, "$options": "i"}},
-            {"vehicle_number": {"$regex": search, "$options": "i"}},
-            {"color":          {"$regex": search, "$options": "i"}},
+            {"model":          {"$regex": s, "$options": "i"}},
+            {"chassis_number": {"$regex": s, "$options": "i"}},
+            {"vehicle_number": {"$regex": s, "$options": "i"}},
+            {"color":          {"$regex": s, "$options": "i"}},
         ]
     docs  = await db.vehicles.find(query).sort("created_at", -1).limit(limit).to_list(limit)
     total = await db.vehicles.count_documents(query)
@@ -1122,11 +1127,12 @@ async def list_sales(
     if customer_id: query["customer_id"] = customer_id
     if status:      query["status"]      = status
     if search:
+        s = re.escape(search)
         query["$or"] = [
-            {"invoice_number": {"$regex": search, "$options": "i"}},
-            {"customer_name":  {"$regex": search, "$options": "i"}},
-            {"vehicle_model":  {"$regex": search, "$options": "i"}},
-            {"vehicle_number": {"$regex": search, "$options": "i"}},
+            {"invoice_number": {"$regex": s, "$options": "i"}},
+            {"customer_name":  {"$regex": s, "$options": "i"}},
+            {"vehicle_model":  {"$regex": s, "$options": "i"}},
+            {"vehicle_number": {"$regex": s, "$options": "i"}},
         ]
     docs  = await db.sales.find(query).sort("created_at", -1).limit(limit).to_list(limit)
     total = await db.sales.count_documents(query)
@@ -1179,6 +1185,7 @@ async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
         "hsrp_date":       body.hsrp_date or "",
         "hsrp_notes":      body.hsrp_notes or "",
         "milestones":      {**default_milestones(), **(body.milestones or {})},
+        "milestone_dates": dict(body.milestone_dates or {}),
         "created_at":      utcnow().isoformat(),
     }
     result = await db.sales.insert_one(doc)
@@ -1266,17 +1273,33 @@ async def update_sale(sale_id: str, body: SaleUpdate, current_user=Depends(verif
 
 @api_router.patch("/sales/{sale_id}/milestone")
 async def update_sale_milestone(sale_id: str, body: MilestoneUpdate, current_user=Depends(verify_token)):
-    """Toggle a single sale milestone (documents/invoice/insurance/tax_paid/number_plate)."""
+    """Toggle a single sale milestone (documents/invoice/insurance/tax_paid/number_plate).
+    When value=True, records the completion date (defaults to today if not supplied).
+    When value=False, removes any previously recorded date."""
     if body.key not in SALE_MILESTONE_KEYS:
         raise HTTPException(status_code=400, detail=f"Invalid milestone key. Allowed: {SALE_MILESTONE_KEYS}")
-    sale = await db.sales.find_one({"_id": obj_id(sale_id)}, {"_id": 1, "milestones": 1})
+    sale = await db.sales.find_one(
+        {"_id": obj_id(sale_id)},
+        {"_id": 1, "milestones": 1, "milestone_dates": 1},
+    )
     if not sale:
         raise HTTPException(status_code=404, detail="Sale not found")
     # Backfill missing milestones dict if this is a legacy sale
-    current = {**default_milestones(), **(sale.get("milestones") or {})}
+    current       = {**default_milestones(), **(sale.get("milestones") or {})}
+    current_dates = dict(sale.get("milestone_dates") or {})
     current[body.key] = bool(body.value)
-    await db.sales.update_one({"_id": obj_id(sale_id)}, {"$set": {"milestones": current}})
-    return {"id": sale_id, "milestones": current}
+    if body.value:
+        d = (body.date or utcnow().strftime("%Y-%m-%d")).strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
+            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+        current_dates[body.key] = d
+    else:
+        current_dates.pop(body.key, None)
+    await db.sales.update_one(
+        {"_id": obj_id(sale_id)},
+        {"$set": {"milestones": current, "milestone_dates": current_dates}},
+    )
+    return {"id": sale_id, "milestones": current, "milestone_dates": current_dates}
 
 
 @api_router.delete("/sales/{sale_id}")
@@ -1308,12 +1331,13 @@ async def list_service_jobs(
     if customer_id: query["customer_id"] = customer_id
     if technician:  query["technician"]  = technician
     if search:
+        s = re.escape(search)
         query["$or"] = [
-            {"job_number":     {"$regex": search, "$options": "i"}},
-            {"customer_name":  {"$regex": search, "$options": "i"}},
-            {"vehicle_number": {"$regex": search, "$options": "i"}},
-            {"model":          {"$regex": search, "$options": "i"}},
-            {"complaint":      {"$regex": search, "$options": "i"}},
+            {"job_number":     {"$regex": s, "$options": "i"}},
+            {"customer_name":  {"$regex": s, "$options": "i"}},
+            {"vehicle_number": {"$regex": s, "$options": "i"}},
+            {"model":          {"$regex": s, "$options": "i"}},
+            {"complaint":      {"$regex": s, "$options": "i"}},
         ]
     docs  = await db.service_jobs.find(query).sort("created_at",-1).limit(limit).to_list(limit)
     total = await db.service_jobs.count_documents(query)
@@ -2222,10 +2246,11 @@ async def list_parts(
     if out_of_stock:
         query["stock"] = 0
     if search:
+        s = re.escape(search)
         query["$or"] = [
-            {"name":        {"$regex": search, "$options":"i"}},
-            {"part_number": {"$regex": search, "$options":"i"}},
-            {"brand":       {"$regex": search, "$options":"i"}},
+            {"name":        {"$regex": s, "$options":"i"}},
+            {"part_number": {"$regex": s, "$options":"i"}},
+            {"brand":       {"$regex": s, "$options":"i"}},
         ]
     docs  = await db.spare_parts.find(query).skip(p["skip"]).limit(p["limit"]).sort("name",1).to_list(p["limit"])
     total = await db.spare_parts.count_documents(query)
@@ -2348,10 +2373,11 @@ async def list_parts_sales(
 ):
     query: dict = {}
     if search:
+        s = re.escape(search)
         query["$or"] = [
-            {"bill_number":     {"$regex": search, "$options":"i"}},
-            {"customer_name":   {"$regex": search, "$options":"i"}},
-            {"customer_mobile": {"$regex": search, "$options":"i"}},
+            {"bill_number":     {"$regex": s, "$options":"i"}},
+            {"customer_name":   {"$regex": s, "$options":"i"}},
+            {"customer_mobile": {"$regex": s, "$options":"i"}},
         ]
     docs  = await db.parts_sales.find(query).skip(p["skip"]).limit(p["limit"]).sort("created_at",-1).to_list(p["limit"])
     total = await db.parts_sales.count_documents(query)
@@ -2366,11 +2392,17 @@ async def create_parts_sale(body: PartsSaleCreate, current_user=Depends(verify_t
         part = await db.spare_parts.find_one({"_id": obj_id(item.part_id)})
         if not part:
             raise HTTPException(status_code=404, detail=f"Part {item.part_id} not found")
-        if part["stock"] < item.qty:
-            raise HTTPException(status_code=409, detail=f"Insufficient stock for {part['name']} (have {part['stock']}, need {item.qty})")
+        # Atomic guarded decrement — no TOCTOU race
+        dec_res = await db.spare_parts.update_one(
+            {"_id": obj_id(item.part_id), "stock": {"$gte": item.qty}},
+            {"$inc": {"stock": -item.qty}},
+        )
+        if dec_res.matched_count == 0:
+            fresh = await db.spare_parts.find_one({"_id": obj_id(item.part_id)}, {"stock": 1, "name": 1})
+            have = (fresh or {}).get("stock", 0)
+            raise HTTPException(status_code=409, detail=f"Insufficient stock for {part['name']} (have {have}, need {item.qty})")
         line = calc_gst_line(item.unit_price, item.qty, item.gst_rate)
         items_out.append({"part_id":item.part_id,"part_number":item.part_number,"name":item.name,"hsn_code":item.hsn_code or part.get("hsn_code",""),"qty":item.qty,"unit_price":item.unit_price,"gst_rate":item.gst_rate,**line})
-        await db.spare_parts.update_one({"_id": obj_id(item.part_id)}, {"$inc": {"stock": -item.qty}})
     totals  = calc_bill_totals([{"unit_price":i["unit_price"],"qty":i["qty"],"gst_rate":i["gst_rate"]} for i in items_out])
     bill_no = await next_sequence("part_bill")
     doc = {"bill_number":bill_no,"customer_name":body.customer_name or "","customer_mobile":body.customer_mobile or "","items":items_out,**totals,"amount_in_words":amount_in_words(totals["grand_total"]),"payment_mode":body.payment_mode or "Cash","sold_by":body.sold_by or current_user.get("name",""),"sale_date":utcnow().strftime("%d %b %Y"),"notes":body.notes or "","created_at":utcnow().isoformat()}
@@ -2411,11 +2443,12 @@ async def list_parts_bills(
 ):
     query: dict = {}
     if search:
+        s = re.escape(search)
         query["$or"] = [
-            {"bill_number":      {"$regex": search, "$options":"i"}},
-            {"customer_name":    {"$regex": search, "$options":"i"}},
-            {"customer_mobile":  {"$regex": search, "$options":"i"}},
-            {"customer_vehicle": {"$regex": search, "$options":"i"}},
+            {"bill_number":      {"$regex": s, "$options":"i"}},
+            {"customer_name":    {"$regex": s, "$options":"i"}},
+            {"customer_mobile":  {"$regex": s, "$options":"i"}},
+            {"customer_vehicle": {"$regex": s, "$options":"i"}},
         ]
     docs  = await db.parts_bills.find(query).skip(p["skip"]).limit(p["limit"]).sort("created_at",-1).to_list(p["limit"])
     total = await db.parts_bills.count_documents(query)
@@ -2437,21 +2470,22 @@ async def create_parts_bill(body: PartsBillCreate, current_user=Depends(verify_t
             part = await db.spare_parts.find_one({"part_number": item.part_number})
 
         if part:
-            current_stock = part.get("stock") or 0
-            if current_stock < item.qty:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Insufficient stock for {item.name} (have {current_stock}, need {item.qty})"
-                )
-            new_stock = max(0, current_stock - item.qty)
-            await db.spare_parts.update_one(
-                {"_id": part["_id"]},
-                {"$set": {"stock": new_stock}, "$push": {"stock_log": {
+            # Atomic guarded decrement — no TOCTOU race; log entry via $push in same op
+            dec_res = await db.spare_parts.update_one(
+                {"_id": part["_id"], "stock": {"$gte": item.qty}},
+                {"$inc": {"stock": -item.qty}, "$push": {"stock_log": {
                     "qty": -item.qty, "action": "subtract",
                     "reason": "complimentary" if item.complimentary else "parts_bill",
-                    "new_stock": new_stock, "date": utcnow().isoformat(),
+                    "date": utcnow().isoformat(),
                 }}}
             )
+            if dec_res.matched_count == 0:
+                fresh = await db.spare_parts.find_one({"_id": part["_id"]}, {"stock": 1})
+                have = (fresh or {}).get("stock", 0)
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Insufficient stock for {item.name} (have {have}, need {item.qty})"
+                )
 
         if item.complimentary:
             line = {"gross":0.0,"discount":0.0,"taxable":0.0,"cgst":0.0,"sgst":0.0,"gst_total":0.0,"total":0.0}
@@ -2547,21 +2581,22 @@ async def update_parts_bill(bill_id: str, body: PartsBillUpdate, current_user=De
             if not part and item.part_number:
                 part = await db.spare_parts.find_one({"part_number": item.part_number})
             if part:
-                current_stock = part.get("stock") or 0
-                if current_stock < item.qty:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Insufficient stock for {item.name} (have {current_stock}, need {item.qty})"
-                    )
-                new_stock = max(0, current_stock - item.qty)
-                await db.spare_parts.update_one(
-                    {"_id": part["_id"]},
-                    {"$set": {"stock": new_stock}, "$push": {"stock_log": {
+                # Atomic guarded decrement — no TOCTOU race
+                dec_res = await db.spare_parts.update_one(
+                    {"_id": part["_id"], "stock": {"$gte": item.qty}},
+                    {"$inc": {"stock": -item.qty}, "$push": {"stock_log": {
                         "qty": -item.qty, "action": "subtract",
                         "reason": "complimentary" if item.complimentary else "parts_bill_edit",
-                        "new_stock": new_stock, "date": utcnow().isoformat(),
+                        "date": utcnow().isoformat(),
                     }}}
                 )
+                if dec_res.matched_count == 0:
+                    fresh = await db.spare_parts.find_one({"_id": part["_id"]}, {"stock": 1})
+                    have = (fresh or {}).get("stock", 0)
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Insufficient stock for {item.name} (have {have}, need {item.qty})"
+                    )
 
             if item.complimentary:
                 line = {"gross":0.0,"discount":0.0,"taxable":0.0,"cgst":0.0,"sgst":0.0,"gst_total":0.0,"total":0.0}
@@ -3946,13 +3981,13 @@ async def import_counts(current_user=Depends(verify_token)):
 
 class DebtCreate(BaseModel):
     customer_id:   str
-    amount:        float
+    amount:        float = Field(..., ge=0)
     description:   Optional[str] = ""
     due_date:      Optional[str] = ""
     source:        Optional[str] = "manual"   # manual | sale | service
 
 class PaymentCreate(BaseModel):
-    amount:     float
+    amount:     float = Field(..., gt=0)
     notes:      Optional[str] = ""
     paid_date:  Optional[str] = ""
 
@@ -4061,7 +4096,7 @@ class ExpenseCreate(BaseModel):
     date:         str
     category:     str
     sub_category: Optional[str] = ""
-    amount:       float
+    amount:       float = Field(..., ge=0)
     description:  Optional[str] = ""
     vendor:       Optional[str] = ""
     payment_mode: Optional[str] = "Cash"
@@ -4072,7 +4107,7 @@ class ExpenseUpdate(BaseModel):
     date:         Optional[str]   = None
     category:     Optional[str]   = None
     sub_category: Optional[str]   = None
-    amount:       Optional[float] = None
+    amount:       Optional[float] = Field(None, ge=0)
     description:  Optional[str]   = None
     vendor:       Optional[str]   = None
     payment_mode: Optional[str]   = None
@@ -4088,13 +4123,17 @@ async def list_expenses(
     current_user=Depends(verify_token),
 ):
     q: dict = {}
-    if month:    q["date"] = {"$regex": f"^{month}"}
+    if month:
+        if not re.fullmatch(r"\d{4}-\d{2}", month):
+            raise HTTPException(status_code=400, detail="month must be YYYY-MM")
+        q["date"] = {"$regex": f"^{re.escape(month)}"}
     if category: q["category"] = category
     if search:
+        s = re.escape(search)
         q["$or"] = [
-            {"description": {"$regex": search, "$options": "i"}},
-            {"vendor":      {"$regex": search, "$options": "i"}},
-            {"category":    {"$regex": search, "$options": "i"}},
+            {"description": {"$regex": s, "$options": "i"}},
+            {"vendor":      {"$regex": s, "$options": "i"}},
+            {"category":    {"$regex": s, "$options": "i"}},
         ]
     docs = await db.expenses.find(q).sort("date", -1).limit(limit).to_list(limit)
     total = await db.expenses.count_documents(q)
