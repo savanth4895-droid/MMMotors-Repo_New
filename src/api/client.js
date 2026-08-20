@@ -97,7 +97,8 @@ export const salesApi = {
   update:           (id, d)          => api.put(`/sales/${id}`, d),
   delete:           (id)             => api.delete(`/sales/${id}`),
   stats:            ()               => api.get('/sales/stats/summary'),
-  updateMilestone:  (id, key, value) => api.patch(`/sales/${id}/milestone`, { key, value }),
+  updateMilestone:  (id, key, value, date) =>
+    api.patch(`/sales/${id}/milestone`, { key, value, ...(date ? { date } : {}) }),
 };
 
 // ── Service ─────────────────────────────────────────────────────────
