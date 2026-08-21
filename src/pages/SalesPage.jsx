@@ -888,10 +888,6 @@ function MilestoneRow({ sale, onToggle, disabled }) {
   const m  = sale.milestones       || {};
   const md = sale.milestone_dates  || {};
   const done = MILESTONE_DEFS.filter(d => m[d.key]).length;
-  // Build compact date summary — only shows milestones that are done AND have a date
-  const dateEntries = MILESTONE_DEFS
-    .filter(d => m[d.key] && md[d.key])
-    .map(d => ({ short: d.short, label: d.label, date: md[d.key] }));
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:4, minWidth:170 }}>
       <div style={{ display:'flex', gap:4, alignItems:'center' }}>
@@ -931,20 +927,6 @@ function MilestoneRow({ sale, onToggle, disabled }) {
       <div style={{ fontSize:9, color: done === 5 ? '#4ade80' : 'var(--dim)', letterSpacing:'.05em', fontWeight: done === 5 ? 600 : 500 }}>
         {done}/5 {done === 5 ? 'complete' : ''}
       </div>
-      {/* Visible date list — one row per completed milestone */}
-      {dateEntries.length > 0 && (
-        <div style={{ display:'flex', flexDirection:'column', gap:1, marginTop:2 }}>
-          {dateEntries.map(e => (
-            <div key={e.short} style={{ fontSize:10, color:'var(--muted, #999)', lineHeight:1.3 }}>
-              <span style={{
-                display:'inline-block', minWidth:14, textAlign:'center',
-                fontWeight:700, color:'#c8940a', marginRight:6,
-              }}>{e.short}</span>
-              {fmtMilestoneDate(e.date)}
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
