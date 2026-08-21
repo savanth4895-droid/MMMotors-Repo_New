@@ -11,6 +11,7 @@ import DashboardPage from './pages/DashboardPage';
 import ReportsPage   from './pages/ReportsPage';
 import ImportPage    from './pages/ImportPage';
 import StaffPage     from './pages/StaffPage';
+import BadgeTypesPage from './pages/BadgeTypesPage';
 import PartsPage     from './pages/PartsPage';
 import ServicePage   from './pages/ServicePage';
 import SalesPage     from './pages/SalesPage';
@@ -82,6 +83,7 @@ function AppLayout() {
               <Route path="/purchase-bills" element={<PurchaseBillsPage />} />
               <Route path="/reports"   element={<ReportsPage />} />
               <Route path="/staff"     element={<StaffPage />} />
+              <Route path="/badge-types" element={<BadgeTypesPage />} />
               <Route path="/import"    element={<ImportPage />} />
               <Route path="*"          element={<Navigate to="/dashboard" replace />} />
             </Routes>
