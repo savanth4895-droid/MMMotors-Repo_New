@@ -849,9 +849,23 @@ function MilestoneDateModal({ open, mode, milestoneLabel, defaultDate, onSave, o
         <div style={{ fontSize:18, fontWeight:700, marginBottom:6, color:'var(--text, #eee)' }}>
           {milestoneLabel}
         </div>
-        {isEdit && defaultDate && (
-          <div style={{ fontSize:12, color:'var(--dim)', marginBottom:14 }}>
-            Currently recorded: <strong style={{ color:'var(--text, #eee)' }}>{fmtMilestoneDate(defaultDate)}</strong>
+        {isEdit && (
+          <div style={{
+            background:'rgba(200,148,10,.08)',
+            border:'1px solid rgba(200,148,10,.35)',
+            borderRadius:4,
+            padding:'10px 14px',
+            marginBottom:16,
+          }}>
+            <div style={{
+              fontSize:10, letterSpacing:'.12em', textTransform:'uppercase',
+              color:'#c8940a', marginBottom:4, fontWeight:600,
+            }}>
+              Completion date on record
+            </div>
+            <div style={{ fontSize:16, fontWeight:700, color:'#c8940a' }}>
+              {defaultDate ? fmtMilestoneDate(defaultDate) : 'Not recorded (was marked done before dates were tracked)'}
+            </div>
           </div>
         )}
         <Field label={isEdit ? 'Change date' : 'Completion date'}>
@@ -1048,13 +1062,13 @@ const createMut = useMutation({
   // Called by MilestoneRow buttons. Always opens the modal — 'edit' mode when the
   // milestone is already done (view date, change date, or remove), 'add' mode otherwise.
   const handleMilestoneToggle = (sale, def, nextValue) => {
-    const existing = (sale.milestone_dates || {})[def.key];
+    const existing = (sale.milestone_dates || {})[def.key]; // undefined for legacy sales
     setPendingMilestone({
       saleId:      sale.id,
       key:         def.key,
       label:       def.label,
       mode:        nextValue ? 'add' : 'edit',
-      defaultDate: existing || new Date().toISOString().slice(0, 10),
+      defaultDate: existing || '', // '' triggers "not recorded" in modal; picker still defaults to today
     });
   };
 
