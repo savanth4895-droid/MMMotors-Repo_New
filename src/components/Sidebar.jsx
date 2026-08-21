@@ -19,6 +19,7 @@ const NAV = [
   { id: 'accident-estimate', label: 'Accident Estimate', roles: ['owner','service_advisor'] },
   { id: 'reports',   label: 'Reports',      roles: ['owner'] },
   { id: 'staff',     label: 'Staff',        roles: ['owner'] },
+  { id: 'badge-types', label: 'Badge Types', roles: ['owner'] },
   { id: 'import',    label: 'Import data',  roles: ['owner'] },
 ];
 
