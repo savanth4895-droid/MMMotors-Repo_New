@@ -5,98 +5,98 @@ import { Btn, GhostBtn, Field, Avatar, Skeleton, Empty, ApiError, useSortable } 
 import toast from 'react-hot-toast';
 import { useConfirm } from '../components/ConfirmModal';
 import FileUpload from '../components/FileUpload';
-
-const TAG_PILL = { VIP:'pill-amber', Corporate:'pill-blue', Loyal:'pill-green' };
+import { useAuth } from '../context/AuthContext';
+import { useBadgeTypes, CustomerBadges } from '../hooks/useBadges';
 
 function sendWA(mobile, msg) {
   if (!mobile) return toast.error('No mobile number');
   window.open(`https://wa.me/91${mobile}?text=${encodeURIComponent(msg)}`, '_blank');
 }
 
-const ALL_TAGS = ['VIP', 'Corporate', 'Loyal'];
-const TAG_COLOR = {
-  VIP:       { bg:'rgba(184,134,11,.15)', color:'#B8860B', border:'rgba(184,134,11,.4)' },
-  Corporate: { bg:'rgba(59,130,246,.12)', color:'#3b82f6', border:'rgba(59,130,246,.35)' },
-  Loyal:     { bg:'rgba(34,197,94,.12)',  color:'#16a34a', border:'rgba(34,197,94,.35)' },
-};
-
-function TagDropdown({ customer, onUpdate }) {
-  const [open, setOpen]   = useState(false);
+// Owner-only badge picker. Uses dynamic badge_types from the server (managed on the Badge Types page).
+// For staff/non-owner: shows read-only chips using the customer's stored tags.
+function TagDropdown({ customer, onUpdate, canEdit, badgeTypes }) {
+  const [open, setOpen]     = useState(false);
   const [saving, setSaving] = useState(false);
   const tags = customer.tags || [];
+  const byName = new Map((badgeTypes || []).map(b => [b.name, b]));
 
-  const toggle = async (tag) => {
+  const toggle = async (name) => {
+    if (!canEdit) return;
     setSaving(true);
-    const next = tags.includes(tag) ? tags.filter(t=>t!==tag) : [...tags, tag];
+    const next = tags.includes(name) ? tags.filter(t => t !== name) : [...tags, name];
     try {
-      await customersApi.update(customer.id, { tags: next });
+      await customersApi.setTags(customer.id, next);
       onUpdate();
-    } catch { toast.error('Failed to update tag'); }
+    } catch (e) {
+      toast.error(errMsg(e, 'Failed to update badges'));
+    }
     setSaving(false);
   };
 
+  // Read-only view for non-owners
+  if (!canEdit) {
+    if (tags.length === 0) return <span style={{ fontSize:11, color:'var(--dim)' }}>—</span>;
+    return <CustomerBadges names={tags} byName={byName} align="stack" />;
+  }
+
   return (
-    <div style={{ position:'relative' }} onClick={e=>e.stopPropagation()}>
-      {/* Current tags + add button */}
-      <div style={{ display:'flex', gap:4, flexWrap:'wrap', alignItems:'center', cursor:'pointer' }}
-        onClick={() => setOpen(o=>!o)}>
-        {tags.length ? tags.map(t => {
-          const c = TAG_COLOR[t] || { bg:'rgba(136,136,136,.12)', color:'#888', border:'rgba(136,136,136,.3)' };
-          return (
-            <span key={t} style={{
-              padding:'2px 8px', borderRadius:3, fontSize:10, fontWeight:700,
-              background:c.bg, color:c.color, border:`1px solid ${c.border}`,
-              fontFamily:'IBM Plex Sans,sans-serif', letterSpacing:'.04em',
-            }}>{t}</span>
-          );
-        }) : <span style={{ fontSize:11, color:'var(--dim)' }}>—</span>}
-        <span style={{
-          padding:'2px 6px', borderRadius:3, fontSize:10, border:'1px dashed var(--border)',
-          color:'var(--muted)', cursor:'pointer', fontFamily:'IBM Plex Sans,sans-serif',
-          marginLeft:2,
-        }}>⌄</span>
+    <div style={{ position:'relative' }} onClick={e => e.stopPropagation()}>
+      <div
+        style={{ display:'flex', gap:4, flexWrap:'wrap', alignItems:'center', cursor:'pointer', minHeight:22 }}
+        onClick={() => setOpen(o => !o)}
+      >
+        {tags.length
+          ? <CustomerBadges names={tags} byName={byName} align="stack" />
+          : <span style={{ fontSize:11, color:'var(--dim)', fontStyle:'italic' }}>+ Assign</span>}
       </div>
 
-      {/* Dropdown */}
       {open && (
         <>
-          {/* backdrop */}
-          <div style={{ position:'fixed', inset:0, zIndex:99 }} onClick={() => setOpen(false)} />
+          <div
+            onClick={() => setOpen(false)}
+            style={{ position:'fixed', inset:0, zIndex:99 }}
+          />
           <div style={{
             position:'absolute', top:'calc(100% + 6px)', left:0, zIndex:100,
             background:'var(--surface)', border:'1px solid var(--border)', borderRadius:6,
-            padding:'6px', minWidth:140, boxShadow:'0 8px 24px rgba(0,0,0,.3)',
+            padding:6, minWidth:180, maxHeight:280, overflowY:'auto',
+            boxShadow:'0 8px 24px rgba(0,0,0,.3)',
           }}>
             <div style={{ fontSize:9, letterSpacing:'.08em', textTransform:'uppercase', color:'var(--muted)', padding:'4px 8px 6px', fontWeight:700 }}>
-              Assign Tags
+              Assign Badges
             </div>
-            {ALL_TAGS.map(tag => {
-              const active = tags.includes(tag);
-              const c = TAG_COLOR[tag];
+            {(!badgeTypes || badgeTypes.length === 0) && (
+              <div style={{ fontSize:11, padding:'8px 10px', color:'var(--muted)' }}>
+                No badge types yet. Owner can create them on the Badge Types page.
+              </div>
+            )}
+            {(badgeTypes || []).map(b => {
+              const active = tags.includes(b.name);
               return (
-                <div key={tag}
-                  onClick={() => !saving && toggle(tag)}
+                <div
+                  key={b.id || b.name}
+                  onClick={() => !saving && toggle(b.name)}
                   style={{
                     display:'flex', alignItems:'center', gap:8, padding:'7px 10px',
-                    borderRadius:4, cursor:saving?'wait':'pointer',
-                    background: active ? (c?.bg||'rgba(136,136,136,.1)') : 'transparent',
+                    borderRadius:4, cursor: saving ? 'wait' : 'pointer',
+                    background: active ? `${b.color}1F` : 'transparent',
                     transition:'background .12s',
                   }}
-                  onMouseEnter={e=>{ if(!active) e.currentTarget.style.background='var(--surface2)'; }}
-                  onMouseLeave={e=>{ e.currentTarget.style.background=active?(c?.bg||'rgba(136,136,136,.1)'):'transparent'; }}
+                  onMouseEnter={e => { if (!active) e.currentTarget.style.background='var(--surface2)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = active ? `${b.color}1F` : 'transparent'; }}
                 >
                   <div style={{
-                    width:14, height:14, borderRadius:3, border:`1.5px solid ${active?(c?.color||'#888'):'var(--border)'}`,
-                    background: active ? (c?.color||'#888') : 'transparent', flexShrink:0,
-                    display:'flex', alignItems:'center', justifyContent:'center',
+                    width:14, height:14, borderRadius:3,
+                    border:`1.5px solid ${active ? b.color : 'var(--border)'}`,
+                    background: active ? b.color : 'transparent',
+                    flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center',
                   }}>
                     {active && <span style={{ color:'#fff', fontSize:9, fontWeight:900, lineHeight:1 }}>✓</span>}
                   </div>
-                  <span style={{
-                    fontSize:11, fontWeight:600,
-                    color: active ? (c?.color||'#888') : 'var(--text)',
-                    fontFamily:'IBM Plex Sans,sans-serif',
-                  }}>{tag}</span>
+                  <span style={{ fontSize:11, fontWeight:600, color: b.color, letterSpacing:'.02em' }}>
+                    {b.name}
+                  </span>
                 </div>
               );
             })}
@@ -225,6 +225,8 @@ const actBtn = (label, color, onClick) => (
 
 // ── Customer detail ──────────────────────────────────────────────────
 function CustomerDetail({ cust, onBack }) {
+  const { data: badgeTypes } = useBadgeTypes();
+  const byName = new Map(Array.isArray(badgeTypes) ? badgeTypes.map(b => [b.name, b]) : []);
   const [tab, setTab] = useState('overview');
   const qc = useQueryClient();
 
@@ -275,7 +277,7 @@ function CustomerDetail({ cust, onBack }) {
         <Avatar name={cust.name} size={32} />
         <span style={{ fontSize:14, fontWeight:600 }}>{cust.name}</span>
         <span style={{ fontSize:11, color:'var(--muted)' }}>{cust.mobile}</span>
-        {cust.tags?.map(t => <span key={t} className={`pill ${TAG_PILL[t]||'pill-dim'}`}>{t}</span>)}
+        {cust.tags?.length > 0 && <CustomerBadges names={cust.tags} byName={byName} align="stack" />}
         <div style={{ marginLeft:'auto' }}>
           <GhostBtn onClick={() => sendWA(cust.mobile, `Dear ${cust.name}, thank you for visiting MM Motors!`)}>
             WhatsApp
@@ -527,6 +529,9 @@ function EditJobForm({ job, inp, lb, onSave, onCancel, saving }) {
 export default function CustomersPage() {
   const confirm = useConfirm();
   const qc = useQueryClient();
+  const { user } = useAuth();
+  const isOwner  = user?.role === 'owner';
+  const { data: badgeTypes } = useBadgeTypes();
   const [view, setView]       = useState('list');
   const [selected, setSelected] = useState(null);
   const [search, setSearch]   = useState('');
@@ -575,8 +580,8 @@ export default function CustomersPage() {
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', borderBottom:'1px solid var(--border)' }}>
         {[
           { l:'Total', v:customers.length, c:'var(--accent)' },
-          { l:'VIP',   v:customers.filter(c=>c.tags?.includes('VIP')).length, c:'var(--accent)' },
-          { l:'Corporate', v:customers.filter(c=>c.tags?.includes('Corporate')).length, c:'var(--blue)' },
+          { l:'Badged', v:customers.filter(c => (c.tags || []).length > 0).length, c:'var(--accent)' },
+          { l:'Multi-badge', v:customers.filter(c => (c.tags || []).length > 1).length, c:'var(--blue)' },
           { l:'Showing', v:customers.length, c:'var(--text)' },
         ].map((s,i) => (
           <div key={i} style={{ padding:'14px 20px', borderRight:i<3?'1px solid var(--border)':0 }}>
@@ -637,7 +642,12 @@ export default function CustomersPage() {
                     <div style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.address||'—'}</div>
                   </td>
                   <td style={{ padding:'12px 20px' }} onClick={e=>e.stopPropagation()}>
-                    <TagDropdown customer={c} onUpdate={() => qc.invalidateQueries(['customers'])} />
+                    <TagDropdown
+                      customer={c}
+                      onUpdate={() => { qc.invalidateQueries(['customers']); qc.invalidateQueries(['customer-badges-map']); }}
+                      canEdit={isOwner}
+                      badgeTypes={badgeTypes}
+                    />
                   </td>
                   <td style={{ padding:'12px 20px' }} onClick={e=>e.stopPropagation()}>
                     <div style={{ display:'flex', gap:6 }}>
