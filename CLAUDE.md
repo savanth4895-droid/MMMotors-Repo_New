@@ -43,7 +43,8 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
     ├── context/
     │   └── AuthContext.jsx
     ├── hooks/
-    │   └── useDraft.jsx  # Autosave-to-localStorage form draft hook (must be .jsx)
+    │   ├── useDraft.jsx  # Autosave-to-localStorage form draft hook (must be .jsx)
+    │   └── useBadges.jsx # Customer badge types + mobile→badges lookup + <CustomerBadges> chip renderer
     ├── components/
     │   ├── Sidebar.jsx        # Filters NAV by user.allowed_pages
     │   ├── Topbar.jsx
@@ -67,7 +68,8 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
         ├── ExpensesPage.jsx
         ├── VendorsPage.jsx
         ├── PurchaseBillsPage.jsx
-        └── AccidentEstimatePage.jsx
+        ├── AccidentEstimatePage.jsx
+        └── BadgeTypesPage.jsx
 ```
 
 ---
@@ -162,7 +164,7 @@ All routes on `api_router` are under `/api`. Import routes under `/api/import`.
 | Health           | `GET /health`, `GET /ready` (app-level, no prefix)                        |
 | Auth             | `POST /auth/login`, `GET /auth/me`, `POST /auth/logout`                  |
 | Users/Staff      | CRUD `/users`, `/users/{id}/password` (all admin-only)                    |
-| Customers        | CRUD `/customers`, `/customers/{id}/timeline`                             |
+| Customers        | CRUD `/customers`, `/customers/{id}/timeline`, `PUT /customers/{id}/tags` (admin — replaces badge list), `GET /customer-badges-map` (mobile → [badges] for all customers) |
 | Vehicles         | CRUD `/vehicles`, `/vehicles/stats/summary`                               |
 | Sales            | CRUD `/sales`, `/sales/stats/summary`, `PATCH /sales/{id}/milestone` (accepts `{key, value, date?}` — date recorded when value=true, cleared when false), `GET /sales/{id}/pdf` |
 | Service Jobs     | CRUD `/service`, `/service/due`, `/service/stats`                        |
@@ -181,6 +183,7 @@ All routes on `api_router` are under `/api`. Import routes under `/api/import`.
 | Debts            | CRUD `/debts`, `/debts/summary`, `POST /debts/{id}/payments` (delete admin) |
 | Expenses         | CRUD `/expenses`, `/expenses/stats/summary` (delete admin)                 |
 | Accident Est.    | CRUD `/accident-estimates` (PUT recreates if deleted)                     |
+| Badge Types      | CRUD `/badge-types` (list: all roles, mutations: admin) — customer labels |
 | Backup           | `GET /backup/export` — ZIP of per-entity xlsx files, admin only, manual download |
 
 Import supports entities: `customers`, `vehicles`, `sales`, `service`, `parts`, `staff`
@@ -204,6 +207,7 @@ Import supports entities: `customers`, `vehicles`, `sales`, `service`, `parts`, 
 - `expenses`
 - `accident_estimates`
 - `service_notifications` — service-due contact log
+- `badge_types` — owner-managed customer badges (`name` unique, `color`, `sort_order`); rendered as chips wherever a customer name shows
 - `login_attempts` — TTL 30 min lockout tracking, keyed on `(username, ip)`
 - `counters` — auto-increment sequences via `next_sequence()`
 
@@ -364,6 +368,10 @@ Startup `except Exception: print(WARNING)` then `yield`. `/health` still returns
 - **Open**: `customer_gstin` field not yet on sales/service_bills schemas → party GSTIN blank → all rows route B2CL/B2CS not B2B. HSN/SAC mapping table pending CA input. Verify against next CA filing.
 
 ---
+
+## Recent Hardening (21 Aug 2026)
+
+**Customer badge system.** Owner-managed set of colored labels applied to customers, visible everywhere a customer name appears. New collection `badge_types` (`{name unique, color, sort_order}`) seeded on first boot with six defaults (VIP, Family, Repeat, Referral, Special Offer, Corporate). New routes: `GET /badge-types` (all roles), `POST/PATCH/DELETE /badge-types/{id}` (admin) — PATCH cascades name change across all customers' `tags` arrays via `$set` array filter; DELETE `$pull`s the removed name from every customer. Customer badge assignment lives on a dedicated `PUT /customers/{id}/tags` endpoint (admin), so staff cannot bypass by editing the customer directly — the `tags` field was removed from `CustomerUpdate` for that reason. New lightweight lookup `GET /customer-badges-map` returns `{mobile: [names]}` for the whole customer base, so list pages can render chips without fetching full customer records. Frontend: new `useBadges` hook + reusable `<CustomerBadges>` chip component, new owner-only `/badge-types` settings page with color picker and preview, dynamic picker on `CustomersPage` (replaced hardcoded VIP/Corporate/Loyal), and chips wired into the customer name cell on Sales, Service, Debt, and Accident Estimate list pages. Mobile-based join (client-side, TanStack Query cached, 60 s TTL); no denormalization onto sale/service/debt/estimate docs.
 
 ## Recent Hardening (20 Aug 2026)
 
