@@ -4,6 +4,7 @@ import { serviceApi, partsApi, customersApi, billsApi, salesApi, errMsg} from '.
 import { useSortable } from '../components/ui';
 import toast from 'react-hot-toast';
 import { useDraft, DraftBar } from '../hooks/useDraft';
+import { useBadges, CustomerBadges } from '../hooks/useBadges';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const RS   = '₹';
@@ -85,6 +86,7 @@ const secHdr = { fontSize:10, letterSpacing:'.08em', fontWeight:700,
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function ServicePage() {
   const qc = useQueryClient();
+  const { byName, badgesFor } = useBadges();
   const [filter, setFilter]         = useState('all');
   const [search, setSearch]         = useState('');
   const [dateFilter, setDateFilter] = useState('');
@@ -288,7 +290,10 @@ export default function ServicePage() {
                     </span>
                   </td>
                   <td style={{ padding:'12px 12px' }}>
-                    <div style={{ fontWeight:600 }}>{job.customer_name}</div>
+                    <div style={{ fontWeight:600 }}>
+                      <span style={{ verticalAlign:'middle' }}>{job.customer_name}</span>
+                      <CustomerBadges names={badgesFor(job.customer_mobile)} byName={byName} compact />
+                    </div>
                     <div style={{ fontSize:10, color:C.muted }}>{job.customer_mobile}</div>
                   </td>
                   <td style={{ padding:'12px 12px' }}>
