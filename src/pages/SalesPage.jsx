@@ -6,6 +6,7 @@ import toast from 'react-hot-toast';
 import { useConfirm } from '../components/ConfirmModal';
 import FileUpload from '../components/FileUpload';
 import { useDraft, DraftBar } from '../hooks/useDraft';
+import { useBadges, CustomerBadges } from '../hooks/useBadges';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 function sendWA(mobile, msg) {
@@ -950,6 +951,7 @@ function MilestoneRow({ sale, onToggle, disabled }) {
 export default function SalesPage() {
   const confirm = useConfirm();
   const qc = useQueryClient();
+  const { byName, badgesFor } = useBadges();
   const [showAdd, setShowAdd] = useState(false);
   const [editSale, setEditSale] = useState(null);
   const [selSale, setSelSale] = useState(null);
@@ -1165,7 +1167,10 @@ const createMut = useMutation({
                 <tr key={s.id} style={{ borderBottom:'1px solid var(--border)' }}>
                   <td className="mono" style={{ padding:'12px 16px', fontSize:11, color:'var(--blue)' }}>{s.invoice_number}</td>
                   <td style={{ padding:'12px 16px', fontSize:11, color:'var(--muted)' }}>{s.sale_date?.slice(0,11)}</td>
-                  <td style={{ padding:'12px 16px', fontSize:12, fontWeight:500 }}>{s.customer_name}</td>
+                  <td style={{ padding:'12px 16px', fontSize:12, fontWeight:500 }}>
+                    <span style={{ verticalAlign:'middle' }}>{s.customer_name}</span>
+                    <CustomerBadges names={badgesFor(s.customer_mobile)} byName={byName} compact />
+                  </td>
                   <td style={{ padding:'12px 16px', fontSize:11, color:'var(--muted)' }}>{s.vehicle_brand} {s.vehicle_model}</td>
                   <td className="mono" style={{ padding:'12px 16px', fontSize:12, fontWeight:600, color:'var(--accent)' }}>₹{s.total_amount?.toLocaleString('en-IN')||0}</td>
                   <td style={{ padding:'12px 16px', fontSize:11 }}>{s.payment_mode}</td>
