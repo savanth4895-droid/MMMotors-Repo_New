@@ -85,6 +85,7 @@ async def lifespan(app):
         fs = _db.fs
         await _ensure_indexes()
         await _seed_owner()
+        await _seed_badge_types()
         print(f"[MM Motors] Connected to MongoDB · DB: {DB_NAME}")
     except Exception as e:
         print(f"[MM Motors] WARNING: DB connection failed: {e}")
@@ -173,6 +174,7 @@ async def _ensure_indexes():
     )
     await db.login_attempts.create_index("username")
     await db.login_attempts.create_index([("username", 1), ("ip", 1)])
+    await db.badge_types.create_index("name", unique=True)
     print("[MM Motors] Indexes ensured")
 
 async def _seed_owner():
@@ -200,10 +202,26 @@ async def _seed_owner():
         )
         print(f"[MM Motors] Owner account verified  status=active")
 
+async def _seed_badge_types():
+    """Seed default badge types once. Owner can add/edit more from Settings later."""
+    if await db.badge_types.count_documents({}) > 0:
+        return
+    defaults = [
+        {"name": "VIP",           "color": "#B8860B", "sort_order":  1},
+        {"name": "Family",        "color": "#9333EA", "sort_order":  2},
+        {"name": "Repeat",        "color": "#16A34A", "sort_order":  3},
+        {"name": "Referral",      "color": "#0EA5E9", "sort_order":  4},
+        {"name": "Special Offer", "color": "#EF4444", "sort_order":  5},
+        {"name": "Corporate",     "color": "#3B82F6", "sort_order":  6},
+    ]
+    now = utcnow().isoformat()
+    for b in defaults:
+        b["created_at"] = now
+    await db.badge_types.insert_many(defaults)
+    print(f"[MM Motors] Seeded {len(defaults)} default badge types")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  PYDANTIC MODELS
-# ═══════════════════════════════════════════════════════════════════════════════
+
+
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 class LoginIn(BaseModel):
@@ -257,8 +275,22 @@ class CustomerUpdate(BaseModel):
     email:   Optional[str] = None
     address: Optional[str] = None
     gstin:   Optional[str] = None
-    tags:    Optional[List[str]] = None
+    # tags are managed via the dedicated admin-only PUT /customers/{id}/tags endpoint
     id_proof_file_id: Optional[str] = None
+
+class CustomerTagsUpdate(BaseModel):
+    tags: List[str]
+
+# ── Badge Types (owner-managed customer badges) ────────────────────────────────
+class BadgeTypeCreate(BaseModel):
+    name:       str    = Field(..., min_length=1, max_length=40)
+    color:      str    = Field("#888888", min_length=4, max_length=9)   # hex like #RRGGBB
+    sort_order: Optional[int] = Field(100, ge=0)
+
+class BadgeTypeUpdate(BaseModel):
+    name:       Optional[str] = Field(None, min_length=1, max_length=40)
+    color:      Optional[str] = Field(None, min_length=4, max_length=9)
+    sort_order: Optional[int] = Field(None, ge=0)
 
 # ── Vehicles ──────────────────────────────────────────────────────────────────
 class VehicleCreate(BaseModel):
@@ -824,7 +856,98 @@ async def delete_customer(cust_id: str, current_user=Depends(require_admin)):
         raise HTTPException(status_code=404, detail="Customer not found")
     return {"message": "Deleted"}
 
-@api_router.get("/customers/{cust_id}/timeline")
+
+@api_router.put("/customers/{cust_id}/tags")
+async def set_customer_tags(cust_id: str, body: CustomerTagsUpdate, current_user=Depends(require_admin)):
+    """Owner-only. Replace a customer's badge list. Silently drops any name not in badge_types."""
+    valid = set()
+    async for b in db.badge_types.find({}, {"name": 1}):
+        valid.add(b["name"])
+    clean = [t for t in (body.tags or []) if t in valid]
+    cust = await db.customers.find_one({"_id": obj_id(cust_id)}, {"_id": 1})
+    if not cust:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    await db.customers.update_one({"_id": obj_id(cust_id)}, {"$set": {"tags": clean}})
+    return {"id": cust_id, "tags": clean}
+
+
+@api_router.get("/customer-badges-map")
+async def customer_badges_map(current_user=Depends(verify_token)):
+    """Lightweight lookup: mobile → [badge names]. Used by list pages that show a customer name
+    but don't already fetch the full customer record. Empty tag lists are omitted."""
+    out = {}
+    cursor = db.customers.find({"tags": {"$exists": True, "$ne": []}}, {"mobile": 1, "tags": 1})
+    async for c in cursor:
+        mob = (c.get("mobile") or "").strip()
+        tags = c.get("tags") or []
+        if mob and tags:
+            out[mob] = tags
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  BADGE TYPES  (owner-managed set of labels applied to customers)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@api_router.get("/badge-types")
+async def list_badge_types(current_user=Depends(verify_token)):
+    """All roles can read — needed to render chips throughout the app."""
+    docs = await db.badge_types.find({}).sort([("sort_order", 1), ("name", 1)]).to_list(None)
+    return oids(docs)
+
+@api_router.post("/badge-types")
+async def create_badge_type(body: BadgeTypeCreate, current_user=Depends(require_admin)):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name required")
+    if await db.badge_types.find_one({"name": name}):
+        raise HTTPException(status_code=409, detail=f"Badge '{name}' already exists")
+    doc = {
+        "name":       name,
+        "color":      body.color,
+        "sort_order": body.sort_order if body.sort_order is not None else 100,
+        "created_at": utcnow().isoformat(),
+    }
+    res = await db.badge_types.insert_one(doc)
+    doc["id"] = str(res.inserted_id); doc.pop("_id", None)
+    return doc
+
+@api_router.patch("/badge-types/{badge_id}")
+async def update_badge_type(badge_id: str, body: BadgeTypeUpdate, current_user=Depends(require_admin)):
+    existing = await db.badge_types.find_one({"_id": obj_id(badge_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Badge type not found")
+    update = {k: v for k, v in body.dict().items() if v is not None}
+    if "name" in update:
+        update["name"] = update["name"].strip()
+        if not update["name"]:
+            raise HTTPException(status_code=400, detail="Name cannot be empty")
+        clash = await db.badge_types.find_one({"name": update["name"], "_id": {"$ne": obj_id(badge_id)}})
+        if clash:
+            raise HTTPException(status_code=409, detail=f"Badge '{update['name']}' already exists")
+        old_name = existing["name"]
+        new_name = update["name"]
+        if old_name != new_name:
+            # Cascade rename across all customers
+            await db.customers.update_many(
+                {"tags": old_name},
+                {"$set": {"tags.$[elem]": new_name}},
+                array_filters=[{"elem": old_name}],
+            )
+    await db.badge_types.update_one({"_id": obj_id(badge_id)}, {"$set": update})
+    return oid(await db.badge_types.find_one({"_id": obj_id(badge_id)}))
+
+@api_router.delete("/badge-types/{badge_id}")
+async def delete_badge_type(badge_id: str, current_user=Depends(require_admin)):
+    doc = await db.badge_types.find_one({"_id": obj_id(badge_id)}, {"name": 1})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Badge type not found")
+    strip_res = await db.customers.update_many({"tags": doc["name"]}, {"$pull": {"tags": doc["name"]}})
+    await db.badge_types.delete_one({"_id": obj_id(badge_id)})
+    return {"message": "Deleted", "customers_updated": strip_res.modified_count}
+
+
+
 async def customer_timeline(cust_id: str, current_user=Depends(verify_token)):
     sales, jobs = await asyncio.gather(
         db.sales.find({"customer_id": cust_id}).sort("sale_date", -1).to_list(None),
