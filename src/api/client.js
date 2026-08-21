@@ -77,6 +77,18 @@ export const customersApi = {
   update:   (id, d)  => api.put(`/customers/${id}`, d),
   delete:   (id)     => api.delete(`/customers/${id}`),
   timeline: (id)     => api.get(`/customers/${id}/timeline`),
+  // Owner-only. Replaces the badge list on a customer.
+  setTags:  (id, tags) => api.put(`/customers/${id}/tags`, { tags }),
+  // Lightweight mobile → [badge names] map for the whole customer base.
+  badgesMap: () => api.get('/customer-badges-map'),
+};
+
+// ── Badge Types (owner-managed customer labels) ─────────────────────
+export const badgeTypesApi = {
+  list:   ()         => api.get('/badge-types'),
+  create: (data)     => api.post('/badge-types', data),
+  update: (id, d)    => api.patch(`/badge-types/${id}`, d),
+  delete: (id)       => api.delete(`/badge-types/${id}`),
 };
 
 // ── Vehicles ────────────────────────────────────────────────────────
