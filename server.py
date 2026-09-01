@@ -337,6 +337,12 @@ class SaleCreate(BaseModel):
     customer_id:       str
     vehicle_id:        str
     vehicle_number:    Optional[str]   = ""
+    vehicle_brand:     Optional[str]   = None   # override DB value if provided
+    vehicle_model:     Optional[str]   = None
+    vehicle_variant:   Optional[str]   = None
+    vehicle_color:     Optional[str]   = None
+    chassis_number:    Optional[str]   = None
+    engine_number:     Optional[str]   = None
     sale_price:        Optional[float] = 0
     total_amount:      Optional[float] = None
     finance_type:      Optional[str]   = "cash"
@@ -1282,12 +1288,12 @@ async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
         "customer_address":customer.get("address",""),
         "care_of":         body.care_of or "",
         "vehicle_id":      body.vehicle_id,
-        "vehicle_brand":   vehicle["brand"],
-        "vehicle_model":   vehicle["model"],
-        "vehicle_variant": vehicle.get("variant",""),
-        "vehicle_color":   vehicle.get("color",""),
-        "chassis_number":  vehicle.get("chassis_number",""),
-        "engine_number":   vehicle.get("engine_number",""),
+        "vehicle_brand":   body.vehicle_brand   if body.vehicle_brand   is not None else vehicle["brand"],
+        "vehicle_model":   body.vehicle_model   if body.vehicle_model   is not None else vehicle["model"],
+        "vehicle_variant": body.vehicle_variant if body.vehicle_variant is not None else vehicle.get("variant",""),
+        "vehicle_color":   body.vehicle_color   if body.vehicle_color   is not None else vehicle.get("color",""),
+        "chassis_number":  body.chassis_number  if body.chassis_number  is not None else vehicle.get("chassis_number",""),
+        "engine_number":   body.engine_number   if body.engine_number   is not None else vehicle.get("engine_number",""),
         "vehicle_number":  body.vehicle_number or vehicle.get("vehicle_number",""),
         "sale_price":      body.sale_price,
         "total_amount":    round(total_amount, 2),
