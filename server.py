@@ -960,6 +960,7 @@ async def delete_badge_type(badge_id: str, current_user=Depends(require_admin)):
 
 
 
+@api_router.get("/customers/{cust_id}/timeline")
 async def customer_timeline(cust_id: str, current_user=Depends(verify_token)):
     sales, jobs = await asyncio.gather(
         db.sales.find({"customer_id": cust_id}).sort("sale_date", -1).to_list(None),
