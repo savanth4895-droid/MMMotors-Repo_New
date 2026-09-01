@@ -80,7 +80,7 @@ function DailyClosingSection() {
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['dailyClosing', isoDate],
-    queryFn: () => reportsApi.dailyClosing(apiDate).then(r => r.data)
+    queryFn: () => reportsApi.dailyClosing(isoDate).then(r => r.data)
   });
 
   // Service revenue broken down by payment mode
