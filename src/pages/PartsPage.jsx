@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { partsApi, customersApi, errMsg } from '../api/client';
+import { partsApi, customersApi, salesApi, serviceApi, errMsg } from '../api/client';
 import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError, useSortable } from '../components/ui';
 import toast from 'react-hot-toast';
 import { useDraft, DraftBar } from '../hooks/useDraft';
@@ -314,10 +314,58 @@ function PartsBillModal({ onClose }) {
       if (exact) {
         setCust(p => ({ ...p, name: p.name || exact.name }));
         setLookup('found');
+        // Also try to fill vehicle from latest sale or service record
+        if (!cust.vehicle) {
+          try {
+            const [salesRes, svcRes] = await Promise.all([
+              salesApi.list({ search: mobile, limit: 1 }),
+              serviceApi.list({ search: mobile, limit: 1 }),
+            ]);
+            const sales = Array.isArray(salesRes.data) ? salesRes.data : [];
+            const jobs  = Array.isArray(svcRes.data)   ? svcRes.data   : [];
+            const veh = sales[0]?.vehicle_number || jobs[0]?.vehicle_number || '';
+            if (veh) setCust(p => ({ ...p, vehicle: p.vehicle || veh }));
+          } catch { /* silent */ }
+        }
       } else {
         setLookup('new');
       }
     } catch { setLookup('new'); }
+  };
+
+  // Vehicle lookup — fetch customer details from sales or service records
+  const lookupByVehicle = async (vehNum) => {
+    const v = vehNum.trim().toUpperCase();
+    if (v.length < 4) return;
+    // Skip if customer already filled
+    if (cust.name && cust.mobile) return;
+    try {
+      // Try sales first
+      const salesRes = await salesApi.list({ search: v, limit: 1 });
+      const sales = Array.isArray(salesRes.data) ? salesRes.data : [];
+      if (sales.length > 0) {
+        const s = sales[0];
+        setCust(p => ({
+          name:    p.name    || s.customer_name    || '',
+          mobile:  p.mobile  || s.customer_mobile  || '',
+          vehicle: p.vehicle || s.vehicle_number   || v,
+        }));
+        if (s.customer_mobile) setLookup('found');
+        return;
+      }
+      // Try service records
+      const svcRes = await serviceApi.list({ search: v, limit: 1 });
+      const jobs = Array.isArray(svcRes.data) ? svcRes.data : [];
+      if (jobs.length > 0) {
+        const j = jobs[0];
+        setCust(p => ({
+          name:    p.name    || j.customer_name    || '',
+          mobile:  p.mobile  || j.customer_mobile  || '',
+          vehicle: p.vehicle || j.vehicle_number   || v,
+        }));
+        if (j.customer_mobile) setLookup('found');
+      }
+    } catch { /* silent */ }
   };
 
   const results = psearch.length > 1
@@ -472,7 +520,7 @@ function PartsBillModal({ onClose }) {
                 </div>
                 <div>
                   <label style={{ fontSize:9, color:C.muted, textTransform:'uppercase', letterSpacing:'.05em', display:'block', marginBottom:4 }}>Vehicle (optional)</label>
-                  <input value={cust.vehicle} onChange={e => setCust(p => ({ ...p, vehicle: e.target.value }))} placeholder="KA 07 U 3915" style={inp} />
+                  <input value={cust.vehicle} onChange={e => setCust(p => ({ ...p, vehicle: e.target.value }))} onBlur={e => lookupByVehicle(e.target.value)} placeholder="KA 07 U 3915" style={inp} />
                 </div>
               </div>
             </div>
