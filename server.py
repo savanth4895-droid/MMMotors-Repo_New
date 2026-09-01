@@ -367,6 +367,12 @@ class SaleUpdate(BaseModel):
     status:            Optional[str]   = None
     delivery_date:     Optional[str]   = None
     vehicle_number:    Optional[str]   = None
+    vehicle_brand:     Optional[str]   = None
+    vehicle_model:     Optional[str]   = None
+    vehicle_variant:   Optional[str]   = None
+    vehicle_color:     Optional[str]   = None
+    chassis_number:    Optional[str]   = None
+    engine_number:     Optional[str]   = None
     payment_mode:      Optional[str]   = None
     notes:             Optional[str]   = None
     customer_name:     Optional[str]   = None
@@ -1368,7 +1374,7 @@ async def update_sale(sale_id: str, body: SaleUpdate, current_user=Depends(verif
     if not sale:
         raise HTTPException(status_code=404, detail="Sale not found")
     update: dict = {}
-    for field in ("status","delivery_date","vehicle_number","payment_mode","notes","customer_name","customer_mobile","customer_address","care_of","total_amount","sale_price","finance_type","financier","loan_amount","sale_date","sold_by","hsrp_front","hsrp_back","hsrp_front_id","hsrp_back_id","hsrp_date","hsrp_notes"):
+    for field in ("status","delivery_date","vehicle_number","payment_mode","notes","customer_name","customer_mobile","customer_address","care_of","total_amount","sale_price","finance_type","financier","loan_amount","sale_date","sold_by","hsrp_front","hsrp_back","hsrp_front_id","hsrp_back_id","hsrp_date","hsrp_notes","vehicle_brand","vehicle_model","vehicle_variant","vehicle_color","chassis_number","engine_number"):
         val = getattr(body, field)
         if val is not None:
             update[field] = val
@@ -1388,12 +1394,13 @@ async def update_sale(sale_id: str, body: SaleUpdate, current_user=Depends(verif
             await db.vehicles.update_one({"_id": obj_id(sale["vehicle_id"])}, {"$set": {"status": "in_stock"}, "$unset": {"sold_date":"","invoice_number":""}})
         await db.vehicles.update_one({"_id": obj_id(body.vehicle_id)}, {"$set": {"status":"sold","sold_date":sale.get("sale_date",""),"invoice_number":sale.get("invoice_number","")}})
         update["vehicle_id"]      = body.vehicle_id
-        update["vehicle_brand"]   = new_vehicle.get("brand","")
-        update["vehicle_model"]   = new_vehicle.get("model","")
-        update["vehicle_variant"] = new_vehicle.get("variant","")
-        update["vehicle_color"]   = new_vehicle.get("color","")
-        update["chassis_number"]  = new_vehicle.get("chassis_number","")
-        update["engine_number"]   = new_vehicle.get("engine_number","")
+        # Use manually-edited values if provided, otherwise fall back to new vehicle's DB values
+        update.setdefault("vehicle_brand",   new_vehicle.get("brand",""))
+        update.setdefault("vehicle_model",   new_vehicle.get("model",""))
+        update.setdefault("vehicle_variant", new_vehicle.get("variant",""))
+        update.setdefault("vehicle_color",   new_vehicle.get("color",""))
+        update.setdefault("chassis_number",  new_vehicle.get("chassis_number",""))
+        update.setdefault("engine_number",   new_vehicle.get("engine_number",""))
     if not update:
         raise HTTPException(status_code=400, detail="Nothing to update")
     await db.sales.update_one({"_id": obj_id(sale_id)}, {"$set": update})
