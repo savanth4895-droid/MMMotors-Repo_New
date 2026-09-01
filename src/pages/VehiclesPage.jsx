@@ -298,8 +298,8 @@ export default function VehiclesPage() {
                       <div style={{ fontSize: 10, color: 'var(--dim)' }}>{v.variant || '—'}</div>
                     </td>
                     <td className="mono" style={{ padding: '10px 16px' }}>
-                      <div style={{ fontSize: 10, color: 'var(--text)' }}>{v.chassis_number?.slice(-12) || '—'}</div>
-                      <div style={{ fontSize: 9, color: 'var(--dim)', marginTop: 2 }}>{v.engine_number || '—'}</div>
+                      <div style={{ fontSize: 10, color: 'var(--text)', wordBreak: 'break-all' }}>{v.chassis_number || '—'}</div>
+                      <div style={{ fontSize: 9, color: 'var(--dim)', marginTop: 2, wordBreak: 'break-all' }}>{v.engine_number || '—'}</div>
                     </td>
                     <td style={{ padding: '10px 16px' }}>
                       <div style={{ fontSize: 11, color: 'var(--muted)' }}>{v.color || '—'}</div>
