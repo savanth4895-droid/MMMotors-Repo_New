@@ -4616,6 +4616,109 @@ async def delete_accident_estimate(est_id: str, current_user=Depends(require_adm
         raise HTTPException(status_code=404, detail="Estimate not found")
 
 
+@api_router.post("/migrations/rebuild-customers")
+async def rebuild_customers(current_user=Depends(require_admin)):
+    """Rebuild customers collection from denormalized data in sales + service_jobs.
+    Deduplicates by mobile number. Skips mobiles that already exist in customers."""
+    seen = set()
+    created = 0
+    skipped = 0
+
+    # Gather existing customer mobiles to skip
+    existing = await db.customers.find({}, {"mobile": 1}).to_list(100000)
+    for c in existing:
+        if c.get("mobile"):
+            seen.add(c["mobile"].strip())
+
+    # Scan sales
+    async for sale in db.sales.find(
+        {"customer_mobile": {"$exists": True, "$ne": ""}},
+        {"customer_name": 1, "customer_mobile": 1, "customer_address": 1, "care_of": 1, "created_at": 1}
+    ):
+        mobile = (sale.get("customer_mobile") or "").strip()
+        if not mobile or mobile in seen:
+            skipped += 1
+            continue
+        seen.add(mobile)
+        await db.customers.insert_one({
+            "name":       sale.get("customer_name", ""),
+            "mobile":     mobile,
+            "email":      "",
+            "address":    sale.get("customer_address", ""),
+            "care_of":    sale.get("care_of", ""),
+            "tags":       [],
+            "gstin":      "",
+            "created_at": sale.get("created_at", utcnow().isoformat()),
+            "_rebuilt":   True,
+        })
+        created += 1
+
+    # Scan service_jobs
+    async for job in db.service_jobs.find(
+        {"customer_mobile": {"$exists": True, "$ne": ""}},
+        {"customer_name": 1, "customer_mobile": 1, "customer_address": 1, "created_at": 1}
+    ):
+        mobile = (job.get("customer_mobile") or "").strip()
+        if not mobile or mobile in seen:
+            skipped += 1
+            continue
+        seen.add(mobile)
+        await db.customers.insert_one({
+            "name":       job.get("customer_name", ""),
+            "mobile":     mobile,
+            "email":      "",
+            "address":    job.get("customer_address", ""),
+            "tags":       [],
+            "gstin":      "",
+            "created_at": job.get("created_at", utcnow().isoformat()),
+            "_rebuilt":   True,
+        })
+        created += 1
+
+    return {"created": created, "skipped": skipped,
+            "message": f"✅ {created} customers rebuilt from sales + service records."}
+
+
+@api_router.post("/migrations/relink-customers")
+async def relink_customers(current_user=Depends(require_admin)):
+    """After rebuild: update customer_id on sales + service_jobs to match rebuilt customers by mobile."""
+    relinked_sales = 0
+    relinked_jobs = 0
+
+    async for sale in db.sales.find(
+        {"customer_mobile": {"$exists": True, "$ne": ""}},
+        {"_id": 1, "customer_mobile": 1, "customer_id": 1}
+    ):
+        mobile = (sale.get("customer_mobile") or "").strip()
+        if not mobile:
+            continue
+        cust = await db.customers.find_one({"mobile": mobile}, {"_id": 1})
+        if cust and str(cust["_id"]) != sale.get("customer_id", ""):
+            await db.sales.update_one(
+                {"_id": sale["_id"]},
+                {"$set": {"customer_id": str(cust["_id"])}}
+            )
+            relinked_sales += 1
+
+    async for job in db.service_jobs.find(
+        {"customer_mobile": {"$exists": True, "$ne": ""}},
+        {"_id": 1, "customer_mobile": 1, "customer_id": 1}
+    ):
+        mobile = (job.get("customer_mobile") or "").strip()
+        if not mobile:
+            continue
+        cust = await db.customers.find_one({"mobile": mobile}, {"_id": 1})
+        if cust and str(cust["_id"]) != job.get("customer_id", ""):
+            await db.service_jobs.update_one(
+                {"_id": job["_id"]},
+                {"$set": {"customer_id": str(cust["_id"])}}
+            )
+            relinked_jobs += 1
+
+    return {"relinked_sales": relinked_sales, "relinked_jobs": relinked_jobs,
+            "message": f"✅ Re-linked {relinked_sales} sales + {relinked_jobs} service jobs to rebuilt customers."}
+
+
 app.include_router(api_router)
 app.include_router(import_router)
 
