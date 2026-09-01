@@ -13,7 +13,7 @@ const BRANDS = [
 
 const MODELS = {
   HERO: [
-    'Splendor Plus', 'Splendor Plus Xtec', 'Super Splendor', 'HF Deluxe', 
+    'Splendor Plus', 'Splendor Plus Xtec', 'Super Splendor', 'HF 100', 'HF Deluxe', 
     'Passion Plus', 'Passion Xtec', 'Glamour', 'Glamour Xtec', 
     'Xtreme 125R', 'Xtreme 160R', 'Xtreme 160R 4V', 'Xpulse 200 4V', 
     'Xpulse 200T 4V', 'Karizma XMR', 'Destini 125 Xtec', 'Pleasure Plus', 'Xoom 110'
@@ -30,7 +30,7 @@ const MODELS = {
     'Dominar 400', 'Chetak'
   ],
   TVS: [
-    'Jupiter 110', 'Jupiter 125', 'Ntorq 125', 'Apache RTR 160', 'Apache RTR 160 4V', 
+    'Jupiter 110', 'Jupiter 125', 'Ntorq 125', 'Ntorq 150', 'Apache RTR 160', 'Apache RTR 160 4V', 
     'Apache RTR 180', 'Apache RTR 200 4V', 'Apache RR 310', 'Apache RTR 310', 
     'Raider 125', 'XL100', 'Sport', 'Radeon', 'Ronin', 'iQube', 'Zest 110', 'Orbiter'
   ],
