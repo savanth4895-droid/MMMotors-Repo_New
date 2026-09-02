@@ -1313,17 +1313,23 @@ function BillRow({ row, idx, allParts, onChange, onRemove, onSelectPart }) {
         {showDrop && filtered.length > 0 && dropPos && createPortal(
           <div style={{ position:'fixed', left:dropPos.left, top:dropPos.top, bottom:dropPos.bottom,
             width:dropPos.width, background:C.surface,
-            border:'1px solid var(--border2,#2a2a2a)', borderRadius:4, zIndex:10000,
+            border:`1px solid ${C.border}`, borderRadius:4, zIndex:10000,
             boxShadow:'0 8px 24px rgba(0,0,0,.5)', maxHeight:360, overflowY:'auto' }}>
             {filtered.map(p => (
               <div key={p._id}
                 onMouseDown={() => { onSelectPart(row._key,p); setSearch(''); setShowDrop(false); }}
-                style={{ padding:'8px 12px', cursor:'pointer', borderBottom:'1px solid var(--border,#222)', fontSize:12, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}
+                style={{ padding:'9px 12px', cursor:'pointer', borderBottom:`1px solid ${C.border}`, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}
                 onMouseEnter={e=>e.currentTarget.style.background=C.s2}
                 onMouseLeave={e=>e.currentTarget.style.background='transparent'}
               >
-                <div style={{ fontWeight:600, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{p.name}</div>
-                <div style={{ fontSize:10, color:C.muted }}>{p.part_number} · {RS}{p.selling_price} · Stock:{p.stock}</div>
+                <div style={{ minWidth:0, flex:1 }}>
+                  <div style={{ fontSize:12, fontWeight:600 }}>{p.name}</div>
+                  <div style={{ fontSize:10, color:C.muted }}>{p.part_number}{p.category ? ` · ${p.category}` : ''}</div>
+                </div>
+                <div style={{ textAlign:'right', flexShrink:0 }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:C.gold }}>{RS}{p.selling_price}</div>
+                  <div style={{ fontSize:10, color: p.stock <= 5 ? C.amber : C.green }}>Stock: {p.stock}</div>
+                </div>
               </div>
             ))}
           </div>,
