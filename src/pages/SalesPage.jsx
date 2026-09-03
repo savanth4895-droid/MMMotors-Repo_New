@@ -1,369 +1,1222 @@
-import { useState, useRef, useEffect } from 'react';
-import { createPortal } from 'react-dom';
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { serviceApi, partsApi, customersApi, billsApi, salesApi, errMsg} from '../api/client';
-import { useSortable } from '../components/ui';
+import { salesApi, customersApi, vehiclesApi, errMsg} from '../api/client';
+import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError, useSortable } from '../components/ui';
 import toast from 'react-hot-toast';
+import { useConfirm } from '../components/ConfirmModal';
+import FileUpload from '../components/FileUpload';
 import { useDraft, DraftBar } from '../hooks/useDraft';
 import { useBadges, CustomerBadges } from '../hooks/useBadges';
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-const RS   = '₹';
-const fmt  = n => Number(n||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
-const fmtI = n => Number(n||0).toLocaleString('en-IN');
-
-function numWords(n) {
-  const a=['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen'];
-  const b=['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];
-  if (!n||n===0) return 'Zero';
-  n=Math.round(n);
-  if(n<20)       return a[n];
-  if(n<100)      return b[Math.floor(n/10)]+(n%10?' '+a[n%10]:'');
-  if(n<1000)     return a[Math.floor(n/100)]+' Hundred'+(n%100?' '+numWords(n%100):'');
-  if(n<100000)   return numWords(Math.floor(n/1000))+' Thousand'+(n%1000?' '+numWords(n%1000):'');
-  if(n<10000000) return numWords(Math.floor(n/100000))+' Lakh'+(n%100000?' '+numWords(n%100000):'');
-  return numWords(Math.floor(n/10000000))+' Crore'+(n%10000000?' '+numWords(n%10000000):'');
+// ── Helpers ──────────────────────────────────────────────────────────
+function sendWA(mobile, msg) {
+  if (!mobile) return toast.error('No mobile number saved');
+  const cleanMobile = String(mobile).replace(/\D/g, '');
+  window.open(`https://wa.me/91${cleanMobile}?text=${encodeURIComponent(msg)}`, '_blank');
 }
 
-const emptyRow = () => ({ description:'', hsn:'9987', qty:1, unit_price:0, gst_rate:18, discount:0, discIsPct:false, complimentary:false, _key:Math.random() });
+// ── Standalone client-side PDF/print ────────────────────────────────
+function printSaleInvoice(sale) {
+  // reuse the same logic as InvoiceModal.print but without notes state
+  const RS = '\u20b9';
+  const fmt = n => Number(n||0).toLocaleString('en-IN');
+  const nominee = sale.nominee || {};
+  const total = sale.total_amount || 0;
+  const ones = ['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen'];
+  const tens = ['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];
+  function numWords(n) {
+    n = Math.round(n);
+    if (n === 0) return 'Zero';
+    if (n < 0) return 'Minus ' + numWords(-n);
+    let w = '';
+    if (n >= 10000000) { w += numWords(Math.floor(n/10000000)) + ' Crore '; n %= 10000000; }
+    if (n >= 100000)   { w += numWords(Math.floor(n/100000))   + ' Lakh '; n %= 100000; }
+    if (n >= 1000)     { w += numWords(Math.floor(n/1000))     + ' Thousand '; n %= 1000; }
+    if (n >= 100)      { w += ones[Math.floor(n/100)]          + ' Hundred '; n %= 100; }
+    if (n >= 20)       { w += tens[Math.floor(n/10)]; if (n%10) w += ' ' + ones[n%10]; }
+    else if (n > 0)    { w += ones[n]; }
+    return w.trim();
+  }
+  const amtWords = numWords(total) + ' Rupees Only';
+  const exShowroom  = sale.ex_showroom_price || sale.total_amount || 0;
+  const rto         = sale.rto        || 0;
+  const insurance   = sale.insurance  || 0;
+  const accessories = sale.accessories|| 0;
+  const discount    = sale.discount   || 0;
+  const descRows = [
+    ['Ex-Showroom Price', exShowroom],
+    rto         ? ['RTO', rto]               : null,
+    insurance   ? ['Insurance', insurance]   : null,
+    accessories ? ['Accessories',accessories]: null,
+    discount    ? ['Discount', -discount]    : null,
+  ].filter(Boolean).map(([l,v],i) =>
+    `<tr style="background:${i%2?'#fafafa':'#fff'}">
+      <td style="padding:7px 14px;font-size:11px;color:#555;border-bottom:1px solid #eee">${l}</td>
+      <td style="padding:7px 14px;font-size:11px;text-align:right;border-bottom:1px solid #eee">${v<0?'− ':''}${RS}${fmt(Math.abs(v))}</td>
+    </tr>`
+  ).join('');
 
-// ─── Style tokens ─────────────────────────────────────────────────────────────
-const C = {
-  surface: 'var(--surface,#141414)',
-  s2:      'var(--surface2,#1a1a1a)',
-  border:  'var(--border,#222)',
-  border2: 'var(--border2,#2a2a2a)',
-  text:    'var(--text,#e8e8e8)',
-  muted:   'var(--muted,#888)',
-  gold:    '#B8860B',
-  green:   '#4ade80',
-  amber:   '#fbbf24',
-  red:     '#f87171',
-};
+  // Use the same HTML template as InvoiceModal but get it directly via InvoiceModal's print logic
+  // Simplest: open InvoiceModal data as print window
+  const invoiceModal = document.createElement('div');
+  invoiceModal.style.display = 'none';
+  document.body.appendChild(invoiceModal);
 
-const inp = {
-  background:'var(--surface2,#1a1a1a)', border:'1px solid var(--border,#222)',
-  borderRadius:3, padding:'7px 10px', color:'var(--text,#e8e8e8)',
-  outline:'none', fontSize:12, fontFamily:'IBM Plex Sans, sans-serif',
-  width:'100%', boxSizing:'border-box',
-};
-const btnPrimary = {
-  background:'#B8860B', color:'#fff', border:'none', borderRadius:3,
-  padding:'9px 20px', fontWeight:700, fontSize:12, cursor:'pointer',
-  fontFamily:'IBM Plex Sans, sans-serif', letterSpacing:'.04em',
-};
-const btnGhost = {
-  background:'transparent', color:'var(--muted,#888)', border:'1px solid var(--border2,#2a2a2a)',
-  borderRadius:3, padding:'8px 14px', fontSize:12, cursor:'pointer',
-  fontFamily:'IBM Plex Sans, sans-serif',
-};
+  // Build the same HTML as InvoiceModal.print()
+  const w = window.open('', '_blank');
+  if (!w) return toast?.error?.('Popup blocked — allow popups for this site');
 
-const STATUS_CFG = {
-  pending:     { label:'Pending',     color:'#888',    bg:'rgba(136,136,136,.12)' },
-  in_progress: { label:'In Progress', color:'#fbbf24', bg:'rgba(251,191,36,.12)'  },
-  ready:       { label:'Ready',       color:'#4ade80', bg:'rgba(74,222,128,.12)'  },
-  delivered:   { label:'Delivered',   color:'#555',    bg:'rgba(85,85,85,.12)'    },
-};
+  // Trigger the InvoiceModal print by setting sale into a temporary modal
+  // Actually: just duplicate the HTML building here (same as InvoiceModal)
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"/>
+  <title>Invoice ${sale.invoice_number}</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#111;background:#fff}
+    .page{max-width:700px;margin:0 auto;padding:0}
+    .topbar{background:#1a1a1a;height:10px}
+    .goldbar{background:#B8860B;height:3px}
+    .hdr{display:flex;justify-content:space-between;align-items:flex-start;padding:16px 24px 14px;border-bottom:1.5px solid #B8860B}
+    .brand{font-size:22px;font-weight:900;color:#1a1a1a;letter-spacing:-.5px}
+    .brand-sub{font-size:9px;color:#888;margin-top:3px;letter-spacing:.04em}
+    .inv-label{font-size:9px;color:#888;font-weight:700;letter-spacing:.1em;text-transform:uppercase;text-align:right}
+    .inv-no{font-size:18px;font-weight:800;color:#B8860B;text-align:right}
+    .inv-date{font-size:9px;color:#888;text-align:right;margin-top:3px}
+    .body{padding:20px 24px}
+    .sec-lbl{font-size:8px;font-weight:800;color:#B8860B;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px;padding-bottom:3px;border-bottom:1px solid #e8d090}
+    .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:18px}
+    .irow{display:flex;justify-content:space-between;margin-bottom:4px}
+    .lbl{font-size:9px;color:#888;text-transform:uppercase;letter-spacing:.04em}
+    .val{font-size:11px;font-weight:600;color:#111;text-align:right}
+    table{width:100%;border-collapse:collapse}
+    .total-row td{font-weight:800;font-size:13px;background:#B8860B!important;color:#fff;padding:9px 14px}
+    .words-row td{font-size:10px;font-style:italic;color:#555;padding:6px 14px;background:#fdf8ec;border-bottom:1px solid #e8d090}
+    .sig-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:24px}
+    .sig-box{text-align:center}
+    .sig-line{border-top:1px solid #333;margin-bottom:4px;padding-top:4px;font-size:9px;color:#555}
+    .footer{text-align:center;font-size:8px;color:#aaa;margin-top:16px;padding:12px 24px;border-top:1px solid #eee}
+    @media print{body{-webkit-print-color-adjust:exact}}
+  </style></head><body>
+  <div class="page">
+    <div class="topbar"></div><div class="goldbar"></div>
+    <div class="hdr">
+      <div>
+        <div class="brand">MM MOTORS</div>
+        <div class="brand-sub">AUTHORISED TWO-WHEELER DEALER</div>
+        <div style="font-size:9px;color:#888;margin-top:2px">Bengaluru, Karnataka</div>
+      </div>
+      <div>
+        <div class="inv-label">Tax Invoice</div>
+        <div class="inv-no">${sale.invoice_number||'—'}</div>
+        <div class="inv-date">${sale.sale_date||''}</div>
+      </div>
+    </div>
+    <div class="body">
+      <div class="info-grid">
+        <div>
+          <div class="sec-lbl">Customer</div>
+          <div class="irow"><div class="lbl">Name</div><div class="val">${sale.customer_name||'—'}</div></div>
+          <div class="irow"><div class="lbl">Mobile</div><div class="val">${sale.customer_mobile||'—'}</div></div>
+          ${sale.customer_address ? `<div class="irow"><div class="lbl">Address</div><div class="val" style="max-width:180px;text-align:right">${sale.customer_address}</div></div>` : ''}
+          ${nominee?.name ? `<div class="irow"><div class="lbl">Nominee</div><div class="val">${nominee.name}</div></div>` : ''}
+        </div>
+        <div>
+          <div class="sec-lbl">Vehicle</div>
+          <div class="irow"><div class="lbl">Brand</div><div class="val">${sale.vehicle_brand||'—'}</div></div>
+          <div class="irow"><div class="lbl">Model</div><div class="val">${sale.vehicle_model||'—'}</div></div>
+          ${sale.vehicle_variant ? `<div class="irow"><div class="lbl">Variant</div><div class="val">${sale.vehicle_variant}</div></div>` : ''}
+          ${sale.vehicle_color   ? `<div class="irow"><div class="lbl">Colour</div><div class="val">${sale.vehicle_color}</div></div>` : ''}
+          ${sale.chassis_number  ? `<div class="irow"><div class="lbl">Chassis</div><div class="val" style="font-family:monospace;font-size:10px">${sale.chassis_number}</div></div>` : ''}
+          ${sale.engine_number   ? `<div class="irow"><div class="lbl">Engine</div><div class="val" style="font-family:monospace;font-size:10px">${sale.engine_number}</div></div>` : ''}
+          ${sale.vehicle_number  ? `<div class="irow"><div class="lbl">Reg No.</div><div class="val" style="font-family:monospace">${sale.vehicle_number}</div></div>` : ''}
+        </div>
+      </div>
+      <div class="sec-lbl" style="margin-bottom:8px">Amount Details</div>
+      <table style="margin-bottom:16px">
+        <thead><tr style="background:#f5f5f5"><th style="padding:7px 14px;text-align:left;font-size:9px;letter-spacing:.06em;color:#888;text-transform:uppercase">Description</th><th style="padding:7px 14px;text-align:right;font-size:9px;letter-spacing:.06em;color:#888;text-transform:uppercase">Amount</th></tr></thead>
+        <tbody>
+          ${descRows}
+          <tr class="total-row"><td>Total Amount</td><td style="text-align:right">${RS}${fmt(total)}</td></tr>
+          <tr class="words-row"><td colspan="2">${amtWords}</td></tr>
+        </tbody>
+      </table>
+      <div class="info-grid" style="margin-bottom:0">
+        <div>
+          <div class="sec-lbl">Payment</div>
+          <div class="irow"><div class="lbl">Mode</div><div class="val">${sale.payment_mode||'—'}</div></div>
+          <div class="irow"><div class="lbl">Status</div><div class="val">${sale.status||'—'}</div></div>
+        </div>
+      </div>
+      <div class="sig-grid">
+        <div class="sig-box"><div style="height:36px"></div><div class="sig-line">Customer Signature</div></div>
+        <div class="sig-box"><div style="height:36px"></div><div class="sig-line">Authorised Signatory</div></div>
+        <div class="sig-box"><div style="height:36px"></div><div class="sig-line">Received By</div></div>
+      </div>
+    </div>
+    <div class="footer">This is a computer-generated invoice. Thank you for your purchase at MM Motors.</div>
+    <div class="goldbar"></div>
+  </div>
+  <script>window.onload=()=>{window.print();}</script>
+  </body></html>`);
+  w.document.close();
+}
 
-function StatusBadge({ status }) {
-  const s = STATUS_CFG[status] || STATUS_CFG.pending;
+// ── Invoice modal ────────────────────────────────────────────────────
+function InvoiceModal({ sale, onClose }) {
+  const [notes, setNotes] = useState(sale.notes || '');
+
+  const print = () => {
+    const RS = '\u20b9';
+    const fmt = n => Number(n||0).toLocaleString('en-IN');
+    const nominee = sale.nominee || {};
+    const total = sale.total_amount || 0;
+    const totalStr = fmt(total);
+
+    // amount in words (simple)
+    const ones = ['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen'];
+    const tens = ['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];
+    function numWords(n) {
+      n = Math.round(n);
+      if (n === 0) return 'Zero';
+      if (n < 0) return 'Minus ' + numWords(-n);
+      let w = '';
+      if (n >= 10000000) { w += numWords(Math.floor(n/10000000)) + ' Crore '; n %= 10000000; }
+      if (n >= 100000)   { w += numWords(Math.floor(n/100000))   + ' Lakh '; n %= 100000; }
+      if (n >= 1000)     { w += numWords(Math.floor(n/1000))     + ' Thousand '; n %= 1000; }
+      if (n >= 100)      { w += ones[Math.floor(n/100)]          + ' Hundred '; n %= 100; }
+      if (n >= 20)       { w += tens[Math.floor(n/10)]; if (n%10) w += ' ' + ones[n%10]; }
+      else if (n > 0)    { w += ones[n]; }
+      return w.trim();
+    }
+    const amtWords = numWords(total) + ' Rupees Only';
+
+    const exShowroom  = sale.ex_showroom_price || sale.total_amount || 0;
+    const rto         = sale.rto        || 0;
+    const insurance   = sale.insurance  || 0;
+    const accessories = sale.accessories|| 0;
+    const discount    = sale.discount   || 0;
+
+    const descRows = [
+      ['Ex-Showroom Price', exShowroom],
+      rto         ? ['RTO', rto]               : null,
+      insurance   ? ['Insurance', insurance]   : null,
+      accessories ? ['Accessories',accessories]: null,
+      discount    ? ['Discount', -discount]    : null,
+    ].filter(Boolean).map(([l,v],i) =>
+      `<tr style="background:${i%2?'#fafafa':'#fff'}">
+        <td style="padding:7px 14px;font-size:11px;color:#555;border-bottom:1px solid #eee">${l}</td>
+        <td style="padding:7px 14px;font-size:11px;text-align:right;border-bottom:1px solid #eee">${v<0?'− ':''}${RS}${fmt(Math.abs(v))}</td>
+      </tr>`
+    ).join('');
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
+    <title>Invoice ${sale.invoice_number}</title>
+    <style>
+      *{margin:0;padding:0;box-sizing:border-box}
+      body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#111;background:#fff}
+      .page{max-width:700px;margin:0 auto;padding:0}
+      .topbar{background:#1a1a1a;height:10px}
+      .goldbar{background:#B8860B;height:3px}
+      .hdr{display:flex;justify-content:space-between;align-items:flex-start;padding:16px 24px 14px;border-bottom:1.5px solid #B8860B}
+      .brand{font-size:22px;font-weight:900;color:#1a1a1a;letter-spacing:-.5px}
+      .brand-sub{font-size:9px;color:#888;margin-top:3px;letter-spacing:.04em}
+      .inv-label{font-size:9px;color:#888;font-weight:700;letter-spacing:.1em;text-transform:uppercase;text-align:right}
+      .inv-no{font-size:18px;font-weight:800;color:#B8860B;text-align:right}
+      .inv-date{font-size:9px;color:#888;text-align:right;margin-top:3px}
+      .body{padding:20px 24px}
+      .sec-lbl{font-size:8px;font-weight:800;color:#B8860B;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px;padding-bottom:3px;border-bottom:1px solid #e8d090}
+      .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:18px}
+      .info-box{background:#f9f9f9;border:1px solid #e5e5e5;border-radius:4px;padding:12px 14px}
+      .irow{display:flex;padding:5px 0;border-bottom:1px solid #eee;font-size:11px}
+      .irow:last-child{border-bottom:none}
+      .irow .lbl{width:110px;color:#888;flex-shrink:0;font-size:10px}
+      .irow .val{font-weight:600;word-break:break-word;color:#111}
+      .nom-box{display:grid;grid-template-columns:1fr 1fr 80px 1fr;background:#f9f9f9;border:1px solid #e5e5e5;border-radius:4px;margin-bottom:18px}
+      .nom-cell{padding:10px 12px;border-right:1px solid #eee}
+      .nom-cell:last-child{border-right:none}
+      .nom-cell .lbl{font-size:9px;color:#888;margin-bottom:4px}
+      .nom-cell .val{font-size:11px;font-weight:600}
+      .desc-tbl{width:100%;border-collapse:collapse;margin-bottom:0}
+      .desc-tbl th{background:#1a1a1a;color:#fff;padding:8px 12px;font-size:9px;letter-spacing:.08em;font-weight:700;text-align:left}
+      .desc-tbl th:last-child{text-align:right}
+      .desc-tbl td{padding:7px 14px;font-size:11px;border-bottom:1px solid #eee}
+      .amt-tbl{width:100%;border-collapse:collapse;margin-bottom:0}
+      .amt-tbl td{padding:6px 14px;font-size:11px;border-bottom:1px solid #eee}
+      .total-box{background:#f5e6c0;border:1.5px solid #B8860B;border-radius:3px;padding:8px 14px;text-align:right;margin-top:2px}
+      .total-lbl{font-size:9px;color:#7a5800;font-weight:700;letter-spacing:.08em}
+      .total-val{font-size:16px;font-weight:900;color:#1a1a1a}
+      .sig-row{display:flex;justify-content:space-between;align-items:flex-end;margin:22px 0 0;padding-top:12px;border-top:1px solid #ddd}
+      .sig-col{text-align:center}
+      .sig-col .sig-line{width:120px;border-bottom:1px solid #555;margin:0 auto 5px}
+      .sig-col .sig-lbl{font-size:9px;color:#888}
+      .sig-col .sig-name{font-size:10px;font-weight:700;color:#1a1a1a;margin-top:2px}
+      .sched-wrap{margin-top:20px;border:1px solid #ddd;border-radius:3px;overflow:hidden}
+      .sched-hdr{background:#1a1a1a;padding:9px 14px;display:flex;align-items:center;gap:0}
+      .sched-hdr-gold{background:#B8860B;height:3px;margin-bottom:0}
+      .sched-title{color:#fff;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+      .dear-box{background:#fdf8ec;border-bottom:1px solid #e8d090;padding:10px 14px;font-size:10px;color:#5a4800}
+      .sched-tbl{width:100%;border-collapse:collapse}
+      .sched-tbl th{background:#1a1a1a;color:#fff;padding:8px 12px;font-size:9px;letter-spacing:.08em;font-weight:700;text-align:left}
+      .sched-tbl td{padding:8px 12px;font-size:11px;border-bottom:1px solid #eee}
+      .sched-tbl tr:nth-child(even) td{background:#fafafa}
+      .sched-note{background:#fdf8ec;border-top:1.5px solid #B8860B;padding:7px 14px;font-size:9.5px;font-weight:700;color:#7a5800;text-align:center}
+      .sched-footer{display:flex;justify-content:space-between;padding:7px 14px;font-size:9.5px;color:#777;border-top:1px solid #eee}
+      .thankyou{text-align:center;padding:12px 0 4px;font-size:13px;font-weight:900;color:#1a1a1a}
+      .thankyou-sub{text-align:center;font-size:9.5px;color:#888;font-style:italic;padding-bottom:2px}
+      .thankyou-pts{text-align:center;font-size:9.5px;color:#666;padding-bottom:10px}
+      .page-footer{background:#1a1a1a;color:#777;font-size:8px;display:flex;justify-content:space-between;padding:7px 24px;margin-top:0}
+      @media print{body{margin:0}@page{margin:0}}
+    </style></head><body>
+    <div class="page">
+      <div class="topbar"></div>
+      <div class="goldbar"></div>
+      <div class="hdr">
+        <div>
+          <div class="brand">MM MOTORS</div>
+          <div class="brand-sub">MULTI-BRAND DEALERSHIP &nbsp;·&nbsp; MALUR</div>
+        </div>
+        <div>
+          <div class="inv-label">Sale Invoice</div>
+          <div class="inv-no">${sale.invoice_number||'—'}</div>
+          <div class="inv-date">Date: ${sale.sale_date||new Date().toLocaleDateString('en-IN')}</div>
+        </div>
+      </div>
+
+      <div class="body">
+        <div class="info-grid">
+          <div class="info-box">
+            <div class="sec-lbl">Customer Details</div>
+            <div class="irow"><div class="lbl">Name</div><div class="val">${sale.customer_name||'—'}</div></div>
+            <div class="irow"><div class="lbl">C/O</div><div class="val">${sale.care_of||sale.customer_care_of||'—'}</div></div>
+            <div class="irow"><div class="lbl">Mobile</div><div class="val">${sale.customer_mobile||'—'}</div></div>
+            <div class="irow"><div class="lbl">Address</div><div class="val">${sale.customer_address||'—'}</div></div>
+            <div class="irow"><div class="lbl">Payment</div><div class="val">${sale.payment_mode||'—'}</div></div>
+          </div>
+          <div class="info-box">
+            <div class="sec-lbl">Vehicle Details</div>
+            <div class="irow"><div class="lbl">Brand</div><div class="val">${sale.vehicle_brand||'—'}</div></div>
+            <div class="irow"><div class="lbl">Model</div><div class="val">${sale.vehicle_model||'—'}</div></div>
+            <div class="irow"><div class="lbl">Variant</div><div class="val">${sale.vehicle_variant||'—'}</div></div>
+            <div class="irow"><div class="lbl">Colour</div><div class="val">${sale.vehicle_color||'—'}</div></div>
+            <div class="irow"><div class="lbl">Financier</div><div class="val">${sale.financier||'—'}</div></div>
+          </div>
+        </div>
+
+        <div class="info-grid" style="margin-bottom:18px">
+          <div class="info-box">
+            <div class="sec-lbl">Registration / Chassis</div>
+            <div class="irow"><div class="lbl">Vehicle No.</div><div class="val">${sale.vehicle_number||'—'}</div></div>
+            <div class="irow"><div class="lbl">RTO</div><div class="val">${sale.rto||'—'}</div></div>
+            <div class="irow"><div class="lbl">Chassis No.</div><div class="val" style="font-family:monospace">${sale.chassis_number||'—'}</div></div>
+            <div class="irow"><div class="lbl">Engine No.</div><div class="val" style="font-family:monospace">${sale.engine_number||'—'}</div></div>
+          </div>
+          <div class="info-box">
+            <div class="sec-lbl">Nominee (Insurance)</div>
+            <div class="irow"><div class="lbl">Name</div><div class="val">${nominee.name||'—'}</div></div>
+            <div class="irow"><div class="lbl">Relation</div><div class="val">${nominee.relation||'—'}</div></div>
+            <div class="irow"><div class="lbl">Age</div><div class="val">${nominee.age||'—'}</div></div>
+            <div class="irow"><div class="lbl">Mobile</div><div class="val">${nominee.number||'—'}</div></div>
+          </div>
+        </div>
+
+        <table class="desc-tbl" style="margin-bottom:2px">
+          <thead>
+            <tr>
+              <th style="width:35%">DESCRIPTION</th>
+              <th style="width:22%">CHASSIS / DETAILS</th>
+              <th style="width:13%">PAYMENT</th>
+              <th style="width:14%">MODE</th>
+              <th style="width:16%;text-align:right">AMOUNT</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="background:#f7f7f4">
+              <td>
+                <div style="font-weight:700;font-size:12px">${sale.vehicle_brand||''} ${sale.vehicle_model||''}</div>
+                <div style="font-size:10px;color:#888;margin-top:2px">${[sale.vehicle_variant,sale.vehicle_color].filter(Boolean).join('  ·  ')}</div>
+              </td>
+              <td style="font-family:monospace;font-size:10px">${sale.chassis_number||'—'}</td>
+              <td>${sale.payment_mode||'—'}</td>
+              <td>Full Payment</td>
+              <td style="text-align:right;font-weight:800;font-size:13px;color:#B8860B">${RS}${fmt(total)}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div style="border-top:1px solid #c0a040;margin-bottom:6px"></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+          <div style="font-size:10px;font-style:italic;color:#888">${amtWords}</div>
+          <div class="total-box">
+            <div class="total-lbl">TOTAL AMOUNT</div>
+            <div class="total-val">${RS}${totalStr}</div>
+          </div>
+        </div>
+
+        <div class="sig-row">
+          <div class="sig-col" style="text-align:left">
+            <div class="sig-line" style="margin:0 0 5px 0"></div>
+            <div class="sig-lbl">Customer's Signature</div>
+            <div class="sig-name">${(sale.customer_name||'').toUpperCase()}</div>
+          </div>
+          <div class="sig-col">
+            <div class="sig-lbl" style="margin-bottom:0">Sold by: ${sale.sold_by||sale.staff_name||'MM MOTORS'}</div>
+          </div>
+          <div class="sig-col" style="text-align:right">
+            <div class="sig-line" style="margin:0 0 5px auto"></div>
+            <div class="sig-lbl">Authorised Signatory</div>
+            <div class="sig-name">MM MOTORS</div>
+          </div>
+        </div>
+
+        <div class="sched-wrap">
+          <div style="background:#B8860B;height:3px"></div>
+          <div class="sched-hdr"><span class="sched-title">Service Schedule</span></div>
+          <div class="dear-box">
+            <strong>DEAR VALUED CUSTOMER,</strong><br/>
+            We thank you for choosing our world-class vehicle. To ensure optimal performance and longevity,
+            please follow the service schedule below for a pleasant riding experience at all times.
+          </div>
+          <table class="sched-tbl">
+            <thead>
+              <tr><th>SERVICE DATE</th><th>SERVICE TYPE</th><th>RECOMMENDED SCHEDULE</th></tr>
+            </thead>
+            <tbody>
+              <tr><td style="font-family:monospace;color:#888">__/__/____</td><td style="font-weight:700;color:#B8860B">FIRST SERVICE</td><td>500-700 kms or 15-30 days</td></tr>
+              <tr><td style="font-family:monospace;color:#888">__/__/____</td><td style="font-weight:700;color:#B8860B">SECOND SERVICE</td><td>3000-3500 kms or 30-90 days</td></tr>
+              <tr><td style="font-family:monospace;color:#888">__/__/____</td><td style="font-weight:700;color:#B8860B">THIRD SERVICE</td><td>6000-6500 kms or 90-180 days</td></tr>
+              <tr><td style="font-family:monospace;color:#888">__/__/____</td><td style="font-weight:700;color:#B8860B">FOURTH SERVICE</td><td>9000-9500 kms or 180-270 days</td></tr>
+            </tbody>
+          </table>
+          <div class="sched-note">IMPORTANT: Follow whichever milestone comes first (km or days)</div>
+          <div class="sched-footer">
+            <span>* Trusted Dealer</span><span>* 24/7 Service Support</span><span>* Quality Guaranteed</span>
+          </div>
+          <div class="thankyou">Thank You for Choosing M M Motors!</div>
+          <div class="thankyou-sub">Your trust drives our excellence in two-wheeler sales and service.</div>
+          <div class="thankyou-pts">* Premium Quality &nbsp; * Expert Service &nbsp; * Customer First</div>
+        </div>
+      </div>
+
+      <div class="goldbar"></div>
+      <div class="page-footer">
+        <span>This is a computer-generated document. No signature required if digitally authenticated.</span>
+        <span>MM Motors &nbsp;·&nbsp; Malur &nbsp;·&nbsp; Multi-brand Dealership</span>
+      </div>
+    </div>
+    <script>window.onload=()=>{window.print();}</script>
+    </body></html>`;
+
+    const w = window.open('', '_blank');
+    w.document.write(html);
+    w.document.close();
+  };
+
   return (
-    <span style={{ fontSize:10, fontWeight:700, letterSpacing:'.06em', padding:'3px 8px',
-      borderRadius:3, background:s.bg, color:s.color, textTransform:'uppercase' }}>
-      {s.label}
-    </span>
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.6)', zIndex:200, display:'flex', alignItems:'center', justifyContent:'center' }}
+      onClick={onClose}>
+      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:4, width:'100%', maxWidth:520, display:'flex', flexDirection:'column', maxHeight:'90vh' }}
+        onClick={e=>e.stopPropagation()}>
+        <div style={{ background:'#1c1c20', padding:'16px 20px', display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0 }}>
+          <div>
+            <div className="display" style={{ fontSize:13, color:'var(--accent)', fontWeight:700 }}>Sale Record</div>
+            <div className="mono" style={{ fontSize:11, color:'#6b6460', marginTop:2 }}>{sale.invoice_number}</div>
+          </div>
+          <button onClick={onClose} style={{ background:'transparent', border:'none', color:'#6b6460', cursor:'pointer', fontSize:20 }}>×</button>
+        </div>
+
+        <div style={{ padding:20, display:'flex', flexDirection:'column', gap:0, overflowY:'auto' }}>
+          {[
+            ['Sales Date',     sale.sale_date || '—'],
+            ['Name',           sale.customer_name || '—'],
+            ['C/O',            sale.care_of || sale.customer_care_of || '—'],
+            ['Mobile Number',  sale.customer_mobile || '—'],
+            ['Address',        sale.customer_address || '—'],
+            ['Brand',          sale.vehicle_brand || '—'],
+            ['Model',          sale.vehicle_model || '—'],
+            ['Variant',        sale.vehicle_variant || '—'],
+            ['Colour',         sale.vehicle_color || '—'],
+            ['Vehicle No',     sale.vehicle_number || '—'],
+            ['Chassis No',     sale.chassis_number || '—'],
+            ['Engine No',      sale.engine_number || '—'],
+            ['RTO',            sale.rto ? `₹${sale.rto.toLocaleString('en-IN')}` : '—'],
+            ['HP (Financier)', sale.financier || '—'],
+            ['Nominee Name',   sale.nominee?.name || '—'],
+            ['Relation',       sale.nominee?.relation || '—'],
+            ['Age',            sale.nominee?.age || '—'],
+            ['Number',         sale.nominee?.number || '—'],
+            ['Total Amount',   sale.total_amount ? `₹${sale.total_amount.toLocaleString('en-IN')}` : '—'],
+            ['Payment Mode',   sale.payment_mode || '—'],
+          ].map(([l,v]) => (
+            <div key={l} style={{ display:'flex', fontSize:12, padding:'8px 0', borderBottom:'1px solid var(--border)' }}>
+              <div style={{ width:140, color:'var(--muted)', flexShrink:0, fontWeight:500 }}>{l}</div>
+              <div style={{ color:'var(--text)', wordBreak:'break-word' }}>{v}</div>
+            </div>
+          ))}
+          {/* Notes field */}
+          <div style={{ marginTop:14 }}>
+            <div style={{ fontSize:10, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--muted)', fontWeight:600, marginBottom:6 }}>Notes</div>
+            <textarea
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              rows={3}
+              placeholder="Additional notes for this sale…"
+              style={{ width:'100%', padding:'8px 10px', border:'1px solid var(--border)', borderRadius:4, background:'var(--surface2)', color:'var(--text)', fontSize:12, fontFamily:'IBM Plex Sans, sans-serif', resize:'vertical', boxSizing:'border-box' }}
+            />
+          </div>
+        </div>
+
+        <div style={{ padding:'16px 20px', background:'var(--surface2)', borderTop:'1px solid var(--border)', display:'flex', gap:8, flexShrink:0 }}>
+          <Btn onClick={print}>Print →</Btn>
+          <GhostBtn onClick={()=>sendWA(sale.customer_mobile,`Dear ${sale.customer_name}, your vehicle documentation is ready. Thank you for choosing MM Motors!`)}>WhatsApp</GhostBtn>
+          <GhostBtn onClick={() => {
+            const lines = [
+              `Invoice    : ${sale.invoice_number || '—'}`,
+              `Date       : ${sale.sale_date || '—'}`,
+              `Name       : ${sale.customer_name || '—'}`,
+              `C/O        : ${sale.care_of || sale.customer_care_of || '—'}`,
+              `Mobile     : ${sale.customer_mobile || '—'}`,
+              `Address    : ${sale.customer_address || '—'}`,
+              `Brand      : ${sale.vehicle_brand || '—'}`,
+              `Model      : ${sale.vehicle_model || '—'}`,
+              `Variant    : ${sale.vehicle_variant || '—'}`,
+              `Colour     : ${sale.vehicle_color || '—'}`,
+              `Vehicle No : ${sale.vehicle_number || '—'}`,
+              `Chassis No : ${sale.chassis_number || '—'}`,
+              `Engine No  : ${sale.engine_number || '—'}`,
+              `RTO        : ${sale.rto ? `₹${sale.rto.toLocaleString('en-IN')}` : '—'}`,
+              `Financier  : ${sale.financier || '—'}`,
+              `Nominee    : ${sale.nominee?.name || '—'} (${sale.nominee?.relation || '—'}, ${sale.nominee?.age || '—'})`,
+              `Amount     : ${sale.total_amount ? `₹${sale.total_amount.toLocaleString('en-IN')}` : '—'}`,
+              `Payment    : ${sale.payment_mode || '—'}`,
+            ].join("\n");
+            navigator.clipboard.writeText(lines).then(() => {
+              const btn = document.activeElement;
+              const orig = btn.textContent;
+              btn.textContent = 'Copied!';
+              setTimeout(() => { btn.textContent = orig; }, 1800);
+            });
+          }}>Copy</GhostBtn>
+        </div>
+      </div>
+    </div>
   );
 }
 
-const labelSt = { display:'block', fontSize:10, letterSpacing:'.07em', fontWeight:600,
-  color:'var(--muted,#888)', marginBottom:5, textTransform:'uppercase' };
+// ── Sale Wizard Form ────────────────────────────────────────────────
+function SaleForm({ initial = {}, onSave, onCancel, saving }) {
+  const [step, setStep] = useState(1);
 
-const secHdr = { fontSize:10, letterSpacing:'.08em', fontWeight:700,
-  color:'var(--muted,#888)', marginBottom:10, textTransform:'uppercase' };
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  SERVICE PAGE  — default export (required by router)
-// ═══════════════════════════════════════════════════════════════════════════════
-export default function ServicePage() {
-  const qc = useQueryClient();
-  const { byName, badgesFor } = useBadges();
-  const [filter, setFilter]         = useState('all');
-  const [search, setSearch]         = useState('');
-  const [dateFilter, setDateFilter] = useState('');
-  const [newJobOpen, setNewJobOpen]  = useState(false);
-  const [billJob, setBillJob]       = useState(null);
-  const [editJob, setEditJob]       = useState(null); // FIX #2: edit state
-
-  // ── Jobs list ────────────────────────────────────────────────────────────────
-  const { data, isLoading } = useQuery({
-    queryKey: ['service-jobs', filter, search],
-    queryFn: () => serviceApi.list({
-      status: filter === 'all' ? undefined : filter,
-      search: search || undefined,
-      limit:  5000,
-    }),
-    keepPreviousData: true,
+  // ── Search state for customer ──────────────────────────────────────────────
+  const [custSearch, setCustSearch] = useState('');
+  const [custFocus, setCustFocus]   = useState(false);
+  const { data: custData } = useQuery({
+    queryKey: ['customers-search', custSearch],
+    queryFn: () => customersApi.list({ search: custSearch || undefined, limit: 20 }).then(r => r.data),
+    enabled: custSearch.length >= 1,
   });
-  const jobs = data?.data?.items || data?.data || [];
-  const { sorted: sortedJobs, Th: JobTh } = useSortable(jobs, 'check_in_date', 'desc');
+  const custResults = Array.isArray(custData) ? custData : [];
 
-  // ── Client-side date filter ────────────────────────────────────────────────
-  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const toCheckInFormat = (yyyy_mm_dd) => {
-    const [y, m, d] = yyyy_mm_dd.split('-');
-    return `${parseInt(d)} ${MONTHS[parseInt(m)-1]} ${y}`;
+  // ── Search state for vehicle ───────────────────────────────────────────────
+  const [vehSearch, setVehSearch] = useState('');
+  const [vehFocus, setVehFocus]   = useState(false);
+  const { data: vehData } = useQuery({
+    queryKey: ['vehicles-search', vehSearch],
+    queryFn: () => vehiclesApi.list({
+      search: vehSearch || undefined,
+      status: 'in_stock',
+      limit: 20,
+    }).then(r => r.data),
+    enabled: vehSearch.length >= 1,
+  });
+  const vehResults = Array.isArray(vehData)
+    ? vehData.filter(v => v.status === 'Instock' || v.status === 'in_stock' || v.id === initial.vehicle_id)
+    : [];
+
+  const [f, setF] = useState({
+    customer_id: '', customer_name: '', care_of: '', customer_mobile: '', customer_address: '',
+    vehicle_id: '', vehicle_brand: '', vehicle_model: '', vehicle_variant: '', vehicle_color: '', chassis_number: '', engine_number: '',
+    nominee_name: initial?.nominee?.name || '', nominee_relation: initial?.nominee?.relation || '', nominee_age: initial?.nominee?.age || '', nominee_number: initial?.nominee?.number || '',
+    sale_date: new Date().toISOString().split('T')[0], sale_price: '', payment_mode: 'Cash', financier: '', sold_by: '', notes: '',
+    vehicle_number: '', hsrp_front: '', hsrp_back: '', hsrp_front_id: null, hsrp_back_id: null, hsrp_date: '', hsrp_notes: '',
+    ...initial
+  });
+
+  const s = k => e => setF(p => ({ ...p, [k]: e.target.value }));
+
+  // Draft — only for new sales (skip when editing)
+  const isEdit = !!initial?.id;
+  const draft  = useDraft({ key: 'mm_draft_sale', state: f, enabled: !isEdit });
+
+  const inpStyle = { background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:3, padding:'8px 10px', color:'var(--text)', outline:'none', fontSize:13, width:'100%' };
+  const dropStyle = { position:'absolute', top:'100%', left:0, right:0, zIndex:100, background:'var(--surface)', border:'1px solid var(--border)', borderRadius:3, boxShadow:'0 4px 16px rgba(0,0,0,.12)', maxHeight:200, overflowY:'auto' };
+  const dropItemStyle = (hover) => ({ padding:'8px 12px', fontSize:12, cursor:'pointer', background: hover ? 'var(--surface2)' : 'transparent', borderBottom:'1px solid var(--border)' });
+
+  const handleSave = () => {
+    if (!f.customer_name || !f.customer_mobile) return toast.error('Please provide Customer Name and Mobile in Step 1');
+    // In edit mode, vehicle details (brand/model/chassis) are already on the record — no need to re-select
+    const hasVehicleDetails = f.vehicle_brand && f.vehicle_model;
+    if (!f.vehicle_id && !hasVehicleDetails) return toast.error('Please select a vehicle in Step 2');
+
+    const payload = {
+      ...f,
+      nominee: {
+        name: f.nominee_name,
+        relation: f.nominee_relation,
+        age: f.nominee_age,
+        number: f.nominee_number
+      },
+      sale_price: parseFloat(f.sale_price) || 0,
+      total_amount: parseFloat(f.sale_price) || 0 
+    };
+    onSave(payload);
+    if (!isEdit) draft.clearDraft();
   };
-  const displayedJobs = dateFilter
-    ? sortedJobs.filter(j => j.check_in_date === toCheckInFormat(dateFilter))
-    : sortedJobs;
-
-  // ── Stats ────────────────────────────────────────────────────────────────────
-  const { data: statsData } = useQuery({
-    queryKey: ['service-stats'],
-    queryFn: serviceApi.stats,
-    refetchInterval: 30000,
-  });
-  const stats = statsData?.data || {};
-
-  // ── Update status ────────────────────────────────────────────────────────────
-  const updateMut = useMutation({
-    mutationFn: ({ jobId, status }) => serviceApi.update(jobId, { status }), // FIX #5: updateJob → update
-    onSuccess: () => {
-      qc.invalidateQueries(['service-jobs']);
-      qc.invalidateQueries(['service-stats']);
-      toast.success('Status updated');
-    },
-    onError: () => toast.error('Failed to update'),
-  });
-
-  // FIX #2: delete mutation
-  const deleteMut = useMutation({
-    mutationFn: (id) => serviceApi.delete(id),
-    onSuccess: () => {
-      qc.invalidateQueries(['service-jobs']);
-      qc.invalidateQueries(['service-stats']);
-      toast.success('Job deleted');
-    },
-    onError: () => toast.error('Failed to delete'),
-  });
-
-  const TABS = [
-    { key:'all',         label:'All',         count:(stats.pending||0)+(stats.in_progress||0)+(stats.ready||0)+(stats.delivered||0) },
-    { key:'pending',     label:'Pending',     count:stats.pending     ||0 },
-    { key:'in_progress', label:'In Progress', count:stats.in_progress ||0 },
-    { key:'ready',       label:'Ready',       count:stats.ready       ||0 },
-    { key:'delivered',   label:'Delivered',   count:stats.delivered   ||0 },
-  ];
 
   return (
-    <div style={{ fontFamily:'IBM Plex Sans, sans-serif', color:'var(--text,#e8e8e8)', minHeight:'100vh' }}>
-
-      {/* ── Header ── */}
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
-        padding:'16px 24px', borderBottom:'1px solid var(--border,#222)' }}>
-        <div>
-          <div style={{ fontSize:9, letterSpacing:'.12em', color:C.gold, fontWeight:700, marginBottom:3 }}>SERVICE</div>
-          <div style={{ fontSize:20, fontWeight:800, letterSpacing:'-.01em' }}>Job Board</div>
-        </div>
-        {/* FIX #3: removed + Parts Bill button — moved to PartsPage */}
-        <div style={{ display:'flex', gap:8 }}>
-          <button onClick={() => setNewJobOpen(true)} style={btnPrimary}>
-            + New Job Card
-          </button>
-        </div>
-      </div>
-
-      {/* ── Stat strip ── */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', borderBottom:'1px solid var(--border,#222)' }}>
-        {[
-          { label:'PENDING',     value:stats.pending     ||0, color:'#888'    },
-          { label:'IN PROGRESS', value:stats.in_progress ||0, color:'#fbbf24' },
-          { label:'READY',       value:stats.ready       ||0, color:'#4ade80' },
-          { label:'DELIVERED',   value:stats.delivered   ||0, color:'#555'    },
-        ].map(s => (
-          <div key={s.label}
-            style={{ padding:'18px 24px', borderRight:'1px solid var(--border,#222)', cursor:'pointer' }}
-            onClick={() => setFilter(s.label.toLowerCase().replace(' ','_'))}
-            onMouseEnter={e => e.currentTarget.style.background=C.s2}
-            onMouseLeave={e => e.currentTarget.style.background='transparent'}
-          >
-            <div style={{ fontSize:9, letterSpacing:'.1em', color:C.muted, fontWeight:600, marginBottom:6 }}>{s.label}</div>
-            <div style={{ fontSize:28, fontWeight:800, color:s.color, lineHeight:1 }}>{s.value}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* ── Filter tabs + search ── */}
-      <div style={{ display:'flex', alignItems:'center', gap:8, padding:'12px 24px',
-        borderBottom:'1px solid var(--border,#222)', flexWrap:'wrap' }}>
-        {TABS.map(t => (
-          <button key={t.key} onClick={() => setFilter(t.key)}
-            style={{ ...btnGhost, padding:'6px 14px', fontSize:11,
-              background:    filter===t.key ? C.s2            : 'transparent',
-              color:         filter===t.key ? C.gold          : C.muted,
-              borderColor:   filter===t.key ? C.gold          : '#2a2a2a' }}>
-            {t.label}
-            {t.count>0 && <span style={{ marginLeft:6, fontSize:10, color:filter===t.key?C.gold:'#555' }}>{t.count}</span>}
-          </button>
-        ))}
-
-        {/* ── Calendar date filter ── */}
-        <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:6 }}>
-          {dateFilter && (
-            <span style={{
-              fontSize:11, color:C.gold, background:C.gold+'18',
-              border:`1px solid ${C.gold}44`, borderRadius:3,
-              padding:'4px 10px', display:'flex', alignItems:'center', gap:6,
+    <div style={{ display:'flex', flexDirection:'column', gap:14, maxWidth:700 }}>
+      {!isEdit && (
+        <DraftBar
+          draft={draft}
+          onRestore={(data) => setF(p => ({ ...p, ...data }))}
+          onDiscard={() => {}}
+        />
+      )}
+      {/* ── Tabs ── */}
+      <div style={{ display:'flex', borderBottom:'1px solid var(--border)', marginBottom:10, overflowX: 'auto' }}>
+        {['CUSTOMER', 'VEHICLE', 'NOMINEE', 'PRICING', 'HSRP'].map((t, i) => (
+          <div key={t} onClick={() => setStep(i+1)} 
+            style={{ 
+              padding:'10px 20px', fontSize:11, fontWeight:600, cursor:'pointer', whiteSpace: 'nowrap',
+              color: step === i+1 ? 'var(--accent)' : 'var(--muted)', 
+              borderBottom: step === i+1 ? '2px solid var(--accent)' : '2px solid transparent' 
             }}>
-              📅 {toCheckInFormat(dateFilter)}
-              <button onClick={() => setDateFilter('')} style={{
-                background:'none', border:'none', color:C.gold, cursor:'pointer',
-                fontSize:13, lineHeight:1, padding:0, marginLeft:2,
-              }}>×</button>
-            </span>
-          )}
-          <div style={{ position:'relative', display:'flex', alignItems:'center' }}>
-            <button
-              title="Filter by date"
-              style={{
-                ...btnGhost,
-                padding:'6px 10px',
-                color: dateFilter ? C.gold : C.muted,
-                borderColor: dateFilter ? C.gold : '#2a2a2a',
-                background: dateFilter ? C.gold+'18' : 'transparent',
-                display:'flex', alignItems:'center', gap:5, fontSize:13,
-              }}
-              onClick={() => document.getElementById('svc-date-pick').showPicker?.() || document.getElementById('svc-date-pick').focus()}
-            >
-              📅
-            </button>
-            <input
-              id="svc-date-pick"
-              type="date"
-              value={dateFilter}
-              onChange={e => setDateFilter(e.target.value)}
-              style={{
-                position:'absolute', opacity:0, pointerEvents:'none',
-                width:1, height:1, top:0, left:0,
-              }}
-            />
+            {t}
           </div>
-          <input value={search} onChange={e => setSearch(e.target.value)}
-            placeholder="Search job#, customer, vehicle…"
-            style={{ ...inp, maxWidth:260 }} />
+        ))}
+      </div>
+
+      {/* ── Step 1: Customer ── */}
+      {step === 1 && (
+        <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
+          <Field label="Search Existing Customer (Optional)">
+            <div style={{ position:'relative' }}>
+              <input
+                value={custSearch}
+                onChange={e => {
+                  setCustSearch(e.target.value);
+                  // Clear linked customer if user changes search
+                  if (f.customer_id) setF(p => ({ ...p, customer_id: '' }));
+                }}
+                onFocus={() => setCustFocus(true)}
+                onBlur={() => setTimeout(() => setCustFocus(false), 180)}
+                placeholder="Type name or mobile to search..."
+                style={inpStyle}
+              />
+              {custFocus && custResults.length > 0 && (
+                <div style={dropStyle}>
+                  {custResults.map(cust => (
+                    <div key={cust.id}
+                      onMouseDown={() => {
+                        setF(p => ({ ...p,
+                          customer_id:      cust.id,
+                          customer_name:    cust.name,
+                          customer_mobile:  cust.mobile,
+                          customer_address: cust.address || '',
+                        }));
+                        setCustSearch(`${cust.name} (${cust.mobile})`);
+                        setCustFocus(false);
+                      }}
+                      style={dropItemStyle(false)}
+                      onMouseEnter={e => e.currentTarget.style.background = 'var(--surface2)'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                    >
+                      <div style={{ fontWeight:600, fontSize:12 }}>{cust.name}</div>
+                      <div style={{ fontSize:11, color:'var(--muted)' }}>{cust.mobile}{cust.address ? ` · ${cust.address}` : ''}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {f.customer_id && (
+                <div style={{ marginTop:6, fontSize:11, color:'var(--accent)' }}>
+                  ✓ Linked to existing customer
+                  <button onClick={() => { setF(p => ({ ...p, customer_id:'', customer_name:'', customer_mobile:'', customer_address:'' })); setCustSearch(''); }}
+                    style={{ marginLeft:8, background:'transparent', border:'none', color:'var(--red)', cursor:'pointer', fontSize:10 }}>clear</button>
+                </div>
+              )}
+            </div>
+          </Field>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop: 4 }}>
+            <Field label="Full Name *"><input value={f.customer_name} onChange={s('customer_name')} placeholder="Customer Name" style={inpStyle} /></Field>
+            <Field label="C/O (Care Of)"><input value={f.care_of} onChange={s('care_of')} placeholder="Father/Husband Name" style={inpStyle} /></Field>
+            <Field label="Mobile Number *"><input value={f.customer_mobile} onChange={s('customer_mobile')} placeholder="10-digit mobile" style={inpStyle} /></Field>
+            <Field label="Address"><textarea value={f.customer_address} onChange={s('customer_address')} rows={2} placeholder="Full address" style={{...inpStyle, gridColumn: 'span 2' }} /></Field>
+          </div>
+        </div>
+      )}
+      
+      {/* ── Step 2: Vehicle ── */}
+      {step === 2 && (
+        <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
+          <Field label="Search Vehicle by Chassis No, Brand or Model *">
+            <div style={{ position:'relative' }}>
+              <input
+                value={vehSearch}
+                onChange={e => {
+                  setVehSearch(e.target.value);
+                  if (f.vehicle_id) setF(p => ({ ...p, vehicle_id:'', vehicle_brand:'', vehicle_model:'', vehicle_variant:'', vehicle_color:'', chassis_number:'', engine_number:'' }));
+                }}
+                onFocus={() => setVehFocus(true)}
+                onBlur={() => setTimeout(() => setVehFocus(false), 180)}
+                placeholder="Type chassis number, brand or model..."
+                style={inpStyle}
+              />
+              {vehFocus && vehResults.length > 0 && (
+                <div style={dropStyle}>
+                  {vehResults.map(v => (
+                    <div key={v.id}
+                      onMouseDown={() => {
+                        setF(p => ({ ...p,
+                          vehicle_id:      v.id,
+                          vehicle_brand:   v.brand,
+                          vehicle_model:   v.model,
+                          vehicle_variant: v.variant || '',
+                          vehicle_color:   v.color || '',
+                          chassis_number:  v.chassis_number || '',
+                          engine_number:   v.engine_number || '',
+                        }));
+                        setVehSearch(v.chassis_number || `${v.brand} ${v.model}`);
+                        setVehFocus(false);
+                      }}
+                      style={dropItemStyle(false)}
+                      onMouseEnter={e => e.currentTarget.style.background = 'var(--surface2)'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                    >
+                      <div style={{ fontWeight:600, fontSize:12 }}>{v.brand} {v.model} {v.variant ? `· ${v.variant}` : ''}</div>
+                      <div style={{ fontSize:11, color:'var(--muted)', fontFamily:'IBM Plex Mono, monospace' }}>{v.chassis_number} {v.color ? `· ${v.color}` : ''}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {vehSearch.length > 0 && vehResults.length === 0 && (
+                <div style={{ marginTop:6, fontSize:11, color:'var(--muted)' }}>No in-stock vehicles found</div>
+              )}
+              {f.vehicle_id && (
+                <div style={{ marginTop:6, fontSize:11, color:'var(--accent)' }}>
+                  ✓ Vehicle selected
+                  <button onClick={() => { setF(p => ({ ...p, vehicle_id:'', vehicle_brand:'', vehicle_model:'', vehicle_variant:'', vehicle_color:'', chassis_number:'', engine_number:'' })); setVehSearch(''); }}
+                    style={{ marginLeft:8, background:'transparent', border:'none', color:'var(--red)', cursor:'pointer', fontSize:10 }}>clear</button>
+                </div>
+              )}
+            </div>
+          </Field>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop: 4 }}>
+            <Field label="Brand"><input value={f.vehicle_brand} disabled style={{...inpStyle, opacity:0.6}} /></Field>
+            <Field label="Model"><input value={f.vehicle_model} disabled style={{...inpStyle, opacity:0.6}} /></Field>
+            <Field label="Variant"><input value={f.vehicle_variant} disabled style={{...inpStyle, opacity:0.6}} /></Field>
+            <Field label="Colour"><input value={f.vehicle_color} disabled style={{...inpStyle, opacity:0.6}} /></Field>
+            <Field label="Chassis No"><input value={f.chassis_number} disabled className="mono" style={{...inpStyle, opacity:0.6}} /></Field>
+            <Field label="Engine No"><input value={f.engine_number} disabled className="mono" style={{...inpStyle, opacity:0.6}} /></Field>
+          </div>
+        </div>
+      )}
+
+      {/* ── Step 3: Insurance Nominee ── */}
+      {step === 3 && (
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <Field label="Nominee Name"><input value={f.nominee_name} onChange={s('nominee_name')} placeholder="Full Name" style={inpStyle} /></Field>
+          <Field label="Relation"><input value={f.nominee_relation} onChange={s('nominee_relation')} placeholder="Spouse, Son, Mother..." style={inpStyle} /></Field>
+          <Field label="Age"><input type="number" value={f.nominee_age} onChange={s('nominee_age')} placeholder="e.g. 35" style={inpStyle} /></Field>
+          <Field label="Number"><input value={f.nominee_number} onChange={s('nominee_number')} placeholder="Mobile Number" style={inpStyle} /></Field>
+        </div>
+      )}
+
+      {/* ── Step 4: Pricing ── */}
+      {step === 4 && (
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <Field label="Sale Date"><input type="date" value={f.sale_date} onChange={s('sale_date')} style={inpStyle} /></Field>
+          <Field label="Sale Price (₹)"><input type="number" value={f.sale_price} onChange={s('sale_price')} placeholder="0" style={inpStyle} /></Field>
+          <Field label="Payment Mode">
+            <select value={f.payment_mode} onChange={s('payment_mode')} style={inpStyle}>
+              <option value="Cash">Cash</option>
+              <option value="Card">Card</option>
+              <option value="UPI">UPI</option>
+              <option value="Finance">Finance</option>
+              <option value="Cheque">Cheque</option>
+            </select>
+          </Field>
+          <Field label="Financier / Bank"><input value={f.financier} onChange={s('financier')} placeholder="HDFC, Bajaj Finance..." style={inpStyle} /></Field>
+          <Field label="Sold By"><input value={f.sold_by} onChange={s('sold_by')} placeholder="Salesperson Name" style={inpStyle} /></Field>
+          <Field label="Notes"><textarea value={f.notes} onChange={s('notes')} rows={2} placeholder="Any additional details..." style={{...inpStyle, gridColumn: 'span 2' }} /></Field>
+        </div>
+      )}
+
+      {/* ── Step 5: HSRP ── */}
+      {step === 5 && (
+        <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+            <Field label="Reg Number"><input value={f.vehicle_number} onChange={s('vehicle_number')} className="mono" placeholder="KA01HH1234" style={inpStyle} /></Field>
+            <Field label="Number Plate Issued Date"><input type="date" value={f.hsrp_date} onChange={s('hsrp_date')} style={inpStyle} /></Field>
+          </div>
+          
+          {/* NEW: HSRP Text Fields */}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+            <Field label="HSRP Front (Code)"><input value={f.hsrp_front} onChange={s('hsrp_front')} placeholder="Front Laser Code" style={inpStyle} /></Field>
+            <Field label="HSRP Back (Code)"><input value={f.hsrp_back} onChange={s('hsrp_back')} placeholder="Back Laser Code" style={inpStyle} /></Field>
+          </div>
+
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop: '8px' }}>
+            <FileUpload label="Upload HSRP Front Photo" existingFileId={f.hsrp_front_id || null} onUploadSuccess={(fileId) => setF(p => ({ ...p, hsrp_front_id: fileId }))} />
+            <FileUpload label="Upload HSRP Back Photo" existingFileId={f.hsrp_back_id || null} onUploadSuccess={(fileId) => setF(p => ({ ...p, hsrp_back_id: fileId }))} />
+          </div>
+
+          {/* NEW: HSRP Notes */}
+          <div style={{ marginTop: '8px' }}>
+            <Field label="HSRP Notes"><textarea value={f.hsrp_notes} onChange={s('hsrp_notes')} rows={2} placeholder="Courier delays, missing rivets, specific customer requests..." style={{...inpStyle, width: '100%'}} /></Field>
+          </div>
+        </div>
+      )}
+
+      {/* ── Navigation Buttons ── */}
+      <div style={{ display:'flex', justifyContent:'space-between', gap:8, marginTop: 16 }}>
+        <GhostBtn onClick={onCancel}>Cancel</GhostBtn>
+        <div style={{ display:'flex', gap:8 }}>
+          {step > 1 && <GhostBtn onClick={() => setStep(s => s - 1)}>← Back</GhostBtn>}
+          {step < 5 
+            ? <Btn onClick={() => setStep(s => s + 1)}>Next →</Btn>
+            : <Btn onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save Sale'}</Btn>
+          }
         </div>
       </div>
 
-      {/* ── Job table ── */}
-      <div style={{ padding:'0 24px 40px' }}>
-        {isLoading ? (
-          <div style={{ padding:48, textAlign:'center', color:C.muted, fontSize:13 }}>Loading jobs…</div>
-        ) : jobs.length === 0 ? (
-          <div style={{ padding:48, textAlign:'center', color:C.muted, fontSize:13 }}>
-            No jobs found{filter!=='all' ? ` with status "${filter}"` : ''}.
+    </div>
+  );
+}
+
+// ── Sale Milestones ─────────────────────────────────────────────────
+// Order matches business flow: docs collected → invoice generated →
+// insurance done → tax paid → number plate fitted.
+const MILESTONE_DEFS = [
+  { key:'documents',    label:'Documents',    short:'D', color:'#c8940a' },
+  { key:'invoice',      label:'Invoice',      short:'I', color:'#c8940a' },
+  { key:'insurance',    label:'Insurance',    short:'N', color:'#c8940a' },
+  { key:'tax_paid',     label:'Tax Paid',     short:'T', color:'#c8940a' },
+  { key:'number_plate', label:'Number Plate', short:'P', color:'#c8940a' },
+];
+
+// Format YYYY-MM-DD → DD Mon YYYY for display (falls back to raw on parse failure)
+function fmtMilestoneDate(iso) {
+  if (!iso) return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return iso;
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const mo = months[parseInt(m[2],10) - 1] || m[2];
+  return `${m[3]} ${mo} ${m[1]}`;
+}
+
+// Popup for entering / viewing / editing the completion date of a milestone.
+// mode: 'add' (unchecked → mark done) | 'edit' (already done → change or remove)
+function MilestoneDateModal({ open, mode, milestoneLabel, defaultDate, onSave, onRemove, onCancel, saving }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [date, setDate] = useState(defaultDate || today);
+  // Reset date when opening for a different milestone
+  const [prevOpen, setPrevOpen] = useState(false);
+  if (open && !prevOpen) {
+    setDate(defaultDate || today);
+    setPrevOpen(true);
+  } else if (!open && prevOpen) {
+    setPrevOpen(false);
+  }
+
+  if (!open) return null;
+  const isEdit = mode === 'edit';
+  return (
+    <div
+      onClick={onCancel}
+      style={{
+        position:'fixed', inset:0, background:'rgba(0,0,0,.55)',
+        display:'flex', alignItems:'center', justifyContent:'center', zIndex:1000,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background:'var(--card, #1a1a1c)', border:'1px solid var(--border, #333)',
+          borderRadius:6, padding:24, minWidth:340, maxWidth:'90vw',
+          boxShadow:'0 20px 60px rgba(0,0,0,.5)',
+        }}
+      >
+        <div style={{ fontSize:11, letterSpacing:'.15em', color:'var(--dim)', textTransform:'uppercase', marginBottom:6 }}>
+          {isEdit ? 'Milestone completed' : 'Mark milestone complete'}
+        </div>
+        <div style={{ fontSize:18, fontWeight:700, marginBottom:6, color:'var(--text, #eee)' }}>
+          {milestoneLabel}
+        </div>
+        {isEdit && (
+          <div style={{
+            background:'rgba(200,148,10,.08)',
+            border:'1px solid rgba(200,148,10,.35)',
+            borderRadius:4,
+            padding:'10px 14px',
+            marginBottom:16,
+          }}>
+            <div style={{
+              fontSize:10, letterSpacing:'.12em', textTransform:'uppercase',
+              color:'#c8940a', marginBottom:4, fontWeight:600,
+            }}>
+              Completion date on record
+            </div>
+            <div style={{ fontSize:16, fontWeight:700, color:'#c8940a' }}>
+              {defaultDate ? fmtMilestoneDate(defaultDate) : 'Not recorded (was marked done before dates were tracked)'}
+            </div>
           </div>
-        ) : displayedJobs.length === 0 ? (
-          <div style={{ padding:48, textAlign:'center', color:C.muted, fontSize:13 }}>
-            No jobs on {toCheckInFormat(dateFilter)}.
+        )}
+        <Field label={isEdit ? 'Change date' : 'Completion date'}>
+          <input
+            type="date"
+            value={date}
+            max={today}
+            onChange={(e) => setDate(e.target.value)}
+            autoFocus
+            style={{ width:'100%' }}
+          />
+        </Field>
+        <div style={{ display:'flex', gap:10, justifyContent:'space-between', marginTop:22, alignItems:'center' }}>
+          <div>
+            {isEdit && (
+              <GhostBtn onClick={onRemove} style={{ color:'#e05555', borderColor:'#e05555' }}>
+                Remove
+              </GhostBtn>
+            )}
           </div>
-        ) : (
-          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12, marginTop:8 }}>
+          <div style={{ display:'flex', gap:10 }}>
+            <GhostBtn onClick={onCancel}>Cancel</GhostBtn>
+            <Btn onClick={() => onSave(date)} disabled={saving || !date}>
+              {saving ? 'Saving…' : (isEdit ? 'Update' : 'Save')}
+            </Btn>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MilestoneRow({ sale, onToggle, disabled }) {
+  const m  = sale.milestones       || {};
+  const md = sale.milestone_dates  || {};
+  const done = MILESTONE_DEFS.filter(d => m[d.key]).length;
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:4, minWidth:170 }}>
+      <div style={{ display:'flex', gap:4, alignItems:'center' }}>
+        {MILESTONE_DEFS.map(def => {
+          const checked = !!m[def.key];
+          const dateStr = md[def.key] ? fmtMilestoneDate(md[def.key]) : '';
+          const title = checked
+            ? `${def.label} — Done${dateStr ? ` on ${dateStr}` : ''} (click to view / change / remove)`
+            : `${def.label} — Pending (click to mark done)`;
+          return (
+            <button
+              key={def.key}
+              type="button"
+              title={title}
+              disabled={disabled}
+              onClick={(e) => { e.stopPropagation(); onToggle(sale, def, !checked); }}
+              style={{
+                width:22, height:22, borderRadius:4,
+                background: checked ? def.color : 'transparent',
+                border: `1.5px solid ${checked ? def.color : 'var(--border)'}`,
+                color:   checked ? '#fff' : 'var(--dim)',
+                fontSize:9, fontWeight:700, letterSpacing:'.02em',
+                cursor: disabled ? 'not-allowed' : 'pointer',
+                display:'flex', alignItems:'center', justifyContent:'center',
+                fontFamily:'IBM Plex Sans,sans-serif',
+                transition:'all .15s ease',
+                padding:0,
+              }}
+              onMouseEnter={e => { if (!disabled && !checked) e.currentTarget.style.borderColor = def.color; }}
+              onMouseLeave={e => { if (!disabled && !checked) e.currentTarget.style.borderColor = 'var(--border)'; }}
+            >
+              {checked ? '✓' : def.short}
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ fontSize:9, color: done === 5 ? '#4ade80' : 'var(--dim)', letterSpacing:'.05em', fontWeight: done === 5 ? 600 : 500 }}>
+        {done}/5 {done === 5 ? 'complete' : ''}
+      </div>
+    </div>
+  );
+}
+
+
+// ── Main page ────────────────────────────────────────────────────────
+export default function SalesPage() {
+  const confirm = useConfirm();
+  const qc = useQueryClient();
+  const { byName, badgesFor } = useBadges();
+  const [showAdd, setShowAdd] = useState(false);
+  const [editSale, setEditSale] = useState(null);
+  const [selSale, setSelSale] = useState(null);
+  const [search, setSearch]   = useState('');
+
+  const { data:stats } = useQuery({
+    queryKey:['sales-stats'],
+    refetchInterval: 30_000,
+    queryFn: () => salesApi.stats().then(r=>r.data),
+  });
+
+  const { data, isLoading, error } = useQuery({
+    queryKey:['sales', search],
+    queryFn: () => salesApi.list({ search: search||undefined, limit:1000 }).then(r=>r.data),
+  });
+
+const createMut = useMutation({
+    mutationFn: async (d) => {
+      let payload = { ...d };
+      
+      // Find existing customer by mobile, or create new one — prevents duplicates
+      if (!payload.customer_id) {
+        const existing = await customersApi.list({ search: payload.customer_mobile, limit: 1 }).then(r => r.data);
+        const match = Array.isArray(existing) ? existing.find(c => c.mobile === payload.customer_mobile) : null;
+        if (match) {
+          payload.customer_id = match.id;
+        } else {
+          const custRes = await customersApi.create({
+            name: payload.customer_name,
+            mobile: payload.customer_mobile,
+            address: payload.customer_address,
+          });
+          payload.customer_id = custRes.data.id;
+        }
+      }
+      
+      return salesApi.create(payload);
+    },
+    onSuccess: () => { 
+      qc.invalidateQueries(['sales']); 
+      qc.invalidateQueries(['sales-stats']); 
+      qc.invalidateQueries(['customers']); // Instantly refresh the customer dropdown
+      setShowAdd(false); 
+      toast.success('Sale recorded'); 
+    },
+    onError: e => {
+      // Unmasks the real error from the backend instead of just saying "Failed"
+      const errorMsg = typeof e?.response?.data?.detail === 'string' 
+        ? e.response.data.detail 
+        : JSON.stringify(e?.response?.data) || e.message || 'Failed';
+      toast.error(errorMsg);
+    }
+  });
+
+  const updateMut = useMutation({
+    mutationFn: ({id,d}) => salesApi.update(id,d),
+    onSuccess: () => { 
+      qc.invalidateQueries(['sales']); 
+      qc.invalidateQueries(['sales-stats']); 
+      setEditSale(null); 
+      toast.success('Updated'); 
+    },
+    onError: e => {
+      const errorMsg = typeof e?.response?.data?.detail === 'string' 
+        ? e.response.data.detail 
+        : JSON.stringify(e?.response?.data) || e.message || 'Failed';
+      toast.error(errorMsg);
+    }
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: id => salesApi.delete(id),
+    onSuccess: () => { qc.invalidateQueries(['sales']); qc.invalidateQueries(['sales-stats']); toast.success('Deleted'); },
+    onError:   e => toast.error(errMsg(e, 'Cannot delete')),
+  });
+
+  // ─── Milestone toggle with optimistic update ─────────────────────────
+  // Popup state: when a user tries to CHECK a milestone, we open a date picker
+  // and defer the actual mutation until they confirm.
+  const [pendingMilestone, setPendingMilestone] = useState(null);
+  // { saleId, key, label, defaultDate }
+
+  const milestoneMut = useMutation({
+    mutationFn: ({ id, key, value, date }) => salesApi.updateMilestone(id, key, value, date),
+    onMutate: async ({ id, key, value, date }) => {
+      await qc.cancelQueries({ queryKey: ['sales'] });
+      const previous = qc.getQueriesData({ queryKey: ['sales'] });
+      qc.setQueriesData({ queryKey: ['sales'] }, (old) => {
+        if (!Array.isArray(old)) return old;
+        return old.map(s => {
+          if (s.id !== id) return s;
+          const nextMs    = { ...(s.milestones      || {}), [key]: value };
+          const nextDates = { ...(s.milestone_dates || {}) };
+          if (value) nextDates[key] = date || nextDates[key] || new Date().toISOString().slice(0,10);
+          else       delete nextDates[key];
+          return { ...s, milestones: nextMs, milestone_dates: nextDates };
+        });
+      });
+      return { previous };
+    },
+    onError: (err, _vars, ctx) => {
+      // Roll back
+      if (ctx?.previous) ctx.previous.forEach(([qk, data]) => qc.setQueryData(qk, data));
+      toast.error(errMsg(err, 'Milestone update failed'));
+    },
+    onSuccess: () => setPendingMilestone(null),
+    onSettled: () => { qc.invalidateQueries(['sales']); },
+  });
+
+  // Called by MilestoneRow buttons. Always opens the modal — 'edit' mode when the
+  // milestone is already done (view date, change date, or remove), 'add' mode otherwise.
+  const handleMilestoneToggle = (sale, def, nextValue) => {
+    const existing = (sale.milestone_dates || {})[def.key]; // undefined for legacy sales
+    setPendingMilestone({
+      saleId:      sale.id,
+      key:         def.key,
+      label:       def.label,
+      mode:        nextValue ? 'add' : 'edit',
+      defaultDate: existing || '', // '' triggers "not recorded" in modal; picker still defaults to today
+    });
+  };
+
+  const sales = Array.isArray(data) ? data : [];
+  const { sorted: sortedSales, Th: SalesTh } = useSortable(sales, 'sale_date', 'desc');
+  const st = stats || {};
+
+  return (
+    <div>
+      {selSale && <InvoiceModal sale={selSale} onClose={()=>setSelSale(null)} />}
+      <MilestoneDateModal
+        open={!!pendingMilestone}
+        mode={pendingMilestone?.mode || 'add'}
+        milestoneLabel={pendingMilestone?.label || ''}
+        defaultDate={pendingMilestone?.defaultDate}
+        saving={milestoneMut.isPending}
+        onCancel={() => setPendingMilestone(null)}
+        onRemove={() => {
+          if (!pendingMilestone) return;
+          milestoneMut.mutate({
+            id:    pendingMilestone.saleId,
+            key:   pendingMilestone.key,
+            value: false,
+          });
+        }}
+        onSave={(date) => {
+          if (!pendingMilestone) return;
+          milestoneMut.mutate({
+            id:    pendingMilestone.saleId,
+            key:   pendingMilestone.key,
+            value: true,
+            date,
+          });
+        }}
+      />
+
+      {/* Edit Sale Modal */}
+      {editSale && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.5)', zIndex:100, display:'flex', alignItems:'center', justifyContent:'center' }}
+          onClick={() => setEditSale(null)}>
+          <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:6, padding:24, width:'100%', maxWidth:800, maxHeight:'90vh', overflowY:'auto' }}
+            onClick={e=>e.stopPropagation()}>
+            <div style={{ fontSize:13, fontWeight:600, marginBottom:18 }}>Edit Sale Record</div>
+            <SaleForm initial={editSale} onSave={d => updateMut.mutate({ id: editSale.id, d })} onCancel={() => setEditSale(null)} saving={updateMut.isPending} />
+          </div>
+        </div>
+      )}
+
+      {/* Stats Row */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', borderBottom:'1px solid var(--border)' }}>
+        <div style={{ padding:'14px 20px', borderRight:'1px solid var(--border)' }}>
+          <div className="label-xs">Total Revenue</div>
+          <div className="display" style={{ fontSize:24, color:'var(--accent)', marginTop:6 }}>₹{st.total_revenue > 1000 ? (st.total_revenue/1000).toFixed(0)+'K' : (st.total_revenue||0)}</div>
+        </div>
+        <div style={{ padding:'14px 20px', borderRight:'1px solid var(--border)' }}>
+          <div className="label-xs">Total Invoices</div>
+          <div className="display" style={{ fontSize:24, color:'var(--text)', marginTop:6 }}>{st.total_count||0}</div>
+        </div>
+        <div style={{ padding:'14px 20px' }}>
+          <div className="label-xs">Pending Delivery</div>
+          <div className="display" style={{ fontSize:24, color:'var(--accent)', marginTop:6 }}>{st.pending_delivery||0}</div>
+        </div>
+      </div>
+
+      {/* Add New Sale Form */}
+      {showAdd && (
+        <div style={{ margin:20, padding:20, background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:4 }}>
+          <div style={{ fontSize:12, fontWeight:600, marginBottom:16 }}>New Sale</div>
+          <SaleForm onSave={d=>createMut.mutate(d)} onCancel={()=>setShowAdd(false)} saving={createMut.isPending} />
+        </div>
+      )}
+
+      {/* Toolbar */}
+      <div style={{ display:'flex', alignItems:'center', gap:10, padding:'12px 20px', borderBottom:'1px solid var(--border)' }}>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search invoices, customer, vehicle..." style={{ width:260 }} />
+        <Btn style={{ marginLeft:'auto' }} onClick={()=>setShowAdd(v=>!v)}>+ New Sale</Btn>
+      </div>
+
+      {/* Data Table */}
+      {error ? <div style={{ padding:20 }}><ApiError error={error}/></div>
+        : isLoading ? <div style={{ padding:20, display:'flex', flexDirection:'column', gap:8 }}>{[1,2,3].map(i=><Skeleton key={i} h={44}/>)}</div>
+        : sales.length===0 ? <Empty message="No sales found" />
+        : (
+          <table style={{ width:'100%', borderCollapse:'collapse' }}>
             <thead>
-              <tr style={{ borderBottom:'1px solid var(--border,#222)' }}>
-                {[['Job #','job_number'],['Customer','customer_name'],['Vehicle','vehicle_number'],['Complaint','complaint'],['Tech','technician'],['Status','status'],['Actions','']].map(([h,f],i) => (
-                  <JobTh key={i} field={f||null} style={{ padding:'10px 12px', textAlign:'left',
-                    fontSize:10, letterSpacing:'.07em', color:C.muted, fontWeight:700 }}>{h}</JobTh>
+              <tr style={{ borderBottom:'1px solid var(--border)' }}>
+                {[['Invoice #','invoice_number'],['Date','sale_date'],['Customer','customer_name'],['Vehicle','vehicle_model'],['Amount','total_amount'],['Payment','payment_mode'],['Status','status'],['Milestones',null],['','']].map(([h,f])=>(
+                  <SalesTh key={h} field={f||null} style={{ padding:'9px 16px', textAlign:'left', fontSize:9, letterSpacing:'.07em', color:'var(--dim)', fontWeight:500, textTransform:'uppercase' }}>{h}</SalesTh>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {displayedJobs.map((job, idx) => (
-                <tr key={job._id||job.id}
-                  style={{ borderBottom:'1px solid var(--border,#222)',
-                    background:idx%2===0?'transparent':C.s2, transition:'background .1s' }}
-                  onMouseEnter={e => e.currentTarget.style.background='rgba(184,134,11,.04)'}
-                  onMouseLeave={e => e.currentTarget.style.background=idx%2===0?'transparent':C.s2}
-                >
-                  <td style={{ padding:'12px 12px' }}>
-                    <span style={{ fontFamily:'monospace', fontSize:11, color:C.gold }}>
-                      {job.job_number || (job._id||'').slice(-6)}
+              {sortedSales.map(s => (
+                <tr key={s.id} style={{ borderBottom:'1px solid var(--border)' }}>
+                  <td className="mono" style={{ padding:'12px 16px', fontSize:11, color:'var(--blue)' }}>{s.invoice_number}</td>
+                  <td style={{ padding:'12px 16px', fontSize:11, color:'var(--muted)' }}>{s.sale_date?.slice(0,11)}</td>
+                  <td style={{ padding:'12px 16px', fontSize:12, fontWeight:500 }}>
+                    <span style={{ verticalAlign:'middle' }}>{s.customer_name}</span>
+                    <CustomerBadges names={badgesFor(s.customer_mobile)} byName={byName} compact />
+                  </td>
+                  <td style={{ padding:'12px 16px', fontSize:11, color:'var(--muted)' }}>{s.vehicle_brand} {s.vehicle_model}</td>
+                  <td className="mono" style={{ padding:'12px 16px', fontSize:12, fontWeight:600, color:'var(--accent)' }}>₹{s.total_amount?.toLocaleString('en-IN')||0}</td>
+                  <td style={{ padding:'12px 16px', fontSize:11 }}>{s.payment_mode}</td>
+                  
+                  {/* Status Badge */}
+                  <td style={{ padding:'12px 16px' }}>
+                    <span style={{ 
+                      fontSize:9, padding:'3px 8px', borderRadius:2, fontWeight:500, 
+                      color: s.status==='completed' || s.status==='delivered' ? '#4ade80' : '#f0c040', 
+                      background: s.status==='completed' || s.status==='delivered' ? 'rgba(74,222,128,.1)' : 'rgba(240,192,64,.1)', 
+                      border: s.status==='completed' || s.status==='delivered' ? '1px solid rgba(74,222,128,.25)' : '1px solid rgba(240,192,64,.25)' 
+                    }}>
+                      {s.status==='completed' || s.status==='delivered' ? 'Delivered' : 'Pending'}
                     </span>
                   </td>
-                  <td style={{ padding:'12px 12px' }}>
-                    <div style={{ fontWeight:600 }}>
-                      <span style={{ verticalAlign:'middle' }}>{job.customer_name}</span>
-                      <CustomerBadges names={badgesFor(job.customer_mobile)} byName={byName} compact />
-                    </div>
-                    <div style={{ fontSize:10, color:C.muted }}>{job.customer_mobile}</div>
+
+                  {/* Milestones column */}
+                  <td style={{ padding:'10px 16px' }}>
+                    <MilestoneRow
+                      sale={s}
+                      disabled={milestoneMut.isPending}
+                      onToggle={handleMilestoneToggle}
+                    />
                   </td>
-                  <td style={{ padding:'12px 12px' }}>
-                    <div style={{ fontWeight:600 }}>{job.vehicle_number}</div>
-                    <div style={{ fontSize:10, color:C.muted }}>{job.brand} {job.model}</div>
-                  </td>
-                  <td style={{ padding:'12px 12px', maxWidth:180 }}>
-                    <div style={{ color:C.muted, fontSize:11, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
-                      {job.complaint}
-                    </div>
-                    <div style={{ fontSize:10, color:'#555', marginTop:2 }}>{job.check_in_date}</div>
-                  </td>
-                  <td style={{ padding:'12px 12px', fontSize:11, color:job.technician?C.text:C.muted }}>
-                    {job.technician || '—'}
-                  </td>
-                  <td style={{ padding:'12px 12px' }}>
-                    <select
-                      value={job.status}
-                      onChange={e => updateMut.mutate({ jobId: job._id||job.id, status: e.target.value })}
-                      style={{
-                        background: STATUS_CFG[job.status]?.bg || 'rgba(136,136,136,.12)',
-                        color:      STATUS_CFG[job.status]?.color || '#888',
-                        border:     `1px solid ${STATUS_CFG[job.status]?.color || '#888'}`,
-                        borderRadius: 3, padding:'3px 6px', fontSize:10, fontWeight:700,
-                        letterSpacing:'.06em', textTransform:'uppercase', cursor:'pointer',
-                        outline:'none', fontFamily:'IBM Plex Sans, sans-serif',
-                      }}
-                    >
-                      {Object.entries(STATUS_CFG).map(([k,v]) => (
-                        <option key={k} value={k} style={{ background:'#141414', color:v.color }}>
-                          {v.label}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                  <td style={{ padding:'12px 12px' }}>
-                    <div style={{ display:'flex', gap:5, alignItems:'center', flexWrap:'wrap' }}>
-                      {job.status === 'ready' && (
-                        <button onClick={() => {
-                            const amt = job.grand_total ? ` Bill amount: ₹${Number(job.grand_total).toLocaleString('en-IN')}.` : '';
-                            const msg = `Hello ${job.customer_name}, your vehicle ${job.vehicle_number} (${job.brand} ${job.model}) service is complete.${amt} Ready for pickup at MM Motors!`;
-                            window.open(`https://wa.me/91${job.customer_mobile}?text=${encodeURIComponent(msg)}`,'_blank');
+
+                  <td style={{ padding:'10px 16px' }}>
+                    <div style={{ display:'flex', gap:6, alignItems: 'center' }}>
+                      <GhostBtn sm onClick={()=>setSelSale(s)}>View</GhostBtn>
+                      <button onClick={() => printSaleInvoice(s)}
+                        style={{ padding:'5px 10px', background:'rgba(184,134,11,.1)', border:'1px solid rgba(184,134,11,.3)', borderRadius:3, color:'#7A5800', cursor:'pointer', fontSize:10, fontFamily:'IBM Plex Sans,sans-serif' }}>PDF</button>
+                      <GhostBtn sm onClick={()=>setEditSale(s)}>Edit</GhostBtn>
+                      
+                      {s.status !== 'completed' && s.status !== 'delivered' && (
+                        <button 
+                          onClick={async () => {
+                            if (await confirm("Mark this invoice as delivered?")) {
+                              updateMut.mutate({ id: s.id, d: { status: 'delivered' } });
+                            }
                           }}
-                          style={{ ...btnGhost, padding:'5px 9px', fontSize:10,
-                            color:C.green, borderColor:'rgba(74,222,128,.3)' }}>
-                          Notify
+                          style={{ padding:'5px 10px', background:'rgba(59,130,246,.1)', border:'1px solid rgba(59,130,246,.3)', borderRadius:3, color:'#3b82f6', cursor:'pointer', fontSize:10, fontFamily:'IBM Plex Sans,sans-serif' }}
+                        >
+                          ✓ Deliver
                         </button>
                       )}
-                      <button onClick={() => setBillJob(job)}
-                        style={{ ...btnGhost, padding:'5px 9px', fontSize:10,
-                          color:     job.bill_number ? C.gold : C.muted,
-                          borderColor:job.bill_number ? C.gold : '#2a2a2a' }}>
-                        {job.bill_number ? 'View Bill' : 'Bill'}
-                      </button>
-                      {/* FIX #2: Edit button */}
-                      <button onClick={() => setEditJob(job)}
-                        style={{ ...btnGhost, padding:'5px 9px', fontSize:10 }}>
-                        Edit
-                      </button>
-                      {/* FIX #2: Delete button */}
-                      <button
-                        onClick={() => {
-                          if (window.confirm(`Delete job ${job.job_number || job._id}? This cannot be undone.`))
-                            deleteMut.mutate(job._id || job.id);
-                        }}
-                        style={{ ...btnGhost, padding:'5px 9px', fontSize:10,
-                          color:C.red, borderColor:'rgba(248,113,113,.3)' }}>
-                        Delete
-                      </button>
+                      
+                      <button onClick={()=>sendWA(s.customer_mobile, `Dear ${s.customer_name}, congratulations on your new ${s.vehicle_brand} ${s.vehicle_model}! Your total invoice amount is ₹${s.total_amount?.toLocaleString('en-IN')}. Thank you for choosing MM Motors!`)} style={{ padding:'5px 10px', background:'rgba(37,211,102,.1)', border:'1px solid rgba(37,211,102,.3)', borderRadius:3, color:'#16a34a', cursor:'pointer', fontSize:10, fontFamily:'IBM Plex Sans,sans-serif' }}>WhatsApp</button>
                     </div>
                   </td>
                 </tr>
@@ -371,1275 +1224,6 @@ export default function ServicePage() {
             </tbody>
           </table>
         )}
-      </div>
-
-      {/* ── Modals ── */}
-      {newJobOpen && <NewJobModal   onClose={() => setNewJobOpen(false)} />}
-      {billJob    && <ServiceBillModal job={billJob} onClose={() => setBillJob(null)} />}
-      {editJob    && <EditJobModal job={editJob} onClose={() => setEditJob(null)} />}
-      {/* FIX #3: PartsBillModal removed — moved to PartsPage */}
-    </div>
-  );
-}
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  EDIT JOB MODAL  — FIX #2
-// ═══════════════════════════════════════════════════════════════════════════════
-function EditJobModal({ job, onClose }) {
-  const qc = useQueryClient();
-  const [form, setForm] = useState({
-    vehicle_number:     job.vehicle_number     || '',
-    chassis_number:     job.chassis_number     || '',
-    brand:              job.brand              || '',
-    model:              job.model              || '',
-    odometer_km:        job.odometer_km        || '',
-    technician:         job.technician         || '',
-    status:             job.status             || 'pending',
-    complaint:          job.complaint          || '',
-    estimated_delivery: job.estimated_delivery || '',
-    check_in_date:      job.check_in_date      || '',
-    notes:              job.notes              || '',
-  });
-  const upd = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
-
-  const editMut = useMutation({
-    mutationFn: () => {
-      const payload = { ...form };
-      // Convert created_date (YYYY-MM-DD) to ISO string for created_at
-      if (payload.created_date) {
-        payload.created_at = payload.created_date + 'T00:00:00';
-        delete payload.created_date;
-      }
-      return serviceApi.update(job._id || job.id, payload);
-    },
-    onSuccess: () => {
-      toast.success('Job updated');
-      qc.invalidateQueries(['service-jobs']);
-      qc.invalidateQueries(['service-stats']);
-      onClose();
-    },
-    onError: e => toast.error(errMsg(e, 'Failed to update job')),
-  });
-
-  const STATUSES = ['pending','in_progress','ready','delivered'];
-  const BRANDS   = ['HERO','HONDA','BAJAJ','TVS','YAMAHA','SUZUKI','ROYAL ENFIELD','KTM'];
-
-  return (
-    <ModalShell onClose={onClose}
-      title={`Edit — ${job.job_number || (job._id||'').slice(-6)}`}
-      sub={`${job.customer_name} · ${job.vehicle_number}`}>
-      <div style={{ padding:'20px 20px 0' }}>
-        {/* Vehicle section */}
-        <div style={{ fontSize:10, letterSpacing:'.08em', fontWeight:700, color:C.muted, marginBottom:10, textTransform:'uppercase' }}>Vehicle Details</div>
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:16 }}>
-          <div>
-            <label style={labelSt}>Vehicle Number</label>
-            <input value={form.vehicle_number} onChange={upd('vehicle_number')} placeholder="KA 07 U 3915" style={inp} />
-          </div>
-          <div>
-            <label style={labelSt}>Chassis Number</label>
-            <input value={form.chassis_number} onChange={upd('chassis_number')} placeholder="MBLHA10AT8HF12345" style={inp} />
-          </div>
-          <div>
-            <label style={labelSt}>Brand</label>
-            <select value={form.brand} onChange={upd('brand')} style={inp}>
-              {BRANDS.map(b => <option key={b}>{b}</option>)}
-            </select>
-          </div>
-          <div>
-            <label style={labelSt}>Model</label>
-            <input value={form.model} onChange={upd('model')} placeholder="Splendor Plus" style={inp} />
-          </div>
-          <div>
-            <label style={labelSt}>Odometer (km)</label>
-            <input type="number" value={form.odometer_km} onChange={upd('odometer_km')} placeholder="12500" style={inp} />
-          </div>
-        </div>
-        {/* Service section */}
-        <div style={{ fontSize:10, letterSpacing:'.08em', fontWeight:700, color:C.muted, marginBottom:10, textTransform:'uppercase' }}>Service Details</div>
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }}>
-          <div>
-            <label style={labelSt}>Technician</label>
-            <input value={form.technician} onChange={upd('technician')} placeholder="Technician name" style={inp} />
-          </div>
-          <div>
-            <label style={labelSt}>Status</label>
-            <select value={form.status} onChange={upd('status')} style={inp}>
-              {STATUSES.map(s => (
-                <option key={s} value={s}>{s.replace('_',' ').replace(/\b\w/g,c=>c.toUpperCase())}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label style={labelSt}>Est. Delivery</label>
-            <input type="date" value={form.estimated_delivery} onChange={upd('estimated_delivery')} style={inp} />
-          </div>
-          <div>
-            <label style={labelSt}>Check-in Date</label>
-            <div style={{ position:'relative' }}>
-              <input
-                type="date"
-                value={form.check_in_date}
-                onChange={upd('check_in_date')}
-                style={{ ...inp, paddingRight:32 }}
-              />
-              <span style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', fontSize:14, pointerEvents:'none', color:'var(--muted)' }}>📅</span>
-            </div>
-          </div>
-          <div>
-            <label style={labelSt}>Created Date</label>
-            <div style={{ position:'relative' }}>
-              <input
-                type="date"
-                value={form.created_date || (job.created_at ? job.created_at.slice(0,10) : '')}
-                onChange={e => setForm(p => ({ ...p, created_date: e.target.value }))}
-                style={{ ...inp, paddingRight:32 }}
-              />
-              <span style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', fontSize:14, pointerEvents:'none', color:'var(--muted)' }}>📅</span>
-            </div>
-          </div>
-        </div>
-        <div style={{ marginBottom:12 }}>
-          <label style={labelSt}>Complaint / Work Required</label>
-          <textarea value={form.complaint} onChange={upd('complaint')} rows={3}
-            style={{ ...inp, resize:'vertical', fontFamily:'inherit' }} />
-        </div>
-        <div style={{ marginBottom:20 }}>
-          <label style={labelSt}>Notes</label>
-          <input value={form.notes} onChange={upd('notes')} placeholder="Additional notes" style={inp} />
-        </div>
-      </div>
-      <ModalFoot>
-        <button onClick={onClose} style={btnGhost}>Cancel</button>
-        <button onClick={() => editMut.mutate()} disabled={editMut.isPending}
-          style={{ ...btnPrimary, opacity: editMut.isPending ? .5 : 1 }}>
-          {editMut.isPending ? 'Saving…' : 'Save Changes'}
-        </button>
-      </ModalFoot>
-    </ModalShell>
-  );
-}
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  NEW JOB CARD MODAL
-// ═══════════════════════════════════════════════════════════════════════════════
-function NewJobModal({ onClose }) {
-  const qc = useQueryClient();
-  const [step, setStep]             = useState(1);
-  const [custSearch, setCustSearch] = useState('');
-  const [selCust, setSelCust]       = useState(null);
-  const [vehicleSearch, setVehicleSearch] = useState('');
-  const [form, setForm]             = useState({
-    vehicle_number:'', chassis_number:'', brand:'HERO', model:'', odometer_km:'',
-    complaint:'', technician:'', estimated_delivery:'', notes:'',
-  });
-  const upd = k => e => setForm(p => ({ ...p, [k]:e.target.value }));
-
-  const { data:custData } = useQuery({
-    queryKey: ['cust-search', custSearch],
-    queryFn: () => customersApi.list({ search:custSearch, limit:10 }),
-    enabled: custSearch.length > 1,
-  });
-  const custs = custData?.data?.items || custData?.data || [];
-
-  // Auto-fetch this customer's vehicles from sales when customer selected
-  const { data:custSalesData } = useQuery({
-    queryKey: ['cust-sales-vehicles', selCust?._id || selCust?.id],
-    queryFn: () => salesApi.list({ search: selCust?.mobile || selCust?.name, limit:20 }),
-    enabled: !!selCust,
-  });
-  const custVehicles = (custSalesData?.data?.items || custSalesData?.data || []).filter(
-    s => s.customer_mobile === selCust?.mobile || s.customer_name === selCust?.name
-  );
-
-  // Also search by vehicle_number while typing
-  const { data:salesData } = useQuery({
-    queryKey: ['sales-vehicle-lookup', vehicleSearch],
-    queryFn: () => salesApi.list({ search: vehicleSearch, limit:5 }),
-    enabled: vehicleSearch.length > 3,
-  });
-  const searchVehicles = vehicleSearch.length > 3
-    ? (salesData?.data?.items || salesData?.data || [])
-    : [];
-
-  // FIX #5: createJob → create
-  const createMut = useMutation({
-    mutationFn: () => serviceApi.create({
-      customer_id: selCust._id || selCust.id,
-      ...form,
-      odometer_km: Number(form.odometer_km) || 0,
-    }),
-    onSuccess: () => {
-      toast.success('Job card created!');
-      qc.invalidateQueries(['service-jobs']);
-      qc.invalidateQueries(['service-stats']);
-      draft.clearDraft();
-      onClose();
-    },
-    onError: e => toast.error(errMsg(e, 'Failed to create job')),
-  });
-
-  // Draft — full state snapshot for restore
-  const draftState = { form, selCust, step, custSearch, vehicleSearch };
-  const draft = useDraft({ key: 'mm_draft_service', state: draftState });
-
-  const BRANDS = ['HERO','HONDA','BAJAJ','TVS','YAMAHA','SUZUKI','ROYAL ENFIELD','KTM'];
-
-  return (
-    <ModalShell onClose={onClose} title="New Job Card" sub="Service check-in">
-      <div style={{ padding:'12px 20px 0' }}>
-        <DraftBar
-          draft={draft}
-          onRestore={(d) => {
-            if (d.form)          setForm(d.form);
-            if (d.selCust)       setSelCust(d.selCust);
-            if (d.step)          setStep(d.step);
-            if (d.custSearch)    setCustSearch(d.custSearch);
-            if (d.vehicleSearch) setVehicleSearch(d.vehicleSearch);
-          }}
-          onDiscard={() => {}}
-        />
-      </div>
-      {step === 1 ? (
-        <div style={{ padding:'20px 20px 0' }}>
-          <label style={labelSt}>Search Customer</label>
-          <input value={custSearch} onChange={e => setCustSearch(e.target.value)}
-            placeholder="Type name or mobile…" style={{ ...inp, marginBottom:8 }} autoFocus />
-          {custs.length > 0 && (
-            <div style={{ border:'1px solid var(--border,#222)', borderRadius:4, overflow:'hidden', marginBottom:12 }}>
-              {custs.map(c => (
-                <div key={c._id||c.id} onClick={() => { setSelCust(c); setStep(2); }}
-                  style={{ padding:'10px 14px', cursor:'pointer', borderBottom:'1px solid var(--border,#222)',
-                    display:'flex', justifyContent:'space-between' }}
-                  onMouseEnter={e => e.currentTarget.style.background=C.s2}
-                  onMouseLeave={e => e.currentTarget.style.background='transparent'}
-                >
-                  <div>
-                    <div style={{ fontWeight:600, fontSize:13 }}>{c.name}</div>
-                    <div style={{ fontSize:11, color:C.muted }}>{c.mobile}</div>
-                  </div>
-                  <span style={{ fontSize:10, color:C.muted, alignSelf:'center' }}>Select →</span>
-                </div>
-              ))}
-            </div>
-          )}
-          {custSearch.length > 1 && custs.length === 0 && (
-            <div style={{ fontSize:12, color:C.muted, marginBottom:12 }}>No customers found.</div>
-          )}
-        </div>
-      ) : (
-        <div style={{ padding:'20px 20px 0' }}>
-          <div style={{ padding:'8px 14px', background:'rgba(184,134,11,.08)',
-            border:'1px solid rgba(184,134,11,.2)', borderRadius:4, marginBottom:16,
-            display:'flex', justifyContent:'space-between', alignItems:'center', fontSize:12 }}>
-            <span><strong>{selCust?.name}</strong> — {selCust?.mobile}</span>
-            <button onClick={() => { setSelCust(null); setStep(1); }}
-              style={{ background:'transparent', border:'none', color:C.muted, cursor:'pointer', fontSize:14 }}>×</button>
-          </div>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }}>
-            {/* Vehicle picker — shows customer's bikes from sales, or manual entry */}
-            <div style={{ gridColumn:'1 / -1' }}>
-              <label style={labelSt}>Select Vehicle *</label>
-
-              {/* Customer bikes from sales */}
-              {custVehicles.length > 0 && (
-                <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:10 }}>
-                  {custVehicles.map((s, i) => {
-                    const isSelected = form.chassis_number && form.chassis_number === s.chassis_number;
-                    return (
-                      <div key={i}
-                        onClick={() => setForm(p => ({
-                          ...p,
-                          vehicle_number: s.vehicle_number || '',
-                          chassis_number: s.chassis_number || '',
-                          brand:          s.vehicle_brand  || p.brand,
-                          model:          s.vehicle_model  || '',
-                        }))}
-                        style={{
-                          display:'flex', alignItems:'center', gap:12, padding:'10px 14px',
-                          border:`1.5px solid ${isSelected ? C.gold : 'var(--border,#222)'}`,
-                          borderRadius:6, cursor:'pointer', background: isSelected ? 'rgba(184,134,11,.08)' : C.surface,
-                          transition:'all .15s',
-                        }}
-                        onMouseEnter={e => { if(!isSelected) e.currentTarget.style.background=C.s2; }}
-                        onMouseLeave={e => { if(!isSelected) e.currentTarget.style.background=C.surface; }}
-                      >
-                        <div style={{ width:36, height:36, borderRadius:'50%', background:'rgba(184,134,11,.12)',
-                          display:'flex', alignItems:'center', justifyContent:'center', fontSize:16, flexShrink:0 }}>🏍</div>
-                        <div style={{ flex:1 }}>
-                          <div style={{ fontWeight:700, fontSize:13 }}>
-                            {s.vehicle_brand} {s.vehicle_model}
-                            {s.vehicle_variant ? <span style={{ fontSize:10, color:C.muted, marginLeft:6 }}>{s.vehicle_variant}</span> : null}
-                          </div>
-                          <div style={{ fontSize:11, color:C.muted, marginTop:2, display:'flex', gap:10 }}>
-                            {s.vehicle_number && <span className="mono">{s.vehicle_number}</span>}
-                            {s.chassis_number && <span>Chassis: <span className="mono">{s.chassis_number}</span></span>}
-                          </div>
-                          <div style={{ fontSize:10, color:C.dim, marginTop:1 }}>{s.sale_date}</div>
-                        </div>
-                        {isSelected && (
-                          <div style={{ width:22, height:22, borderRadius:'50%', background:C.gold,
-                            display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                            <span style={{ color:'#000', fontSize:12, fontWeight:900 }}>✓</span>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {custVehicles.length === 0 && selCust && (
-                <div style={{ fontSize:11, color:C.muted, marginBottom:8, fontStyle:'italic' }}>
-                  No sales records found for this customer — enter vehicle details below.
-                </div>
-              )}
-
-              {/* Manual vehicle search */}
-              <div style={{ position:'relative' }}>
-                <input
-                  value={vehicleSearch}
-                  onChange={e => { setVehicleSearch(e.target.value); }}
-                  placeholder="Or search by vehicle number / chassis…"
-                  style={{ ...inp, fontSize:11 }}
-                />
-                {searchVehicles.length > 0 && (
-                  <div style={{ position:'absolute', top:'100%', left:0, right:0, zIndex:300,
-                    background:C.surface, border:'1px solid var(--border2,#2a2a2a)',
-                    borderRadius:4, boxShadow:'0 8px 24px rgba(0,0,0,.5)', overflow:'hidden' }}>
-                    {searchVehicles.map(s => (
-                      <div key={s._id || s.id}
-                        onClick={() => {
-                          setForm(p => ({
-                            ...p,
-                            vehicle_number: s.vehicle_number || p.vehicle_number,
-                            chassis_number: s.chassis_number || p.chassis_number,
-                            brand:          s.vehicle_brand  || p.brand,
-                            model:          s.vehicle_model  || p.model,
-                          }));
-                          setVehicleSearch('');
-                        }}
-                        style={{ padding:'8px 12px', cursor:'pointer',
-                          borderBottom:'1px solid var(--border,#222)', fontSize:12 }}
-                        onMouseEnter={e => e.currentTarget.style.background=C.s2}
-                        onMouseLeave={e => e.currentTarget.style.background='transparent'}
-                      >
-                        <strong>{s.vehicle_number}</strong>
-                        {' — '}{s.vehicle_brand} {s.vehicle_model}
-                        <span style={{ fontSize:10, color:C.muted, marginLeft:8 }}>{s.customer_name}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Manual override fields */}
-            {[
-              ['vehicle_number','Vehicle Number *','KA 07 U 3915'],
-              ['model','Model *','Splendor Plus'],
-              ['chassis_number','Chassis Number','MBLHA10AT8HF12345'],
-              ['odometer_km','Odometer (km)','12500'],
-              ['technician','Technician','Suresh'],
-            ].map(([k,l,ph]) => (
-              <div key={k}>
-                <label style={labelSt}>{l}</label>
-                <input value={form[k]} onChange={upd(k)} placeholder={ph}
-                  type={k==='odometer_km'?'number':'text'} style={inp} />
-              </div>
-            ))}
-            <div>
-              <label style={labelSt}>Brand</label>
-              <select value={form.brand} onChange={upd('brand')} style={inp}>
-                {BRANDS.map(b => <option key={b}>{b}</option>)}
-              </select>
-            </div>
-            <div>
-              <label style={labelSt}>Est. Delivery</label>
-              <input type="date" value={form.estimated_delivery} onChange={upd('estimated_delivery')} style={inp} />
-            </div>
-          </div>
-          <div style={{ marginBottom:12 }}>
-            <label style={labelSt}>Complaint / Work Required *</label>
-            <textarea value={form.complaint} onChange={upd('complaint')} rows={3}
-              placeholder="Engine noise, routine service, brake issue…"
-              style={{ ...inp, resize:'vertical', fontFamily:'inherit' }} />
-          </div>
-          <div style={{ marginBottom:20 }}>
-            <label style={labelSt}>Notes</label>
-            <input value={form.notes} onChange={upd('notes')} placeholder="Additional notes" style={inp} />
-          </div>
-        </div>
-      )}
-      <ModalFoot>
-        <button onClick={onClose} style={btnGhost}>Cancel</button>
-        {step === 2 && (
-          <button onClick={() => createMut.mutate()}
-            disabled={createMut.isPending || !form.vehicle_number || !form.model || !form.complaint}
-            style={{ ...btnPrimary,
-              opacity:createMut.isPending||!form.vehicle_number||!form.model||!form.complaint ? .5 : 1 }}>
-            {createMut.isPending ? 'Creating…' : 'Create Job Card'}
-          </button>
-        )}
-      </ModalFoot>
-    </ModalShell>
-  );
-}
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  SERVICE BILL MODAL  (named export — also used from other pages)
-// ═══════════════════════════════════════════════════════════════════════════════
-// ─── Print Bill ───────────────────────────────────────────────────────────────
-function printBill(job, bill, rows, total, taxable, cgst, sgst, discount = 0, preDiscount = null) {
-  const RS = '₹';
-  const fmt2 = n => Number(n||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
-  const fmtI = n => Number(n||0).toLocaleString('en-IN');
-  const subtotalVal = preDiscount != null ? preDiscount : total;
-  const disc = Number(discount || 0);
-
-  const rows_html = rows.map(r => {
-    const isFree = !!r.complimentary;
-    const mrp    = isFree ? Number(r.unit_price) : Number(r.unit_price);
-    const amt    = isFree ? 0 : Math.round(r.unit_price*r.qty);
-    return `
-    <tr${isFree?' style="background:#fdf6e3"':''}>
-      <td>${r.description}${isFree?' <span style="font-size:9px;font-weight:700;color:#B8860B;background:#fff3cd;padding:1px 5px;border-radius:2px;margin-left:4px;">FREE</span>':''}</td>
-      <td style="text-align:center">${r.hsn||'9987'}</td>
-      <td style="text-align:center">${r.qty}</td>
-      <td style="text-align:right">${isFree?`<s>${RS}${fmt2(mrp)}</s>`:`${RS}${fmt2(r.unit_price)}`}</td>
-      <td style="text-align:center">${isFree?'—':r.gst_rate+'%'}</td>
-      <td style="text-align:right">${RS}${fmtI(amt)}</td>
-    </tr>`;
-  }).join('');
-
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
-  <title>Bill — ${bill.bill_number||''}</title>
-  <style>
-    *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#111;padding:24px}
-    .header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;padding-bottom:14px;border-bottom:2px solid #B8860B}
-    .brand{font-size:22px;font-weight:800;color:#B8860B;letter-spacing:-.5px}
-    .brand-sub{font-size:10px;color:#666;margin-top:2px}
-    .bill-meta{text-align:right}
-    .bill-meta .bill-no{font-size:16px;font-weight:700}
-    .bill-meta .bill-date{font-size:10px;color:#666;margin-top:4px}
-    .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
-    .info-box{background:#f9f9f9;border:1px solid #e0e0e0;border-radius:4px;padding:12px}
-    .info-box h4{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:#888;margin-bottom:8px}
-    .info-box p{font-size:12px;margin-bottom:3px}
-    table{width:100%;border-collapse:collapse;margin-bottom:16px}
-    thead tr{background:#B8860B;color:#fff}
-    th{padding:8px 10px;font-size:10px;letter-spacing:.05em;text-transform:uppercase;text-align:left}
-    td{padding:7px 10px;border-bottom:1px solid #eee}
-    tbody tr:nth-child(even){background:#f9f9f9}
-    .totals{display:flex;justify-content:flex-end;margin-bottom:16px}
-    .totals-box{min-width:260px}
-    .tot-row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #eee;font-size:12px}
-    .tot-row.grand{font-size:15px;font-weight:800;color:#B8860B;border-top:2px solid #B8860B;border-bottom:none;padding-top:8px}
-    .words{text-align:right;font-size:10px;color:#888;font-style:italic;margin-bottom:20px}
-    .payment{font-size:11px;color:#444;margin-bottom:24px}
-    .footer{border-top:1px solid #ddd;padding-top:12px;font-size:10px;color:#888;display:flex;justify-content:space-between}
-    @media print{body{padding:10px}.no-print{display:none}}
-  </style></head><body>
-  <div style="max-width:720px;margin:0 auto">
-    <div class="header">
-      <div>
-        <div class="brand">MM MOTORS</div>
-        <div class="brand-sub">Authorised Multi-Brand Service Centre</div>
-      </div>
-      <div class="bill-meta">
-        <div class="bill-no">TAX INVOICE</div>
-        <div class="bill-no" style="font-size:13px;color:#B8860B">${bill.bill_number||''}</div>
-        <div class="bill-date">Date: ${bill.created_at?.slice(0,10) || new Date().toLocaleDateString('en-IN')}</div>
-      </div>
-    </div>
-
-    <div class="info-grid">
-      <div class="info-box">
-        <h4>Customer</h4>
-        <p><strong>${job.customer_name||''}</strong></p>
-        <p>${job.customer_mobile||''}</p>
-        ${job.customer_address ? `<p>${job.customer_address}</p>` : ''}
-      </div>
-      <div class="info-box">
-        <h4>Vehicle</h4>
-        <p><strong>${job.vehicle_number||''}</strong></p>
-        <p>${job.brand||''} ${job.model||''}</p>
-        <p style="font-size:10px;color:#888">Job: ${job.job_number||''} &nbsp;|&nbsp; ${job.check_in_date||''}</p>
-        ${job.chassis_number ? `<p style="font-size:10px;color:#888">Chassis: ${job.chassis_number}</p>` : ''}
-      </div>
-    </div>
-
-    <table>
-      <thead>
-        <tr>
-          <th>Description</th>
-          <th style="text-align:center">HSN</th>
-          <th style="text-align:center">Qty</th>
-          <th style="text-align:right">Unit Price</th>
-          <th style="text-align:center">GST%</th>
-          <th style="text-align:right">Amount</th>
-        </tr>
-      </thead>
-      <tbody>${rows_html}</tbody>
-    </table>
-
-    <div class="totals">
-      <div class="totals-box">
-        <div class="tot-row"><span>Taxable Amount</span><span>${RS}${fmt2(taxable)}</span></div>
-        <div class="tot-row"><span>CGST</span><span>${RS}${fmt2(cgst)}</span></div>
-        <div class="tot-row"><span>SGST</span><span>${RS}${fmt2(sgst)}</span></div>
-        ${disc > 0 ? `<div class="tot-row"><span>Subtotal</span><span>${RS}${fmtI(subtotalVal)}</span></div>
-        <div class="tot-row"><span>Discount</span><span>- ${RS}${fmtI(disc)}</span></div>` : ''}
-        <div class="tot-row grand"><span>Total</span><span>${RS}${fmtI(total)}</span></div>
-      </div>
-    </div>
-    <div class="words">${bill.amount_in_words || ''}</div>
-    <div class="payment">Payment Mode: <strong>${bill.payment_mode||'Cash'}</strong></div>
-
-    <div class="footer">
-      <span>Thank you for choosing MM Motors!</span>
-      <span>Authorised Signature</span>
-    </div>
-  </div>
-  <script>window.onload=()=>{window.print();}</script>
-  </body></html>`;
-
-  const w = window.open('','_blank');
-  w.document.write(html);
-  w.document.close();
-}
-
-export function ServiceBillModal({ job, onClose }) {
-  const qc = useQueryClient();
-
-  const jobId = job._id || job.id;
-
-  // FIX #1: getBillByJobId → billsApi.list({ job_id })
-  const { data:billData, isLoading:loadingBill } = useQuery({
-    queryKey: ['service-bill', jobId],
-    queryFn: () => billsApi.list({ job_id: jobId }),
-    retry: false,
-  });
-
-  // billsApi.list returns array — grab first item
-  const rawBill = billData?.data;
-  const existingBill = Array.isArray(rawBill) ? rawBill[0] : rawBill || null;
-
-  const [rows, setRows]         = useState([emptyRow()]);
-  const [payMode, setPayMode]   = useState('Cash');
-  const [discount, setDiscount] = useState(0);
-  const [inited, setInited]     = useState(false);
-  const [barcodeVal, setBarcodeVal] = useState('');
-  const [scanning, setScanning]     = useState(false);
-  const [camError, setCamError]     = useState('');
-  const videoRef  = useRef(null);
-  const streamRef = useRef(null);
-  const detectorRef = useRef(null);
-  const scanLoopRef = useRef(null);
-
-  // Barcode scanner input — physical scanner sends barcode + Enter
-  const handleBarcodeKey = e => {
-    if (e.key === 'Enter' && barcodeVal.trim()) {
-      addPartByBarcode(barcodeVal.trim());
-      setBarcodeVal('');
-    }
-  };
-
-  const addPartByBarcode = (code) => {
-    const part = allParts.find(p =>
-      p.part_number?.toLowerCase() === code.toLowerCase() ||
-      p.barcode === code
-    );
-    if (part) {
-      fillFromPart(part);
-      toast.success(`Added: ${part.name}`);
-    } else {
-      // No part found — add as manual line with the scanned code
-      addRow();
-      toast(`Part "${code}" not found — added as manual line`);
-    }
-    setBarcodeVal('');
-  };
-
-  // Camera barcode scanning via BarcodeDetector API
-  const startCamera = async () => {
-    setCamError('');
-    if (!('BarcodeDetector' in window)) {
-      setCamError('Barcode scanning not supported in this browser. Use Chrome on Android or desktop.');
-      return;
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode:'environment' } });
-      streamRef.current = stream;
-      setScanning(true);
-      setTimeout(() => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.play();
-        }
-      }, 100);
-      detectorRef.current = new window.BarcodeDetector({ formats:['qr_code','ean_13','ean_8','code_128','code_39','upc_a','upc_e','itf'] });
-      const scan = async () => {
-        if (!videoRef.current || !detectorRef.current) return;
-        try {
-          const barcodes = await detectorRef.current.detect(videoRef.current);
-          if (barcodes.length > 0) {
-            stopCamera();
-            addPartByBarcode(barcodes[0].rawValue);
-            return;
-          }
-        } catch {}
-        scanLoopRef.current = requestAnimationFrame(scan);
-      };
-      scanLoopRef.current = requestAnimationFrame(scan);
-    } catch(err) {
-      setCamError('Camera access denied. Allow camera permission and try again.');
-    }
-  };
-
-  const stopCamera = () => {
-    setScanning(false);
-    if (scanLoopRef.current) cancelAnimationFrame(scanLoopRef.current);
-    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
-  };
-
-  if (!loadingBill && !inited) {
-    if (existingBill?.items?.length > 0) {
-      setRows(existingBill.items.map(it => ({
-        _key:          Math.random(),
-        description:   it.description  || '',
-        hsn:           it.hsn_code     || '9987',
-        qty:           it.qty          || 1,
-        unit_price:    it.complimentary ? (Number(it.mrp) || 0) : (Number(it.unit_price) || 0),
-        gst_rate:      it.complimentary ? 18 : (it.gst_rate || 18),
-        discount:      Number(it.discount) || 0,
-        discIsPct:     false,
-        complimentary: !!it.complimentary,
-        _savedQty:     it.qty          || 0,
-        _partNumber:   it.part_number  || null,
-      })));
-      setPayMode(existingBill.payment_mode || 'Cash');
-      setDiscount(Number(existingBill.discount || 0));
-    }
-    setInited(true);
-  }
-
-  const { data:partsData } = useQuery({
-    queryKey: ['parts-list'],
-    queryFn: () => partsApi.list({ limit:2000 }),
-  });
-  const allParts = partsData?.data?.items || partsData?.data || [];
-
-  const updateRow   = (key, field, val) => setRows(p => p.map(r => r._key===key ? { ...r, [field]:val } : r));
-  const addRow      = () => setRows(p => [...p, emptyRow()]);
-  const removeRow   = key => {
-    setRows(p => {
-      const row = p.find(r => r._key===key);
-      // FIX #1: adjustStockByNumber with correct payload
-      if (row?._partNumber && row?._savedQty)
-        partsApi.adjustStockByNumber(row._partNumber, { qty: row._savedQty, action: 'add' }).catch(()=>{});
-      return p.filter(r => r._key!==key);
-    });
-  };
-  const fillFromPart = (key, part) => setRows(p => p.map(r => r._key===key ? {
-    ...r, description:part.name, hsn:part.hsn_code||'9987',
-    unit_price:part.selling_price||0, gst_rate:part.gst_rate||18, _partNumber:part.part_number||null,
-  } : r));
-
-  // Per-line discount → rupees
-  const lineDiscRs = (r) => {
-    if (r.complimentary) return 0;
-    const gross = r.unit_price * r.qty;
-    const raw = r.discIsPct ? gross * (Number(r.discount) || 0) / 100 : (Number(r.discount) || 0);
-    return Math.max(0, Math.min(gross, raw));
-  };
-  const validRows      = rows.filter(r => r.description && (r.unit_price > 0 || r.complimentary));
-  const paidRows       = validRows.filter(r => !r.complimentary);
-  const freeRows       = validRows.filter(r => r.complimentary);
-  const grossTotal     = paidRows.reduce((s,r) => s + r.unit_price*r.qty, 0);
-  const lineDiscTotal  = paidRows.reduce((s,r) => s + lineDiscRs(r), 0);
-  const netTotal       = grossTotal - lineDiscTotal;
-  const taxable        = paidRows.reduce((s,r) => {
-    const net = r.unit_price*r.qty - lineDiscRs(r);
-    return s + net / (1 + (r.gst_rate||0)/100);
-  }, 0);
-  const gstTotal       = netTotal - taxable;
-  const cgst           = gstTotal / 2;
-  const sgst           = gstTotal / 2;
-  const preDiscount    = Math.round(netTotal);
-  const discountVal    = Math.max(0, Math.min(Number(discount)||0, preDiscount));
-  const grandTotal     = preDiscount - discountVal;
-  const freeItemsValue = freeRows.reduce((s,r) => s + r.unit_price*r.qty, 0);
-
-  const saveMut = useMutation({
-    mutationFn: async () => {
-      const payload = {
-        job_id: jobId, payment_mode: payMode,
-        discount: discountVal,
-        items: validRows.map(r => ({
-          description: r.description, hsn_code: r.hsn||'9987',
-          qty: Number(r.qty), unit_price: Number(r.unit_price),
-          gst_rate: Number(r.gst_rate), part_number: r._partNumber||'',
-          discount: Math.round(lineDiscRs(r) * 100) / 100,
-          complimentary: !!r.complimentary,
-        })),
-      };
-      // FIX #1: adjustStockByNumber with correct payload shape
-      for (const row of validRows) {
-        if (row._partNumber) {
-          const diff = Number(row.qty) - (row._savedQty||0);
-          if (diff>0)
-            await partsApi.adjustStockByNumber(row._partNumber, { qty: diff, action: 'subtract' }).catch(()=>{});
-          else if (diff<0)
-            await partsApi.adjustStockByNumber(row._partNumber, { qty: Math.abs(diff), action: 'add' }).catch(()=>{});
-        }
-      }
-      // createBill/updateBill → billsApi
-      const billId = existingBill?.id || existingBill?._id;
-      return billId
-        ? billsApi.update(billId, payload)
-        : billsApi.create(payload);
-    },
-    onSuccess: () => {
-      toast.success('Bill saved!');
-      qc.invalidateQueries(['service-bill', jobId]);
-      qc.invalidateQueries(['service-jobs']);
-      qc.invalidateQueries(['service-stats']);
-      qc.invalidateQueries(['parts-list']);
-      onClose();
-    },
-    onError: e => toast.error(errMsg(e, 'Failed to save bill')),
-  });
-
-  return (
-    <ModalShell onClose={onClose}
-      title={`${job.job_number||(jobId||'').slice(-6)} — ${job.customer_name}`}
-      sub={`${job.vehicle_number||''} · ${job.brand||''} ${job.model||''}`}>
-      {loadingBill ? (
-        <div style={{ padding:32, textAlign:'center', color:C.muted, fontSize:13 }}>Loading bill…</div>
-      ) : (
-        <div style={{ padding:'16px 20px 0' }}>
-          {existingBill && (
-            <div style={{ marginBottom:12, padding:'8px 14px', borderRadius:4, fontSize:11,
-              fontWeight:600, color:C.gold, background:'rgba(184,134,11,.08)',
-              border:'1px solid rgba(184,134,11,.25)' }}>
-              ✏️  Editing saved bill — {existingBill.bill_number}
-            </div>
-          )}
-          <div style={{ overflowX:'auto', marginBottom:8 }}>
-            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-              <thead>
-                <tr style={{ background:'#1A1A1A' }}>
-                  {['Description / Part','HSN','Qty','Unit Price (₹)','Discount','Free','GST%','CGST%','SGST%','Amount',''].map((h,i) => (
-                    <th key={i} style={{ padding:'8px 8px', color:C.gold, fontWeight:700, fontSize:10,
-                      letterSpacing:'.06em', textAlign:i>=2 && i!==5?'right':(i===5?'center':'left'), whiteSpace:'nowrap' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row, idx) => (
-                  <BillRow key={row._key} row={row} idx={idx} allParts={allParts}
-                    onChange={updateRow} onRemove={removeRow} onSelectPart={fillFromPart} />
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:16, flexWrap:'wrap' }}>
-            <button onClick={addRow} style={{ ...btnGhost, fontSize:11, padding:'5px 12px' }}>
-              + Add line item
-            </button>
-            {/* Physical barcode scanner input */}
-            <input
-              value={barcodeVal}
-              onChange={e => setBarcodeVal(e.target.value)}
-              onKeyDown={handleBarcodeKey}
-              placeholder="Scan barcode or type part no. + Enter"
-              style={{ background:C.s2, border:`1px solid ${C.border}`, borderRadius:3, padding:'5px 10px',
-                color:C.text, fontSize:11, fontFamily:'IBM Plex Mono,monospace', width:240, outline:'none' }}
-            />
-            {/* Camera scan button */}
-            <button onClick={scanning ? stopCamera : startCamera}
-              style={{ ...btnGhost, fontSize:11, padding:'5px 12px',
-                border: scanning ? '1px solid rgba(239,68,68,.5)' : undefined,
-                color: scanning ? 'var(--red,#ef4444)' : undefined }}>
-              {scanning ? '⏹ Stop Camera' : '📷 Scan Barcode'}
-            </button>
-          </div>
-          {camError && (
-            <div style={{ fontSize:11, color:'var(--red,#ef4444)', marginBottom:8, padding:'6px 10px',
-              background:'rgba(239,68,68,.08)', border:'1px solid rgba(239,68,68,.2)', borderRadius:3 }}>
-              {camError}
-            </div>
-          )}
-          {/* Camera viewfinder */}
-          {scanning && (
-            <div style={{ marginBottom:12, position:'relative', display:'inline-block' }}>
-              <video ref={videoRef} autoPlay playsInline muted
-                style={{ width:300, height:200, objectFit:'cover', borderRadius:4,
-                  border:'2px solid var(--accent)', display:'block' }} />
-              <div style={{ position:'absolute', inset:0, border:'2px solid rgba(184,134,11,.6)',
-                borderRadius:4, pointerEvents:'none', boxShadow:'inset 0 0 0 40px rgba(0,0,0,.25)' }} />
-              <div style={{ position:'absolute', bottom:8, left:0, right:0, textAlign:'center',
-                fontSize:10, color:'#fff', textShadow:'0 1px 2px rgba(0,0,0,.8)' }}>
-                Point camera at barcode
-              </div>
-            </div>
-          )}
-          <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:16 }}>
-            <div style={{ minWidth:260 }}>
-              {lineDiscTotal > 0 && (
-                <>
-                  <TotRow label="Gross"          val={`${RS}${fmtI(Math.round(grossTotal))}`} />
-                  <TotRow label="Line Discount"  val={`− ${RS}${fmtI(Math.round(lineDiscTotal))}`} />
-                </>
-              )}
-              <TotRow label="Taxable Amount" val={`${RS}${fmt(taxable)}`} />
-              <TotRow label="CGST"           val={`${RS}${fmt(cgst)}`} />
-              <TotRow label="SGST"           val={`${RS}${fmt(sgst)}`} />
-              <TotRow label="Subtotal"       val={`${RS}${fmtI(preDiscount)}`} />
-              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'6px 0', borderBottom:`1px solid ${C.border}`, fontSize:12 }}>
-                <span style={{ color:C.muted }}>Discount</span>
-                <div style={{ display:'flex', alignItems:'center', gap:4 }}>
-                  <span style={{ color:C.muted }}>{RS}</span>
-                  <input
-                    type="number" min="0" step="1"
-                    value={discount}
-                    onChange={e => setDiscount(e.target.value)}
-                    onFocus={e => e.target.select()}
-                    style={{ ...inp, width:80, padding:'4px 8px', textAlign:'right', fontSize:12 }}
-                  />
-                </div>
-              </div>
-              <TotRow label="Total"          val={`${RS}${fmtI(grandTotal)}`} bold gold />
-              <div style={{ fontSize:10, color:C.muted, fontStyle:'italic', textAlign:'right', marginTop:4 }}>
-                {numWords(grandTotal)} Rupees Only
-              </div>
-              {freeRows.length > 0 && (
-                <div style={{ marginTop:8, padding:'6px 10px', background:'rgba(184,134,11,.08)', border:'1px solid rgba(184,134,11,.25)', borderRadius:3, fontSize:11, color:C.gold, textAlign:'right' }}>
-                  {freeRows.length} free item{freeRows.length>1?'s':''} · MRP {RS}{fmtI(Math.round(freeItemsValue))}
-                </div>
-              )}
-            </div>
-          </div>
-          <div style={{ marginBottom:20 }}>
-            <label style={labelSt}>PAYMENT MODE</label>
-            <select value={payMode} onChange={e => setPayMode(e.target.value)} style={{ ...inp, maxWidth:200 }}>
-              {['Cash','UPI','Card','Bank Transfer','Credit'].map(m => <option key={m}>{m}</option>)}
-            </select>
-          </div>
-        </div>
-      )}
-      <ModalFoot>
-        <button onClick={onClose} style={btnGhost}>Cancel</button>
-        {existingBill && (
-          <button onClick={() => printBill(job, existingBill, validRows, grandTotal, taxable, cgst, sgst, discountVal, preDiscount)}
-            style={{ ...btnGhost, color:C.gold, borderColor:'rgba(184,134,11,.4)' }}>
-            🖨 Print Bill
-          </button>
-        )}
-        <button onClick={() => saveMut.mutate()}
-          disabled={saveMut.isPending || validRows.length===0}
-          style={{ ...btnPrimary, opacity:saveMut.isPending||validRows.length===0 ? .5 : 1 }}>
-          {saveMut.isPending ? 'Saving…' : existingBill ? 'Update Bill' : 'Generate Bill'}
-        </button>
-      </ModalFoot>
-    </ModalShell>
-  );
-}
-
-
-// ─── Bill Row ─────────────────────────────────────────────────────────────────
-function BillRow({ row, idx, allParts, onChange, onRemove, onSelectPart }) {
-  const [search, setSearch]     = useState('');
-  const [showDrop, setShowDrop] = useState(false);
-  const inputRef                = useRef(null);
-  const [dropPos, setDropPos]   = useState(null);
-
-  const filtered = search.length > 1
-    ? allParts.filter(p =>
-        p.name?.toLowerCase().includes(search.toLowerCase()) ||
-        p.part_number?.toLowerCase().includes(search.toLowerCase())
-      ).slice(0,8)
-    : [];
-
-  // Position dropdown via fixed coords so it escapes td/modal overflow clipping
-  useEffect(() => {
-    if (!showDrop || filtered.length === 0 || !inputRef.current) return;
-    const update = () => {
-      const r = inputRef.current?.getBoundingClientRect();
-      if (!r) return;
-      const minWidth = Math.max(r.width, 320);
-      const maxWidth = Math.min(minWidth, window.innerWidth - r.left - 12);
-      const spaceBelow = window.innerHeight - r.bottom;
-      const openUp = spaceBelow < 220 && r.top > spaceBelow;
-      setDropPos({
-        left: r.left,
-        top:  openUp ? undefined : r.bottom + 2,
-        bottom: openUp ? window.innerHeight - r.top + 2 : undefined,
-        width: maxWidth,
-      });
-    };
-    update();
-    window.addEventListener('scroll', update, true);
-    window.addEventListener('resize', update);
-    return () => {
-      window.removeEventListener('scroll', update, true);
-      window.removeEventListener('resize', update);
-    };
-  }, [showDrop, filtered.length]);
-
-  const gross    = row.unit_price * row.qty;
-  const rawDisc  = row.complimentary ? 0 : (row.discIsPct ? gross * (Number(row.discount)||0) / 100 : (Number(row.discount)||0));
-  const dRs      = Math.max(0, Math.min(gross, rawDisc));
-  const amount   = row.complimentary ? 0 : gross - dRs;
-
-  return (
-    <tr style={{ background: row.complimentary ? 'rgba(184,134,11,.06)' : (idx%2===0?'transparent':C.s2) }}>
-      <td style={{ padding:'6px 8px', minWidth:190, position:'relative' }}>
-        <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-          <input ref={inputRef} value={row.description}
-            onChange={e => { onChange(row._key,'description',e.target.value); setSearch(e.target.value); setShowDrop(true); }}
-            onFocus={() => { if (row.description) setSearch(row.description); setShowDrop(true); }}
-            onBlur={() => setTimeout(()=>setShowDrop(false),160)}
-            placeholder="Labour / part name" style={{ ...inp, flex:1 }} />
-          {row.complimentary && (
-            <span style={{ fontSize:9, fontWeight:700, letterSpacing:.5, padding:'2px 6px', background:C.gold, color:'#000', borderRadius:3 }}>FREE</span>
-          )}
-        </div>
-        {showDrop && filtered.length > 0 && dropPos && createPortal(
-          <div style={{ position:'fixed', left:dropPos.left, top:dropPos.top, bottom:dropPos.bottom,
-            width:dropPos.width, background:C.surface,
-            border:`1px solid ${C.border}`, borderRadius:4, zIndex:10000,
-            boxShadow:'0 8px 24px rgba(0,0,0,.5)', maxHeight:360, overflowY:'auto' }}>
-            {filtered.map(p => (
-              <div key={p._id}
-                onMouseDown={() => { onSelectPart(row._key,p); setSearch(''); setShowDrop(false); }}
-                style={{ padding:'9px 12px', cursor:'pointer', borderBottom:`1px solid ${C.border}`, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}
-                onMouseEnter={e=>e.currentTarget.style.background=C.s2}
-                onMouseLeave={e=>e.currentTarget.style.background='transparent'}
-              >
-                <div style={{ minWidth:0, flex:1 }}>
-                  <div style={{ fontSize:12, fontWeight:600 }}>{p.name}</div>
-                  <div style={{ fontSize:10, color:C.muted }}>{p.part_number}{p.category ? ` · ${p.category}` : ''}</div>
-                </div>
-                <div style={{ textAlign:'right', flexShrink:0 }}>
-                  <div style={{ fontSize:12, fontWeight:700, color:C.gold }}>{RS}{p.selling_price}</div>
-                  <div style={{ fontSize:10, color: p.stock <= 5 ? C.amber : C.green }}>Stock: {p.stock}</div>
-                </div>
-              </div>
-            ))}
-          </div>,
-          document.body
-        )}
-      </td>
-      <td style={{ padding:'6px 6px', width:76 }}>
-        <input value={row.hsn} onChange={e=>onChange(row._key,'hsn',e.target.value)} placeholder="9987" style={inp}/>
-      </td>
-      <td style={{ padding:'6px 6px', width:60 }}>
-        <input type="number" min="1" value={row.qty}
-          onChange={e=>onChange(row._key,'qty',Math.max(1,Number(e.target.value)))}
-          style={{ ...inp, textAlign:'right' }}/>
-      </td>
-      <td style={{ padding:'6px 6px', width:100 }}>
-        <input type="number" min="0" value={row.unit_price}
-          onChange={e=>onChange(row._key,'unit_price',Number(e.target.value))}
-          disabled={row.complimentary}
-          style={{ ...inp, textAlign:'right', textDecoration: row.complimentary ? 'line-through' : 'none', opacity: row.complimentary ? .5 : 1 }}/>
-      </td>
-      <td style={{ padding:'6px 4px', width:110 }}>
-        <div style={{ display:'flex', gap:2, alignItems:'center' }}>
-          <input type="number" min="0" value={row.discount || 0}
-            disabled={row.complimentary}
-            onChange={e => onChange(row._key,'discount',Math.max(0, Number(e.target.value)))}
-            style={{ ...inp, textAlign:'right', width:64, opacity: row.complimentary ? .5 : 1 }} />
-          <button type="button" disabled={row.complimentary}
-            onClick={() => { onChange(row._key,'discIsPct', !row.discIsPct); onChange(row._key,'discount',0); }}
-            style={{ background: row.discIsPct ? C.gold : 'transparent', border:`1px solid ${C.border}`, borderRadius:3, padding:'4px 6px', color: row.discIsPct ? '#0c0c0d' : C.muted, fontSize:10, fontWeight:700, cursor: row.complimentary?'default':'pointer', opacity: row.complimentary?.4:1 }}>
-            {row.discIsPct ? '%' : '₹'}
-          </button>
-        </div>
-      </td>
-      <td style={{ padding:'6px 6px', width:56, textAlign:'center' }} title="Free / complimentary">
-        <input type="checkbox" checked={!!row.complimentary}
-          onChange={e => onChange(row._key,'complimentary', e.target.checked)}
-          style={{ cursor:'pointer', accentColor: C.gold }} />
-      </td>
-      <td style={{ padding:'6px 6px', width:72 }}>
-        <select value={row.gst_rate} onChange={e=>onChange(row._key,'gst_rate',Number(e.target.value))} disabled={row.complimentary} style={{ ...inp, opacity: row.complimentary ? .5 : 1 }}>
-          {[0,5,12,18,28].map(r=><option key={r} value={r}>{r}%</option>)}
-        </select>
-      </td>
-      <td style={{ padding:'6px 10px', textAlign:'center', fontSize:11, color:'var(--muted)' }}>
-        {(row.gst_rate/2).toFixed(1).replace('.0','')}%
-      </td>
-      <td style={{ padding:'6px 10px', textAlign:'center', fontSize:11, color:'var(--muted)' }}>
-        {(row.gst_rate/2).toFixed(1).replace('.0','')}%
-      </td>
-      <td style={{ padding:'6px 10px', textAlign:'right', fontWeight:600, fontSize:12, whiteSpace:'nowrap' }}>
-        {RS}{fmtI(Math.round(amount))}
-      </td>
-      <td style={{ padding:'6px 6px', width:26 }}>
-        <button onClick={()=>onRemove(row._key)}
-          style={{ background:'transparent', border:'none', color:C.red, cursor:'pointer', fontSize:16, padding:0 }}>×</button>
-      </td>
-    </tr>
-  );
-}
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  PARTS BILL MODAL  (named export — used by PartsPage)
-// ═══════════════════════════════════════════════════════════════════════════════
-export function PartsBillModal({ onClose }) {
-  const qc = useQueryClient();
-  const [cust, setCust]       = useState({ name:'', mobile:'', vehicle:'' });
-  const updC = k => e => setCust(p=>({...p,[k]:e.target.value}));
-  const [cart, setCart]       = useState([]);
-  const [psearch, setPsearch] = useState('');
-  const [payMode, setPayMode] = useState('Cash');
-  const [done, setDone]       = useState(false);
-  const [billNo, setBillNo]   = useState('');
-
-  const { data:partsData } = useQuery({ queryKey:['parts-list'], queryFn:()=>partsApi.list({limit:500}) });
-  const allParts = partsData?.data?.items || partsData?.data || [];
-
-  const results = psearch.length>1
-    ? allParts.filter(p=>(p.name?.toLowerCase().includes(psearch.toLowerCase())||
-        p.part_number?.toLowerCase().includes(psearch.toLowerCase()))&&p.stock>0).slice(0,10)
-    : [];
-
-  const addToCart = part => {
-    setCart(prev => {
-      const ex = prev.find(c=>c._id===part._id);
-      if (ex) {
-        if (ex.qty>=part.stock){toast.error('Not enough stock');return prev;}
-        return prev.map(c=>c._id===part._id?{...c,qty:c.qty+1}:c);
-      }
-      return [...prev,{...part,qty:1}];
-    });
-    setPsearch('');
-  };
-
-  const setQty = (id,qty)=>{
-    const p=allParts.find(p=>p._id===id);
-    if(qty>(p?.stock||0)){toast.error('Not enough stock');return;}
-    setCart(prev=>qty<=0?prev.filter(c=>c._id!==id):prev.map(c=>c._id===id?{...c,qty}:c));
-  };
-
-  const pbTotal   = cart.reduce((s,c)=>s+(c.selling_price||0)*c.qty,0);
-  const pbTaxable = cart.reduce((s,c)=>s+(c.selling_price||0)*c.qty/(1+((c.gst_rate||18)/100)),0);
-  const pbGst     = pbTotal - pbTaxable;
-  const pbCgst    = pbGst / 2;
-  const pbSgst    = pbGst / 2;
-  const total     = Math.round(pbTotal);
-
-  const genMut = useMutation({
-    mutationFn: () => partsApi.createBill({
-      customer_name: cust.name, customer_mobile: cust.mobile, customer_vehicle: cust.vehicle,
-      payment_mode: payMode,
-      items: cart.map(c=>({ part_id:c._id, part_number:c.part_number||'', name:c.name,
-        hsn_code:c.hsn_code||'8714', qty:c.qty, unit_price:c.selling_price||0, gst_rate:c.gst_rate||18 })),
-    }),
-    onSuccess: res => {
-      setBillNo(res?.data?.bill_number||`PRT-${Date.now().toString().slice(-6)}`);
-      setDone(true);
-      qc.invalidateQueries(['parts-list']);
-      toast.success('Parts bill generated!');
-    },
-    onError: e => toast.error(errMsg(e, 'Failed')),
-  });
-
-  return (
-    <ModalShell onClose={onClose} title="New Parts Bill" sub="Walk-in counter sale">
-      {done ? (
-        <div style={{ padding:40, textAlign:'center' }}>
-          <div style={{ fontSize:40, marginBottom:12 }}>✅</div>
-          <div style={{ fontSize:18, fontWeight:800, marginBottom:6 }}>Bill Generated!</div>
-          <div style={{ fontSize:13, color:C.muted, marginBottom:4 }}>{billNo}</div>
-          <div style={{ fontSize:16, fontWeight:700, color:C.gold, marginBottom:24 }}>
-            {RS}{fmtI(total)} — {payMode}
-          </div>
-          <div style={{ display:'flex', gap:10, justifyContent:'center' }}>
-            <button onClick={()=>window.print()} style={btnPrimary}>Print Bill</button>
-            <button onClick={onClose} style={btnGhost}>Close</button>
-          </div>
-        </div>
-      ):(
-        <div style={{ padding:'16px 20px 0' }}>
-          {/* Customer */}
-          <div style={{ marginBottom:16 }}>
-            <div style={secHdr}>CUSTOMER DETAILS</div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
-              {[['name','Name','Customer name'],['mobile','Mobile','Mobile number'],['vehicle','Vehicle (optional)','KA 07 U 3915']].map(([k,l,ph])=>(
-                <div key={k}>
-                  <label style={labelSt}>{l}</label>
-                  <input value={cust[k]} onChange={updC(k)} placeholder={ph} style={inp}/>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Parts search */}
-          <div style={{ marginBottom:14 }}>
-            <div style={secHdr}>ADD PARTS</div>
-            <div style={{ position:'relative', maxWidth:380 }}>
-              <input value={psearch} onChange={e=>setPsearch(e.target.value)}
-                placeholder="Search part name or number…" style={inp}/>
-              {results.length>0&&(
-                <div style={{ position:'absolute', top:'100%', left:0, right:0, background:C.surface,
-                  border:'1px solid var(--border2,#2a2a2a)', borderRadius:4, zIndex:200,
-                  boxShadow:'0 8px 24px rgba(0,0,0,.5)', maxHeight:240, overflowY:'auto' }}>
-                  {results.map(p=>(
-                    <div key={p._id} onClick={()=>addToCart(p)}
-                      style={{ padding:'9px 12px', cursor:'pointer', borderBottom:'1px solid var(--border,#222)',
-                        display:'flex', justifyContent:'space-between', alignItems:'center' }}
-                      onMouseEnter={e=>e.currentTarget.style.background=C.s2}
-                      onMouseLeave={e=>e.currentTarget.style.background='transparent'}
-                    >
-                      <div>
-                        <div style={{ fontSize:12, fontWeight:600 }}>{p.name}</div>
-                        <div style={{ fontSize:10, color:C.muted }}>{p.part_number} · {p.category}</div>
-                      </div>
-                      <div style={{ textAlign:'right' }}>
-                        <div style={{ fontSize:12, fontWeight:700, color:C.gold }}>{RS}{p.selling_price}</div>
-                        <div style={{ fontSize:10, color:p.stock<=5?C.amber:C.green }}>Stock:{p.stock}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Cart */}
-          {cart.length===0?(
-            <div style={{ padding:'24px 0', textAlign:'center', color:C.muted, fontSize:12,
-              borderTop:'1px solid var(--border,#222)', marginBottom:12 }}>
-              No parts added yet.
-            </div>
-          ):(
-            <>
-              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12, marginBottom:10 }}>
-                <thead>
-                  <tr style={{ background:'#1A1A1A' }}>
-                    {['Part Name','Part No','Qty','Price','GST%','CGST%','SGST%','Amount',''].map((h,i)=>(
-                      <th key={i} style={{ padding:'7px 10px', color:C.gold, fontWeight:700, fontSize:10,
-                        letterSpacing:'.06em', textAlign:i>=2?'right':'left' }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {cart.map((item,idx)=>{
-                    const price=item.selling_price||0, gstR=item.gst_rate||18;
-                    const amount=price*item.qty; // price is GST-inclusive
-                    return(
-                      <tr key={item._id} style={{ background:idx%2===0?'transparent':C.s2, borderBottom:'1px solid var(--border,#222)' }}>
-                        <td style={{ padding:'8px 10px', fontWeight:600 }}>{item.name}</td>
-                        <td style={{ padding:'8px 10px', fontFamily:'monospace', fontSize:11, color:C.muted }}>{item.part_number}</td>
-                        <td style={{ padding:'8px 6px', textAlign:'right' }}>
-                          <input type="number" min="1" max={item.stock} value={item.qty}
-                            onChange={e=>setQty(item._id,Number(e.target.value))}
-                            style={{ ...inp, width:52, textAlign:'right' }}/>
-                        </td>
-                        <td style={{ padding:'8px 10px', textAlign:'right' }}>{RS}{price}</td>
-                        <td style={{ padding:'8px 10px', textAlign:'right', color:C.muted }}>{gstR}%</td>
-                        <td style={{ padding:'8px 10px', textAlign:'right', color:C.muted }}>{(gstR/2).toFixed(1).replace('.0','')}%</td>
-                        <td style={{ padding:'8px 10px', textAlign:'right', color:C.muted }}>{(gstR/2).toFixed(1).replace('.0','')}%</td>
-                        <td style={{ padding:'8px 10px', textAlign:'right', fontWeight:700, color:C.gold }}>
-                          {RS}{fmtI(Math.round(amount))}
-                        </td>
-                        <td style={{ padding:'8px 6px' }}>
-                          <button onClick={()=>setCart(p=>p.filter(c=>c._id!==item._id))}
-                            style={{ background:'transparent', border:'none', color:C.red, cursor:'pointer', fontSize:16, padding:0 }}>×</button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-              <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:12 }}>
-                <div style={{ minWidth:260 }}>
-                  <TotRow label="Taxable Amount" val={`${RS}${fmt(pbTaxable)}`}/>
-                  <TotRow label="CGST"           val={`${RS}${fmt(pbCgst)}`}/>
-                  <TotRow label="SGST"           val={`${RS}${fmt(pbSgst)}`}/>
-                  <TotRow label="Total"          val={`${RS}${fmtI(total)}`} bold gold/>
-                  <div style={{ fontSize:10, color:C.muted, fontStyle:'italic', textAlign:'right', marginTop:4 }}>
-                    {numWords(total)} Rupees Only
-                  </div>
-                </div>
-              </div>
-            </>
-          )}
-
-          <div style={{ marginBottom:20 }}>
-            <label style={labelSt}>PAYMENT MODE</label>
-            <select value={payMode} onChange={e=>setPayMode(e.target.value)} style={{ ...inp, maxWidth:200 }}>
-              {['Cash','UPI','Card','Bank Transfer','Credit'].map(m=><option key={m}>{m}</option>)}
-            </select>
-          </div>
-        </div>
-      )}
-      {!done&&(
-        <ModalFoot>
-          <button onClick={onClose} style={btnGhost}>Cancel</button>
-          <button onClick={()=>genMut.mutate()}
-            disabled={genMut.isPending||cart.length===0}
-            style={{ ...btnPrimary, opacity:genMut.isPending||cart.length===0 ? .5 : 1 }}>
-            {genMut.isPending?'Generating…':`Generate Bill — ${RS}${fmtI(total)}`}
-          </button>
-        </ModalFoot>
-      )}
-    </ModalShell>
-  );
-}
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  SHARED PRIMITIVES
-// ═══════════════════════════════════════════════════════════════════════════════
-
-function ModalShell({ children, onClose, title, sub }) {
-  return (
-    <div onClick={onClose} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.85)',
-      display:'flex', alignItems:'flex-start', justifyContent:'center',
-      zIndex:2000, padding:'24px 16px', overflowY:'auto' }}>
-      <div onClick={e=>e.stopPropagation()} style={{ background:C.surface, width:'100%', maxWidth:840,
-        borderRadius:6, overflow:'hidden', boxShadow:'0 24px 80px rgba(0,0,0,.7)',
-        fontFamily:'IBM Plex Sans, sans-serif' }}>
-        <div style={{ background:'#1A1A1A', borderTop:'3px solid #B8860B',
-          padding:'16px 20px', display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
-          <div>
-            <div style={{ fontSize:9, letterSpacing:'.12em', color:C.gold, fontWeight:700, marginBottom:4 }}>MM MOTORS</div>
-            <div style={{ fontSize:17, fontWeight:800, color:'#fff', letterSpacing:'-.01em' }}>{title}</div>
-            {sub && <div style={{ fontSize:11, color:'#888', marginTop:3 }}>{sub}</div>}
-          </div>
-          <button onClick={onClose} style={{ background:'transparent', border:'none', color:'#888', fontSize:20, cursor:'pointer', padding:4 }}>×</button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function ModalFoot({ children }) {
-  return (
-    <div style={{ display:'flex', justifyContent:'flex-end', gap:8,
-      padding:'14px 20px', background:C.s2, borderTop:'1px solid var(--border,#222)' }}>
-      {children}
-    </div>
-  );
-}
-
-function TotRow({ label, val, bold, gold }) {
-  return (
-    <div style={{ display:'flex', justifyContent:'space-between', padding:'5px 0',
-      fontSize:bold?15:12, fontWeight:bold?800:400,
-      color:gold?C.gold:C.muted, borderBottom:'1px solid var(--border,#222)' }}>
-      <span>{label}</span><span>{val}</span>
     </div>
   );
 }
