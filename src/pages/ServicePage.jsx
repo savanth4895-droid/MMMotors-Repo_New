@@ -1,4 +1,5 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { serviceApi, partsApi, customersApi, billsApi, salesApi, errMsg} from '../api/client';
 import { useSortable } from '../components/ui';
@@ -1255,6 +1256,8 @@ export function ServiceBillModal({ job, onClose }) {
 function BillRow({ row, idx, allParts, onChange, onRemove, onSelectPart }) {
   const [search, setSearch]     = useState('');
   const [showDrop, setShowDrop] = useState(false);
+  const inputRef                = useRef(null);
+  const [dropPos, setDropPos]   = useState(null);
 
   const filtered = search.length > 1
     ? allParts.filter(p =>
@@ -1262,6 +1265,32 @@ function BillRow({ row, idx, allParts, onChange, onRemove, onSelectPart }) {
         p.part_number?.toLowerCase().includes(search.toLowerCase())
       ).slice(0,8)
     : [];
+
+  // Position dropdown via fixed coords so it escapes td/modal overflow clipping
+  useEffect(() => {
+    if (!showDrop || filtered.length === 0 || !inputRef.current) return;
+    const update = () => {
+      const r = inputRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const minWidth = Math.max(r.width, 320);
+      const maxWidth = Math.min(minWidth, window.innerWidth - r.left - 12);
+      const spaceBelow = window.innerHeight - r.bottom;
+      const openUp = spaceBelow < 220 && r.top > spaceBelow;
+      setDropPos({
+        left: r.left,
+        top:  openUp ? undefined : r.bottom + 2,
+        bottom: openUp ? window.innerHeight - r.top + 2 : undefined,
+        width: maxWidth,
+      });
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('scroll', update, true);
+      window.removeEventListener('resize', update);
+    };
+  }, [showDrop, filtered.length]);
 
   const gross    = row.unit_price * row.qty;
   const rawDisc  = row.complimentary ? 0 : (row.discIsPct ? gross * (Number(row.discount)||0) / 100 : (Number(row.discount)||0));
@@ -1272,30 +1301,39 @@ function BillRow({ row, idx, allParts, onChange, onRemove, onSelectPart }) {
     <tr style={{ background: row.complimentary ? 'rgba(184,134,11,.06)' : (idx%2===0?'transparent':C.s2) }}>
       <td style={{ padding:'6px 8px', minWidth:190, position:'relative' }}>
         <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-          <input value={row.description}
+          <input ref={inputRef} value={row.description}
             onChange={e => { onChange(row._key,'description',e.target.value); setSearch(e.target.value); setShowDrop(true); }}
+            onFocus={() => { if (row.description) setSearch(row.description); setShowDrop(true); }}
             onBlur={() => setTimeout(()=>setShowDrop(false),160)}
             placeholder="Labour / part name" style={{ ...inp, flex:1 }} />
           {row.complimentary && (
             <span style={{ fontSize:9, fontWeight:700, letterSpacing:.5, padding:'2px 6px', background:C.gold, color:'#000', borderRadius:3 }}>FREE</span>
           )}
         </div>
-        {showDrop && filtered.length > 0 && (
-          <div style={{ position:'absolute', top:'100%', left:0, right:0, background:C.surface,
-            border:'1px solid var(--border2,#2a2a2a)', borderRadius:4, zIndex:200,
-            boxShadow:'0 8px 24px rgba(0,0,0,.5)', maxHeight:360, minHeight:80, overflowY:'auto' }}>
+        {showDrop && filtered.length > 0 && dropPos && createPortal(
+          <div style={{ position:'fixed', left:dropPos.left, top:dropPos.top, bottom:dropPos.bottom,
+            width:dropPos.width, background:C.surface,
+            border:`1px solid ${C.border}`, borderRadius:4, zIndex:10000,
+            boxShadow:'0 8px 24px rgba(0,0,0,.5)', maxHeight:360, overflowY:'auto' }}>
             {filtered.map(p => (
               <div key={p._id}
                 onMouseDown={() => { onSelectPart(row._key,p); setSearch(''); setShowDrop(false); }}
-                style={{ padding:'8px 12px', cursor:'pointer', borderBottom:'1px solid var(--border,#222)', fontSize:12 }}
+                style={{ padding:'9px 12px', cursor:'pointer', borderBottom:`1px solid ${C.border}`, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}
                 onMouseEnter={e=>e.currentTarget.style.background=C.s2}
                 onMouseLeave={e=>e.currentTarget.style.background='transparent'}
               >
-                <div style={{ fontWeight:600 }}>{p.name}</div>
-                <div style={{ fontSize:10, color:C.muted }}>{p.part_number} · {RS}{p.selling_price} · Stock:{p.stock}</div>
+                <div style={{ minWidth:0, flex:1 }}>
+                  <div style={{ fontSize:12, fontWeight:600 }}>{p.name}</div>
+                  <div style={{ fontSize:10, color:C.muted }}>{p.part_number}{p.category ? ` · ${p.category}` : ''}</div>
+                </div>
+                <div style={{ textAlign:'right', flexShrink:0 }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:C.gold }}>{RS}{p.selling_price}</div>
+                  <div style={{ fontSize:10, color: p.stock <= 5 ? C.amber : C.green }}>Stock: {p.stock}</div>
+                </div>
               </div>
             ))}
-          </div>
+          </div>,
+          document.body
         )}
       </td>
       <td style={{ padding:'6px 6px', width:76 }}>
