@@ -516,7 +516,9 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
   const custResults = Array.isArray(custData) ? custData : [];
 
   // ── Search state for vehicle ───────────────────────────────────────────────
-  const [vehSearch, setVehSearch] = useState('');
+  const [vehSearch, setVehSearch] = useState(
+    initial?.chassis_number || (initial?.vehicle_brand ? `${initial.vehicle_brand} ${initial.vehicle_model || ''}` : '')
+  );
   const [vehFocus, setVehFocus]   = useState(false);
   const { data: vehData } = useQuery({
     queryKey: ['vehicles-search', vehSearch],
@@ -662,7 +664,8 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
                 value={vehSearch}
                 onChange={e => {
                   setVehSearch(e.target.value);
-                  if (f.vehicle_id) setF(p => ({ ...p, vehicle_id:'', vehicle_brand:'', vehicle_model:'', vehicle_variant:'', vehicle_color:'', chassis_number:'', engine_number:'' }));
+                  // Only clear vehicle_id so a new pick can be made; keep field values intact for editing
+                  if (f.vehicle_id) setF(p => ({ ...p, vehicle_id:'' }));
                 }}
                 onFocus={() => setVehFocus(true)}
                 onBlur={() => setTimeout(() => setVehFocus(false), 180)}
@@ -709,12 +712,12 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
             </div>
           </Field>
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop: 4 }}>
-            <Field label="Brand"><input value={f.vehicle_brand} disabled style={{...inpStyle, opacity:0.6}} /></Field>
-            <Field label="Model"><input value={f.vehicle_model} disabled style={{...inpStyle, opacity:0.6}} /></Field>
-            <Field label="Variant"><input value={f.vehicle_variant} disabled style={{...inpStyle, opacity:0.6}} /></Field>
-            <Field label="Colour"><input value={f.vehicle_color} disabled style={{...inpStyle, opacity:0.6}} /></Field>
-            <Field label="Chassis No"><input value={f.chassis_number} disabled className="mono" style={{...inpStyle, opacity:0.6}} /></Field>
-            <Field label="Engine No"><input value={f.engine_number} disabled className="mono" style={{...inpStyle, opacity:0.6}} /></Field>
+            <Field label="Brand"><input value={f.vehicle_brand} onChange={e => setF(p => ({...p, vehicle_brand: e.target.value}))} style={inpStyle} /></Field>
+            <Field label="Model"><input value={f.vehicle_model} onChange={e => setF(p => ({...p, vehicle_model: e.target.value}))} style={inpStyle} /></Field>
+            <Field label="Variant"><input value={f.vehicle_variant} onChange={e => setF(p => ({...p, vehicle_variant: e.target.value}))} style={inpStyle} /></Field>
+            <Field label="Colour"><input value={f.vehicle_color} onChange={e => setF(p => ({...p, vehicle_color: e.target.value}))} style={inpStyle} /></Field>
+            <Field label="Chassis No"><input value={f.chassis_number} onChange={e => setF(p => ({...p, chassis_number: e.target.value}))} className="mono" style={inpStyle} /></Field>
+            <Field label="Engine No"><input value={f.engine_number} onChange={e => setF(p => ({...p, engine_number: e.target.value}))} className="mono" style={inpStyle} /></Field>
           </div>
         </div>
       )}
