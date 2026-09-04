@@ -2802,20 +2802,29 @@ async def delete_parts_bill(bill_id: str, current_user=Depends(require_admin)):
 
 @api_router.get("/dashboard/stats")
 async def dashboard_stats(current_user=Depends(verify_token)):
-    today = utcnow().strftime("%d %b %Y")
+    now = utcnow()
+    today_legacy = now.strftime("%d %b %Y")   # legacy format: "04 Sep 2026"
+    today_iso    = now.strftime("%Y-%m-%d")   # new format:    "2026-09-04"
+    month_legacy = now.strftime("%b %Y")      # legacy month:  "Sep 2026"
+    month_iso    = now.strftime("%Y-%m")      # new month:     "2026-09"
+    today_match  = {"sale_date": {"$in": [today_legacy, today_iso]}}
+    month_match  = {"$or": [
+        {"sale_date": {"$regex": month_legacy}},
+        {"sale_date": {"$regex": f"^{month_iso}"}},
+    ]}
     (vehicles_in_stock, vehicles_sold_today, jobs_pending, jobs_in_progress, jobs_ready, customers_total, parts_low, parts_out, sales_today_count) = await asyncio.gather(
         db.vehicles.count_documents({"status":"in_stock"}),
-        db.sales.count_documents({"sale_date":today}),
+        db.sales.count_documents(today_match),
         db.service_jobs.count_documents({"status":"pending"}),
         db.service_jobs.count_documents({"status":"in_progress"}),
         db.service_jobs.count_documents({"status":"ready"}),
         db.customers.count_documents({}),
         db.spare_parts.count_documents({"$expr":{"$and":[{"$gt":["$stock",0]},{"$lte":["$stock","$reorder_level"]}]}}),
         db.spare_parts.count_documents({"stock":0}),
-        db.sales.count_documents({"sale_date":today}),
+        db.sales.count_documents(today_match),
     )
-    pipeline_today_rev = [{"$match":{"sale_date":today}},{"$group":{"_id":None,"total":{"$sum":"$total_amount"}}}]
-    pipeline_month_rev = [{"$match":{"sale_date":{"$regex":utcnow().strftime("%b %Y")}}},{"$group":{"_id":None,"total":{"$sum":"$total_amount"}}}]
+    pipeline_today_rev = [{"$match":today_match},{"$group":{"_id":None,"total":{"$sum":"$total_amount"}}}]
+    pipeline_month_rev = [{"$match":month_match},{"$group":{"_id":None,"total":{"$sum":"$total_amount"}}}]
     today_rev_r, month_rev_r = await asyncio.gather(
         db.sales.aggregate(pipeline_today_rev).to_list(1),
         db.sales.aggregate(pipeline_month_rev).to_list(1),
@@ -4318,7 +4327,17 @@ async def expense_stats(
 ):
     """Monthly expense totals by category for the last N months."""
     pipeline = [
-        {"$addFields": {"month_key": {"$substr": ["$date", 0, 7]}}},
+        {"$addFields": {
+            "p1": {"$dateFromString": {"dateString": {"$substr": ["$date", 0, 10]}, "format": "%Y-%m-%d", "onError": None, "onNull": None}},
+            "p2": {"$dateFromString": {"dateString": "$date",                                    "format": "%d %b %Y", "onError": None, "onNull": None}},
+        }},
+        {"$addFields": {
+            "month_key": {"$cond": [
+                {"$ne": [{"$ifNull": ["$p1", "$p2"]}, None]},
+                {"$dateToString": {"format": "%Y-%m", "date": {"$ifNull": ["$p1", "$p2"]}}},
+                {"$substr": ["$created_at", 0, 7]},
+            ]}
+        }},
         {"$group": {
             "_id": {"month": "$month_key", "category": "$category"},
             "total": {"$sum": "$amount"},
@@ -4355,8 +4374,10 @@ async def profit_and_loss(
 
     sales_pipe = [
         {"$addFields": {
-            "parsed": {"$dateFromString": {"dateString": "$sale_date", "format": "%d %b %Y", "onError": None, "onNull": None}},
+            "p1": {"$dateFromString": {"dateString": {"$substr": ["$sale_date", 0, 10]}, "format": "%Y-%m-%d", "onError": None, "onNull": None}},
+            "p2": {"$dateFromString": {"dateString": "$sale_date",                                    "format": "%d %b %Y", "onError": None, "onNull": None}},
         }},
+        {"$addFields": {"parsed": {"$ifNull": ["$p1", "$p2"]}}},
         {"$addFields": {
             "month_key": {"$cond": [
                 {"$ne": ["$parsed", None]},
