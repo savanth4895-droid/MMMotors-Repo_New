@@ -77,6 +77,7 @@ export default function ServiceDuePage() {
       if (filter === 'due_soon') return r.urgency === 'due_soon';
       if (filter === 'first')    return r.source === 'sale';
       if (filter === 'repeat')   return r.source === 'service';
+      if (filter === 'workshop') return r.in_workshop;
       return true;
     })
     .filter(r => !search ||
@@ -87,6 +88,7 @@ export default function ServiceDuePage() {
   const overdue   = (raw || []).filter(r => r.urgency === 'overdue').length;
   const due_soon  = (raw || []).filter(r => r.urgency === 'due_soon').length;
   const firstSvc  = (raw || []).filter(r => r.source === 'sale').length;
+  const inShop    = (raw || []).filter(r => r.in_workshop).length;
 
   const handleWhatsApp = (r) => {
     const mobile = (r.customer_mobile || '').replace(/\D/g, '');
@@ -227,7 +229,7 @@ export default function ServiceDuePage() {
 
         {/* Filters */}
         <div style={{ display:'flex', gap:6 }}>
-          {[['all','All'],['overdue','Overdue'],['due_soon','Due Soon'],['first','1st Service'],['repeat','Repeat']].map(([v,l]) => (
+          {[['all','All'],['workshop',`In Workshop${inShop?` (${inShop})`:''}`],['overdue','Overdue'],['due_soon','Due Soon'],['first','1st Service'],['repeat','Repeat']].map(([v,l]) => (
             <button key={v} onClick={() => setFilter(v)} style={{
               padding:'6px 12px', borderRadius:3, fontSize:10, cursor:'pointer',
               fontFamily:'IBM Plex Sans,sans-serif', letterSpacing:'.05em', textTransform:'uppercase',
@@ -323,6 +325,15 @@ export default function ServiceDuePage() {
                     <td style={{ padding:'10px 16px' }}>
                       <div style={{ fontSize:12, fontWeight:500 }}>{r.brand} {r.model}</div>
                       <div className="mono" style={{ fontSize:10, color:'var(--muted)', marginTop:1 }}>{r.vehicle_number || '—'}</div>
+                      {r.in_workshop && (
+                        <div style={{ display:'inline-block', marginTop:4, fontSize:9, fontWeight:800,
+                          letterSpacing:'.06em', padding:'2px 6px', borderRadius:3,
+                          background:'rgba(184,134,11,.14)', color:'var(--accent)',
+                          border:'1px solid rgba(184,134,11,.35)' }}
+                          title={`In for a repair${r.workshop_job_number ? ` — ${r.workshop_job_number}` : ''}. Service is due, offer it now.`}>
+                          IN WORKSHOP{r.workshop_job_number ? ` · ${r.workshop_job_number}` : ''}
+                        </div>
+                      )}
                     </td>
                     {/* Next service type */}
                     <td style={{ padding:'10px 16px' }}>
