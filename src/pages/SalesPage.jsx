@@ -39,13 +39,11 @@ function printSaleInvoice(sale) {
   }
   const amtWords = numWords(total) + ' Rupees Only';
   const exShowroom  = sale.ex_showroom_price || sale.total_amount || 0;
-  const rto         = sale.rto        || 0;
   const insurance   = sale.insurance  || 0;
   const accessories = sale.accessories|| 0;
   const discount    = sale.discount   || 0;
   const descRows = [
     ['Ex-Showroom Price', exShowroom],
-    rto         ? ['RTO', rto]               : null,
     insurance   ? ['Insurance', insurance]   : null,
     accessories ? ['Accessories',accessories]: null,
     discount    ? ['Discount', -discount]    : null,
@@ -129,6 +127,7 @@ function printSaleInvoice(sale) {
           ${sale.chassis_number  ? `<div class="irow"><div class="lbl">Chassis</div><div class="val" style="font-family:monospace;font-size:10px">${sale.chassis_number}</div></div>` : ''}
           ${sale.engine_number   ? `<div class="irow"><div class="lbl">Engine</div><div class="val" style="font-family:monospace;font-size:10px">${sale.engine_number}</div></div>` : ''}
           ${sale.vehicle_number  ? `<div class="irow"><div class="lbl">Reg No.</div><div class="val" style="font-family:monospace">${sale.vehicle_number}</div></div>` : ''}
+          ${sale.rto             ? `<div class="irow"><div class="lbl">RTO</div><div class="val" style="font-family:monospace">${sale.rto}</div></div>` : ''}
         </div>
       </div>
       <div class="sec-lbl" style="margin-bottom:8px">Amount Details</div>
@@ -191,14 +190,12 @@ function InvoiceModal({ sale, onClose }) {
     const amtWords = numWords(total) + ' Rupees Only';
 
     const exShowroom  = sale.ex_showroom_price || sale.total_amount || 0;
-    const rto         = sale.rto        || 0;
     const insurance   = sale.insurance  || 0;
     const accessories = sale.accessories|| 0;
     const discount    = sale.discount   || 0;
 
     const descRows = [
       ['Ex-Showroom Price', exShowroom],
-      rto         ? ['RTO', rto]               : null,
       insurance   ? ['Insurance', insurance]   : null,
       accessories ? ['Accessories',accessories]: null,
       discount    ? ['Discount', -discount]    : null,
@@ -437,7 +434,7 @@ function InvoiceModal({ sale, onClose }) {
             ['Vehicle No',     sale.vehicle_number || '—'],
             ['Chassis No',     sale.chassis_number || '—'],
             ['Engine No',      sale.engine_number || '—'],
-            ['RTO',            sale.rto ? `₹${sale.rto.toLocaleString('en-IN')}` : '—'],
+            ['RTO',            sale.rto || '—'],
             ['HP (Financier)', sale.financier || '—'],
             ['Nominee Name',   sale.nominee?.name || '—'],
             ['Relation',       sale.nominee?.relation || '—'],
@@ -482,7 +479,7 @@ function InvoiceModal({ sale, onClose }) {
               `Vehicle No : ${sale.vehicle_number || '—'}`,
               `Chassis No : ${sale.chassis_number || '—'}`,
               `Engine No  : ${sale.engine_number || '—'}`,
-              `RTO        : ${sale.rto ? `₹${sale.rto.toLocaleString('en-IN')}` : '—'}`,
+              `RTO        : ${sale.rto || '—'}`,
               `Financier  : ${sale.financier || '—'}`,
               `Nominee    : ${sale.nominee?.name || '—'} (${sale.nominee?.relation || '—'}, ${sale.nominee?.age || '—'})`,
               `Amount     : ${sale.total_amount ? `₹${sale.total_amount.toLocaleString('en-IN')}` : '—'}`,
@@ -538,7 +535,7 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
     vehicle_id: '', vehicle_brand: '', vehicle_model: '', vehicle_variant: '', vehicle_color: '', chassis_number: '', engine_number: '',
     nominee_name: initial?.nominee?.name || '', nominee_relation: initial?.nominee?.relation || '', nominee_age: initial?.nominee?.age || '', nominee_number: initial?.nominee?.number || '',
     sale_date: new Date().toISOString().split('T')[0], sale_price: '', payment_mode: 'Cash', financier: '', sold_by: '', notes: '',
-    vehicle_number: '', hsrp_front: '', hsrp_back: '', hsrp_front_id: null, hsrp_back_id: null, hsrp_date: '', hsrp_notes: '',
+    vehicle_number: '', rto: '', hsrp_front: '', hsrp_back: '', hsrp_front_id: null, hsrp_back_id: null, hsrp_date: '', hsrp_notes: '',
     ...initial
   });
 
@@ -718,6 +715,7 @@ function SaleForm({ initial = {}, onSave, onCancel, saving }) {
             <Field label="Colour"><input value={f.vehicle_color} onChange={e => setF(p => ({...p, vehicle_color: e.target.value}))} style={inpStyle} /></Field>
             <Field label="Chassis No"><input value={f.chassis_number} onChange={e => setF(p => ({...p, chassis_number: e.target.value}))} className="mono" style={inpStyle} /></Field>
             <Field label="Engine No"><input value={f.engine_number} onChange={e => setF(p => ({...p, engine_number: e.target.value}))} className="mono" style={inpStyle} /></Field>
+            <Field label="RTO Code"><input value={f.rto} onChange={s('rto')} placeholder="e.g. KA01, KA07" className="mono" style={inpStyle} /></Field>
           </div>
         </div>
       )}
