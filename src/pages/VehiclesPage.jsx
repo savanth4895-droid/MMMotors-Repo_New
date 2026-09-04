@@ -14,14 +14,14 @@ const BRANDS = [
 const MODELS = {
   HERO: [
     'Splendor Plus', 'Splendor Plus Xtec', 'Super Splendor', 'HF 100', 'HF Deluxe', 
-    'Passion Plus', 'Passion Xtec', 'Glamour', 'Glamour Xtec', 
-    'Xtreme 125R', 'Xtreme 160R', 'Xtreme 160R 4V', 'Xpulse 200 4V', 
-    'Xpulse 200T 4V', 'Karizma XMR', 'Destini 125 Xtec', 'Pleasure Plus', 'Xoom 110'
+    'Passion Plus', 'Glamour', 'Destini 110', 'Xpulse 200 4V', 'Xoom 125', 'Xpulse 210',
+    'Xtreme 125R', 'Xtreme 160R', 'Xtreme 160R 4V',  
+    'Xpulse 200T 4V', 'Karizma XMR', 'Destini 125', 'Pleasure Plus', 'Xoom 110'
   ],
   HONDA: [
     'Activa 6G', 'Activa 125', 'Shine 100', 'Shine 125', 'SP 125', 'SP 160', 
     'Unicorn', 'Livo', 'Hornet 2.0', 'CB200X', 'CB300F', 'CB300R', 
-    'Hness CB350', 'CB350RS', 'CB350', 'Dio', 'Dio 125'
+    'Hness CB350', 'CB350RS', 'CB350', 'Dio', 'Dio 125', 'NX200'
   ],
   BAJAJ: [
     'Pulsar 125', 'Pulsar 150', 'Pulsar N150', 'Pulsar 220F', 'Pulsar N160', 'Pulsar NS160', 
