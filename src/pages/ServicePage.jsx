@@ -400,6 +400,7 @@ function EditJobModal({ job, onClose }) {
     estimated_delivery: job.estimated_delivery || '',
     check_in_date:      job.check_in_date      || '',
     notes:              job.notes              || '',
+    service_type:       job.service_type       || '',
   });
   const upd = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
 
@@ -499,6 +500,19 @@ function EditJobModal({ job, onClose }) {
               <span style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', fontSize:14, pointerEvents:'none', color:'var(--muted)' }}>📅</span>
             </div>
           </div>
+          <div>
+            <label style={labelSt}>Service Type</label>
+            <select value={form.service_type} onChange={upd('service_type')} style={inp}>
+              <option value="">— Not set (legacy) —</option>
+              <option>Repair / Walk-in</option>
+              <option>1st Service</option>
+              <option>2nd Service</option>
+              <option>3rd Service</option>
+              <option>4th Service</option>
+              <option>5th Service</option>
+              <option>6th+ Service</option>
+            </select>
+          </div>
         </div>
         <div style={{ marginBottom:12 }}>
           <label style={labelSt}>Complaint / Work Required</label>
@@ -534,8 +548,20 @@ function NewJobModal({ onClose }) {
   const [form, setForm]             = useState({
     vehicle_number:'', chassis_number:'', brand:'HERO', model:'', odometer_km:'',
     complaint:'', technician:'', estimated_delivery:'', notes:'',
+    service_type:'Repair / Walk-in',
   });
   const upd = k => e => setForm(p => ({ ...p, [k]:e.target.value }));
+
+  // Schedule hint — tells staff whether this visit is the due scheduled
+  // service or just a repair, instead of making them guess.
+  const vnTrimmed = (form.vehicle_number || '').trim();
+  const { data:schedData } = useQuery({
+    queryKey: ['svc-schedule', vnTrimmed.toUpperCase()],
+    queryFn:  () => serviceApi.schedule(vnTrimmed),
+    enabled:  vnTrimmed.length >= 4,
+    staleTime: 60_000,
+  });
+  const sched = schedData?.data || null;
 
   const { data:custData } = useQuery({
     queryKey: ['cust-search', custSearch],
@@ -759,6 +785,38 @@ function NewJobModal({ onClose }) {
             <div>
               <label style={labelSt}>Est. Delivery</label>
               <input type="date" value={form.estimated_delivery} onChange={upd('estimated_delivery')} style={inp} />
+            </div>
+            <div>
+              <label style={labelSt}>Service Type *</label>
+              <select value={form.service_type} onChange={upd('service_type')} style={inp}>
+                <option>Repair / Walk-in</option>
+                <option>1st Service</option>
+                <option>2nd Service</option>
+                <option>3rd Service</option>
+                <option>4th Service</option>
+                <option>5th Service</option>
+                <option>6th+ Service</option>
+              </select>
+              {sched?.found && (
+                <div style={{ fontSize:10, marginTop:5, lineHeight:1.5,
+                  color: sched.days_until_due <= 15 ? C.gold : C.muted }}>
+                  {sched.days_until_due <= 15
+                    ? `${sched.next_service} due ${sched.next_due_date}` +
+                      (sched.days_until_due < 0
+                        ? ` — ${Math.abs(sched.days_until_due)}d overdue`
+                        : ` — in ${sched.days_until_due}d`)
+                    : `No service due until ${sched.next_due_date}`}
+                  {sched.days_until_due <= 15 && form.service_type === 'Repair / Walk-in' && (
+                    <button
+                      onClick={() => setForm(p => ({ ...p, service_type: sched.next_service }))}
+                      style={{ marginLeft:6, background:'none', border:'none', padding:0,
+                        color:C.gold, fontSize:10, fontWeight:700, cursor:'pointer',
+                        textDecoration:'underline' }}>
+                      log as {sched.next_service}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           </div>
           <div style={{ marginBottom:12 }}>
