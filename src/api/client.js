@@ -122,6 +122,7 @@ export const serviceApi = {
   delete:         (id)     => api.delete(`/service/${id}`),
   stats:          ()       => api.get('/service/stats'),
   due:            (days)   => api.get('/service/due', { params: { days } }),
+  schedule:       (veh)    => api.get(`/service/schedule/${encodeURIComponent(veh)}`),  // job-card hint
   markNotified:   (veh)    => api.post(`/service/due/${encodeURIComponent(veh)}/notified`),
   notifications:  ()       => api.get('/service/due/notifications'),
   getBillByJobId: (jobId)  => api.get('/service-bills', { params: { job_id: jobId } }),
