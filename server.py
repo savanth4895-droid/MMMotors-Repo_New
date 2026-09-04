@@ -300,6 +300,8 @@ class VehicleCreate(BaseModel):
     color:          Optional[str] = ""
     chassis_number: Optional[str] = ""
     engine_number:  Optional[str] = ""
+    vehicle_number: Optional[str] = ""
+    key_number:     Optional[str] = ""
     purchase_price: Optional[float] = 0
     inbound_date:      Optional[str] = ""
     location:          Optional[str] = ""
@@ -316,6 +318,7 @@ class VehicleUpdate(BaseModel):
     color:          Optional[str] = None
     chassis_number: Optional[str] = None
     engine_number:  Optional[str] = None
+    vehicle_number: Optional[str] = None
     purchase_price: Optional[float] = None
     inbound_date:      Optional[str] = None
     location:          Optional[str] = None
@@ -354,6 +357,7 @@ class SaleCreate(BaseModel):
     sale_date:         Optional[str]   = ""
     notes:             Optional[str]   = ""
     care_of:           Optional[str]   = ""
+    rto:               Optional[str]   = ""   # RTO office code, e.g. KA07 — assigned after registration
     hsrp_front:        Optional[str]   = ""
     hsrp_back:         Optional[str]   = ""
     hsrp_front_id:     Optional[str]   = ""
@@ -388,6 +392,7 @@ class SaleUpdate(BaseModel):
     sale_date:         Optional[str]   = None
     sold_by:           Optional[str]   = None
     care_of:           Optional[str]   = None
+    rto:               Optional[str]   = None
     hsrp_front:        Optional[str]   = None
     hsrp_back:         Optional[str]   = None
     hsrp_front_id:     Optional[str]   = None
@@ -1302,6 +1307,7 @@ async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
         "chassis_number":  body.chassis_number  if body.chassis_number  is not None else vehicle.get("chassis_number",""),
         "engine_number":   body.engine_number   if body.engine_number   is not None else vehicle.get("engine_number",""),
         "vehicle_number":  body.vehicle_number or vehicle.get("vehicle_number",""),
+        "rto":             body.rto or "",
         "sale_price":      body.sale_price,
         "total_amount":    round(total_amount, 2),
         "amount_in_words": amount_in_words(total_amount),
@@ -1375,7 +1381,7 @@ async def update_sale(sale_id: str, body: SaleUpdate, current_user=Depends(verif
     if not sale:
         raise HTTPException(status_code=404, detail="Sale not found")
     update: dict = {}
-    for field in ("status","delivery_date","vehicle_number","payment_mode","notes","customer_name","customer_mobile","customer_address","care_of","total_amount","sale_price","finance_type","financier","loan_amount","sale_date","sold_by","hsrp_front","hsrp_back","hsrp_front_id","hsrp_back_id","hsrp_date","hsrp_notes","vehicle_brand","vehicle_model","vehicle_variant","vehicle_color","chassis_number","engine_number"):
+    for field in ("status","delivery_date","vehicle_number","rto","payment_mode","notes","customer_name","customer_mobile","customer_address","care_of","total_amount","sale_price","finance_type","financier","loan_amount","sale_date","sold_by","hsrp_front","hsrp_back","hsrp_front_id","hsrp_back_id","hsrp_date","hsrp_notes","vehicle_brand","vehicle_model","vehicle_variant","vehicle_color","chassis_number","engine_number"):
         val = getattr(body, field)
         if val is not None:
             update[field] = val
