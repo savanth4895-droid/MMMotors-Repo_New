@@ -432,6 +432,7 @@ class ServiceJobCreate(BaseModel):
     notes:          Optional[str] = ""
     vehicle_photo_id: Optional[str] = ""
     save_vehicle:   Optional[bool] = False
+    service_type:   Optional[str] = ""   # "Repair / Walk-in" or "1st Service" … "6th+ Service"
 
 class ServiceJobUpdate(BaseModel):
     status:             Optional[str] = None
@@ -451,6 +452,7 @@ class ServiceJobUpdate(BaseModel):
     created_at:         Optional[str] = None   # correcting imported service dates
     customer_name:      Optional[str] = None
     customer_mobile:    Optional[str] = None
+    service_type:       Optional[str] = None
 
 # ── Service Bills ─────────────────────────────────────────────────────────────
 class BillLineItem(BaseModel):
@@ -1516,6 +1518,7 @@ async def create_service_job(body: ServiceJobCreate, current_user=Depends(verify
         "delivery_date":      "",
         "status":             "pending",
         "notes":              body.notes or "",
+        "service_type":       body.service_type or "",
         "created_at":         utcnow().isoformat(),
     }
     result = await db.service_jobs.insert_one(doc)
@@ -1556,6 +1559,18 @@ async def create_service_job(body: ServiceJobCreate, current_user=Depends(verify
 # Module-level TTL cache — invalidated on sales/service_jobs writes
 _SERVICE_DUE_CACHE: dict = {}   # key: days (int) → {"ts": datetime, "data": list}
 _SERVICE_DUE_TTL_SEC = 60
+
+# Job-card service types. Only the numbered ones advance the service counter
+# and reset the 90-day clock; REPAIR is invisible to the schedule.
+REPAIR_SERVICE_TYPE = "Repair / Walk-in"
+SCHEDULED_SERVICE_TYPES = ["1st Service", "2nd Service", "3rd Service",
+                           "4th Service", "5th Service", "6th+ Service"]
+
+def is_repair_job(service_type) -> bool:
+    """True if this job should be ignored by the service schedule.
+    Legacy rows (None / "") are treated as scheduled so existing history and
+    counters are unchanged by the introduction of this field."""
+    return (service_type or "").strip() == REPAIR_SERVICE_TYPE
 
 def _invalidate_service_due_cache():
     _SERVICE_DUE_CACHE.clear()
@@ -1632,6 +1647,10 @@ async def service_due(
             }
 
     # ── 2. Service history per vehicle (oldest-first for counting) ───────────
+    # Only SCHEDULED services advance the counter and reset the 90-day clock.
+    # Repair / walk-in visits are recorded but invisible to the schedule, so a
+    # headlight bulb in August can't bury a service that was due in June.
+    # Legacy rows (no service_type) count as scheduled — history stays as-is.
     oldest_pipeline = [
         {"$match": {"status": "delivered"}},
         {"$sort": {"created_at": 1}},          # oldest first
@@ -1642,19 +1661,49 @@ async def service_due(
                 "created_at": "$created_at", "check_in_date": "$check_in_date",
                 "customer_name": "$customer_name", "customer_mobile": "$customer_mobile",
                 "brand": "$brand", "model": "$model", "complaint": "$complaint",
+                "service_type": "$service_type",
             }},
         }},
     ]
     grouped = await db.service_jobs.aggregate(oldest_pipeline).to_list(10000)
-    service_map = {}
+    service_map = {}   # scheduled services only — drives the counter + clock
+    alljob_map  = {}   # every delivered job — customer-info fallback only
     for g in grouped:
         vn = (g["_id"] or "").upper().strip()
-        if vn:
-            service_map[vn] = g["jobs"]   # [oldest … newest]
+        if not vn:
+            continue
+        alljob_map[vn]  = g["jobs"]
+        service_map[vn] = [j for j in g["jobs"] if not is_repair_job(j.get("service_type"))]
+
+    # ── 2b. Vehicles with an ACTIVE job (pending/in_progress/ready) ─────────
+    # Active SCHEDULED service  → hide the vehicle; that service is being done.
+    # Active REPAIR             → keep it listed with an in_workshop flag, so
+    #                             staff can upsell the due service before the
+    #                             customer leaves.
+    active_docs = await db.service_jobs.find(
+        {"status": {"$in": ["pending", "in_progress", "ready"]}},
+        {"vehicle_number": 1, "service_type": 1, "job_number": 1, "status": 1},
+    ).to_list(10000)
+    active_service_vns  = set()   # hide these
+    active_repair_vns   = {}      # vn → {job_number, status} — badge these
+    for d in active_docs:
+        vn = (d.get("vehicle_number") or "").upper().strip()
+        if not vn:
+            continue
+        if is_repair_job(d.get("service_type")):
+            active_repair_vns.setdefault(vn, {
+                "job_number": d.get("job_number", ""),
+                "status":     d.get("status", ""),
+            })
+        else:
+            active_service_vns.add(vn)
 
     # ── 3. Compute next_due for every known vehicle ──────────────────────────
     result = []
-    for vn in set(sales_map) | set(service_map):
+    for vn in set(sales_map) | set(service_map) | set(alljob_map):
+        # A scheduled service is already in progress — don't chase it.
+        if vn in active_service_vns:
+            continue
         is_sold     = vn in sales_map
         jobs        = service_map.get(vn, [])   # oldest → newest
         job_count   = len(jobs)
@@ -1694,12 +1743,19 @@ async def service_due(
                 ref_label  = last_job.get("complaint","")
                 source     = "sale"
         else:
-            # Service-only — 90d from last service
-            if not last_svc_dt: continue
-            next_due   = last_svc_dt + timedelta(days=REPEAT_SVC_INTERVAL)
+            # Service-only vehicle. Normally anchored on the last scheduled
+            # service. If this vehicle has only ever had repair visits, fall
+            # back to the last repair date so it stays tracked instead of
+            # dropping off the list entirely.
+            anchor_dt = last_svc_dt
+            if not anchor_dt:
+                repair_jobs = alljob_map.get(vn, [])
+                anchor_dt = parse_date(repair_jobs[-1]["created_at"]) if repair_jobs else None
+            if not anchor_dt: continue
+            next_due   = anchor_dt + timedelta(days=REPEAT_SVC_INTERVAL)
             next_label = f"{ordinal(job_count + 1)} Service"
-            ref_date   = last_job.get("check_in_date","")
-            ref_label  = last_job.get("complaint","")
+            ref_date   = (last_job or {}).get("check_in_date","")
+            ref_label  = (last_job or {}).get("complaint","")
             source     = "service"
 
         # Skip if not due within lookahead window
@@ -1710,15 +1766,17 @@ async def service_due(
         days_since  = (now - last_svc_dt).days if last_svc_dt else None
         urgency     = "overdue" if due_in_days < 0 else "due_soon"
 
-        # Customer / vehicle info — prefer latest service job over sale record
-        info = sales_map.get(vn, {})
-        if last_job:
-            cname   = last_job.get("customer_name")   or info.get("name","")
-            cmobile = last_job.get("customer_mobile") or info.get("mobile","")
-            brand   = last_job.get("brand")           or info.get("brand","")
-            model   = last_job.get("model")           or info.get("model","")
-            jnum    = last_job.get("job_number","")
-            jid     = str(last_job.get("job_id",""))
+        # Customer / vehicle info — prefer the most recent job of ANY kind
+        # (a repair visit carries fresher contact details than an old service).
+        info      = sales_map.get(vn, {})
+        info_job  = (alljob_map.get(vn) or [None])[-1] or last_job
+        if info_job:
+            cname   = info_job.get("customer_name")   or info.get("name","")
+            cmobile = info_job.get("customer_mobile") or info.get("mobile","")
+            brand   = info_job.get("brand")           or info.get("brand","")
+            model   = info_job.get("model")           or info.get("model","")
+            jnum    = info_job.get("job_number","")
+            jid     = str(info_job.get("job_id",""))
         else:
             cname   = info.get("name","")
             cmobile = info.get("mobile","")
@@ -1727,6 +1785,7 @@ async def service_due(
             jnum    = ""
             jid     = ""
 
+        workshop = active_repair_vns.get(vn)
         result.append({
             "id":               jid,
             "job_number":       jnum,
@@ -1746,13 +1805,77 @@ async def service_due(
             "urgency":          urgency,
             "source":           source,
             "vehicle_type":     "sold" if is_sold else "service_only",
+            "in_workshop":          bool(workshop),
+            "workshop_job_number":  (workshop or {}).get("job_number", ""),
+            "workshop_status":      (workshop or {}).get("status", ""),
         })
 
-    # Most overdue first, then soonest due
-    result.sort(key=lambda x: x["due_in_days"])
+    # In-workshop first (the upsell window closes when the customer leaves),
+    # then most overdue, then soonest due.
+    result.sort(key=lambda x: (not x["in_workshop"], x["due_in_days"]))
     trimmed = result[:500]
     _SERVICE_DUE_CACHE[days] = {"ts": utcnow(), "data": trimmed}
     return trimmed
+
+@api_router.get("/service/schedule/{vehicle_number}")
+async def vehicle_service_schedule(vehicle_number: str, current_user=Depends(verify_token)):
+    """Next scheduled service for one vehicle — powers the job-card hint so
+    staff can see whether this visit should be logged as a scheduled service
+    or a repair, instead of guessing."""
+    vn = (vehicle_number or "").upper().strip()
+    if not vn:
+        return {"found": False}
+
+    FIRST_SVC_INTERVAL, REPEAT_SVC_INTERVAL = 30, 90
+    now = utcnow()
+
+    def parse_date(s):
+        for fmt in ("%d %b %Y", "%Y-%m-%d", "%d/%m/%Y", "%Y-%m-%dT%H:%M:%S"):
+            try: return datetime.strptime(s[:len(fmt)+2].strip(), fmt)
+            except (ValueError, TypeError): continue
+        return None
+
+    def ordinal(n):
+        return {1:"1st",2:"2nd",3:"3rd"}.get(n, f"{n}th")
+
+    jobs = await db.service_jobs.find(
+        {"vehicle_number": vn, "status": "delivered"},
+        {"created_at": 1, "service_type": 1},
+    ).sort("created_at", 1).to_list(500)
+    scheduled = [j for j in jobs if not is_repair_job(j.get("service_type"))]
+    count = len(scheduled)
+
+    anchor, basis = None, ""
+    if count:
+        anchor = parse_date(scheduled[-1].get("created_at", ""))
+        basis  = "last service"
+        interval = REPEAT_SVC_INTERVAL
+    else:
+        sale = await db.sales.find_one({"vehicle_number": vn}, sort=[("created_at", -1)])
+        if sale:
+            anchor = parse_date(sale.get("sale_date", "")) or parse_date(sale.get("created_at", ""))
+            basis  = "sale date"
+            interval = FIRST_SVC_INTERVAL
+    if not anchor:
+        return {"found": False, "suggested_type": REPAIR_SERVICE_TYPE}
+
+    next_due = anchor + timedelta(days=interval)
+    days_out = (next_due - now).days
+    label    = f"{ordinal(count + 1)} Service"
+    # Suggest logging this visit as the scheduled service only when it's
+    # genuinely near (or past) due; otherwise it's a repair.
+    suggested = label if days_out <= 15 else REPAIR_SERVICE_TYPE
+
+    return {
+        "found":            True,
+        "vehicle_number":   vn,
+        "services_done":    count,
+        "next_service":     label,
+        "next_due_date":    next_due.strftime("%d %b %Y"),
+        "days_until_due":   days_out,
+        "basis":            basis,
+        "suggested_type":   suggested,
+    }
 
 @api_router.post("/service/due/{vehicle_number}/notified")
 async def mark_notified(vehicle_number: str, current_user=Depends(verify_token)):
