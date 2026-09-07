@@ -139,6 +139,9 @@ async def _ensure_indexes():
     await db.sales.create_index("invoice_number", unique=True)
     await db.sales.create_index("customer_id")
     await db.sales.create_index("sale_date")
+    await db.sales.create_index("chassis_number")
+    await db.sales.create_index("vehicle_number")
+    await db.sales.create_index("customer_mobile")
     # service_jobs
     await db.service_jobs.create_index("job_number", unique=True)
     await db.service_jobs.create_index("status")
@@ -1272,10 +1275,13 @@ async def list_sales(
     if search:
         s = re.escape(search)
         query["$or"] = [
-            {"invoice_number": {"$regex": s, "$options": "i"}},
-            {"customer_name":  {"$regex": s, "$options": "i"}},
-            {"vehicle_model":  {"$regex": s, "$options": "i"}},
-            {"vehicle_number": {"$regex": s, "$options": "i"}},
+            {"invoice_number":  {"$regex": s, "$options": "i"}},
+            {"customer_name":   {"$regex": s, "$options": "i"}},
+            {"customer_mobile": {"$regex": s, "$options": "i"}},
+            {"vehicle_model":   {"$regex": s, "$options": "i"}},
+            {"vehicle_number":  {"$regex": s, "$options": "i"}},
+            {"chassis_number":  {"$regex": s, "$options": "i"}},
+            {"engine_number":   {"$regex": s, "$options": "i"}},
         ]
     docs  = await db.sales.find(query).sort("created_at", -1).limit(limit).to_list(limit)
     total = await db.sales.count_documents(query)
@@ -1940,6 +1946,69 @@ async def delete_service_job(job_id: str, current_user=Depends(require_admin)):
 #  SERVICE BILLS (GST)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# ── Stock resolution + shortage aggregation (used by create/update service_bill) ──
+#
+# Service bill items don't carry part_id (unlike parts_bills), so we resolve via
+# 3-tier match: part_number → aliases.part_number → name (unique). Ambiguous name
+# matches (>1 hit) skip silently — safer than deducting the wrong part.
+async def _resolve_spare_part(desc: str, part_number: str, session=None):
+    pn = (part_number or "").strip()
+    if pn:
+        part = await db.spare_parts.find_one({"part_number": pn}, session=session)
+        if part:
+            return part
+        part = await db.spare_parts.find_one({"aliases.part_number": pn}, session=session)
+        if part:
+            return part
+    name = (desc or "").strip()
+    if name:
+        matches = await db.spare_parts.find({"name": name}, session=session).to_list(2)
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+async def _aggregate_bill_needs(items, session=None):
+    """Aggregate items → {part_id_str: {"part": doc, "qty": total}}.
+    Multiple lines pointing at the same part are summed. Skips items with no
+    match or qty <= 0."""
+    needs: dict = {}
+    for it in items or []:
+        qty = int(getattr(it, "qty", 0) or 0)
+        if qty <= 0:
+            continue
+        desc = getattr(it, "description", "") or ""
+        pn   = getattr(it, "part_number", "") or ""
+        part = await _resolve_spare_part(desc, pn, session=session)
+        if not part:
+            continue
+        key = str(part["_id"])
+        if key in needs:
+            needs[key]["qty"] += qty
+        else:
+            needs[key] = {"part": part, "qty": qty}
+    return needs
+
+async def _collect_shortages(needs: dict, session=None):
+    """Given aggregated needs, return list of shortages (empty = all OK).
+    Each: {part_number, name, have, need}."""
+    shortages = []
+    for _, need in needs.items():
+        fresh = await db.spare_parts.find_one(
+            {"_id": need["part"]["_id"]},
+            {"stock": 1, "part_number": 1, "name": 1},
+            session=session,
+        )
+        have = int((fresh or {}).get("stock", 0) or 0)
+        if have < need["qty"]:
+            shortages.append({
+                "part_number": (fresh or {}).get("part_number", ""),
+                "name":        (fresh or {}).get("name", ""),
+                "have":        have,
+                "need":        need["qty"],
+            })
+    return shortages
+
+
 @api_router.get("/service-bills")
 async def list_service_bills(
     job_id: Optional[str] = Query(None),
@@ -2025,12 +2094,57 @@ async def create_service_bill(body: ServiceBillCreate, current_user=Depends(veri
         "bill_date":      utcnow().strftime("%d %b %Y"),
         "created_at":     utcnow().isoformat(),
     }
-    result = await db.service_bills.insert_one(doc)
-    await db.service_jobs.update_one(
-        {"_id": obj_id(body.job_id)},
-        {"$set": {"status": "ready", "bill_number": doc["bill_number"], "grand_total": net_total}}
-    )
-    doc["id"] = str(result.inserted_id); doc.pop("_id", None)
+
+    # ── Transactional: deduct stock + insert bill + update job (all-or-nothing) ──
+    # Any 409 raised inside → txn aborts → zero writes committed. First txn use in
+    # codebase; parts_bills has the same partial-state bug and needs the same fix.
+    inserted_id = None
+    async with await _db.client.start_session() as session:
+        async def _txn(s):
+            nonlocal inserted_id
+            needs = await _aggregate_bill_needs(body.items or [], session=s)
+            shortages = await _collect_shortages(needs, session=s)
+            if shortages:
+                raise HTTPException(status_code=409, detail={
+                    "error": "insufficient_stock",
+                    "shortages": shortages,
+                })
+            # Guarded deduct — defense-in-depth vs concurrent bill (rare inside txn but cheap)
+            for _, need in needs.items():
+                part_id = need["part"]["_id"]
+                qty     = need["qty"]
+                dec = await db.spare_parts.update_one(
+                    {"_id": part_id, "stock": {"$gte": qty}},
+                    {"$inc": {"stock": -qty}, "$push": {"stock_log": {
+                        "qty": -qty, "action": "subtract",
+                        "reason": "service_bill", "bill_number": bill_no,
+                        "date": utcnow().isoformat(),
+                    }}},
+                    session=s,
+                )
+                if dec.matched_count == 0:
+                    fresh = await db.spare_parts.find_one(
+                        {"_id": part_id}, {"stock": 1, "name": 1, "part_number": 1}, session=s
+                    )
+                    raise HTTPException(status_code=409, detail={
+                        "error": "insufficient_stock",
+                        "shortages": [{
+                            "part_number": (fresh or {}).get("part_number", ""),
+                            "name":        (fresh or {}).get("name", ""),
+                            "have":        int((fresh or {}).get("stock", 0) or 0),
+                            "need":        qty,
+                        }],
+                    })
+            result = await db.service_bills.insert_one(doc, session=s)
+            inserted_id = result.inserted_id
+            await db.service_jobs.update_one(
+                {"_id": obj_id(body.job_id)},
+                {"$set": {"status": "ready", "bill_number": doc["bill_number"], "grand_total": net_total}},
+                session=s,
+            )
+        await session.with_transaction(_txn)
+
+    doc["id"] = str(inserted_id); doc.pop("_id", None)
     return doc
 
 @api_router.get("/service-bills/{bill_id}")
@@ -2088,11 +2202,80 @@ async def update_service_bill(bill_id: str, body: ServiceBillCreate, current_use
         "amount_in_words": amount_in_words(net_total),
         **totals,
     }
-    await db.service_bills.update_one({"_id": obj_id(bill_id)}, {"$set": update})
-    await db.service_jobs.update_one(
-        {"_id": obj_id(bill["job_id"])},
-        {"$set": {"grand_total": net_total}}
-    )
+
+    # ── Transactional: restore old stock, deduct new stock, update bill+job ──
+    # Restore-then-deduct pattern (matches parts_bills), but atomically inside a
+    # session. If new items have shortages after restore, txn aborts → old stock
+    # is preserved, bill unchanged.
+    #
+    # Build fake "items" iterable for old bill (dicts, not Pydantic) — helpers
+    # use getattr so we wrap in a light shim.
+    class _OldItem:
+        __slots__ = ("description", "part_number", "qty")
+        def __init__(self, d):
+            self.description = d.get("description", "") or ""
+            self.part_number = d.get("part_number", "") or ""
+            self.qty         = d.get("qty", 0) or 0
+    old_items = [_OldItem(d) for d in bill.get("items", [])]
+    bill_no   = bill.get("bill_number", "")
+
+    async with await _db.client.start_session() as session:
+        async def _txn(s):
+            # Step 1: restore stock from old items
+            old_needs = await _aggregate_bill_needs(old_items, session=s)
+            for _, need in old_needs.items():
+                await db.spare_parts.update_one(
+                    {"_id": need["part"]["_id"]},
+                    {"$inc": {"stock": need["qty"]}, "$push": {"stock_log": {
+                        "qty": need["qty"], "action": "add",
+                        "reason": "service_bill_edit_restore", "bill_number": bill_no,
+                        "date": utcnow().isoformat(),
+                    }}},
+                    session=s,
+                )
+            # Step 2: check shortages against new items (stock now reflects restores)
+            new_needs = await _aggregate_bill_needs(body.items or [], session=s)
+            shortages = await _collect_shortages(new_needs, session=s)
+            if shortages:
+                raise HTTPException(status_code=409, detail={
+                    "error": "insufficient_stock",
+                    "shortages": shortages,
+                })
+            # Step 3: deduct new items (guarded)
+            for _, need in new_needs.items():
+                part_id = need["part"]["_id"]
+                qty     = need["qty"]
+                dec = await db.spare_parts.update_one(
+                    {"_id": part_id, "stock": {"$gte": qty}},
+                    {"$inc": {"stock": -qty}, "$push": {"stock_log": {
+                        "qty": -qty, "action": "subtract",
+                        "reason": "service_bill_edit", "bill_number": bill_no,
+                        "date": utcnow().isoformat(),
+                    }}},
+                    session=s,
+                )
+                if dec.matched_count == 0:
+                    fresh = await db.spare_parts.find_one(
+                        {"_id": part_id}, {"stock": 1, "name": 1, "part_number": 1}, session=s
+                    )
+                    raise HTTPException(status_code=409, detail={
+                        "error": "insufficient_stock",
+                        "shortages": [{
+                            "part_number": (fresh or {}).get("part_number", ""),
+                            "name":        (fresh or {}).get("name", ""),
+                            "have":        int((fresh or {}).get("stock", 0) or 0),
+                            "need":        qty,
+                        }],
+                    })
+            # Step 4: persist bill + job update
+            await db.service_bills.update_one({"_id": obj_id(bill_id)}, {"$set": update}, session=s)
+            await db.service_jobs.update_one(
+                {"_id": obj_id(bill["job_id"])},
+                {"$set": {"grand_total": net_total}},
+                session=s,
+            )
+        await session.with_transaction(_txn)
+
     updated = await db.service_bills.find_one({"_id": obj_id(bill_id)})
     return JSONResponse(content=oid(updated))
 
@@ -2101,15 +2284,25 @@ async def delete_service_bill(bill_id: str, current_user=Depends(require_admin))
     bill = await db.service_bills.find_one({"_id": obj_id(bill_id)})
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
-    # Restore stock for all parts used in this bill
+    # Restore stock for all parts used in this bill (audit-logged)
+    bill_no = bill.get("bill_number", "")
     for item in bill.get("items", []):
-        part_number = item.get("part_number", "").strip()
-        qty = item.get("qty", 0)
-        if part_number and qty > 0:
-            await db.spare_parts.update_one(
-                {"part_number": part_number},
-                {"$inc": {"stock": qty}}
-            )
+        desc = (item.get("description") or "").strip()
+        pn   = (item.get("part_number") or "").strip()
+        qty  = int(item.get("qty") or 0)
+        if qty <= 0:
+            continue
+        part = await _resolve_spare_part(desc, pn)
+        if not part:
+            continue
+        await db.spare_parts.update_one(
+            {"_id": part["_id"]},
+            {"$inc": {"stock": qty}, "$push": {"stock_log": {
+                "qty": qty, "action": "add",
+                "reason": "service_bill_delete", "bill_number": bill_no,
+                "date": utcnow().isoformat(),
+            }}}
+        )
     await db.service_bills.delete_one({"_id": obj_id(bill_id)})
     await db.service_jobs.update_one(
         {"_id": obj_id(bill["job_id"])},
