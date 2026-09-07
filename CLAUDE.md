@@ -348,11 +348,8 @@ Full CRUD endpoints + collection still live in `server.py` (~lines 2340–2400).
 ### Print HTML injection **[open]**
 Six `document.write(html)` sites interpolate customer name / notes / part descriptions without escaping. Low exploitability (attacker = own staff), high embarrassment if triggered. Fix: single `esc()` helper wrapped around every `${...}` in print templates.
 
-### Service-bill stock deduction asymmetry **[open]**
-`create_service_bill` / `update_service_bill` do **not** decrement `spare_parts.stock` for parts consumed on a service line, but `delete_service_bill` **does** restore stock (`$inc: {stock: qty}`) for every line's `part_number`. Net effect: deleting a bill inflates inventory beyond ground truth. Either add the decrement on create/update or remove the restore on delete — pick one, not both.
-
-### No multi-doc transactions **[open]**
-Bill insert + N stock decrements + counter bump = separate operations. Failure mid-loop leaves partial state (stock decremented, bill unwritten). Atlas M0 supports transactions — worth adopting for `create_parts_bill` and `update_parts_bill`.
+### No multi-doc transactions **[open — service_bills done, parts_bills pending]**
+Bill insert + N stock decrements + counter bump = separate operations. Failure mid-loop leaves partial state (stock decremented, bill unwritten). Service bills now use `session.with_transaction` (05 Sep 2026). Apply the same pattern to `create_parts_bill` and `update_parts_bill`.
 
 ### Login timing oracle **[minor]**
 `not user or not pwd_ctx.verify(...)` — missing user skips bcrypt (~200 ms), enabling username enumeration by timing. Lockout blunts it. Fix: verify against a fixed dummy hash when user is missing.
@@ -368,6 +365,44 @@ Startup `except Exception: print(WARNING)` then `yield`. `/health` still returns
 - **Open**: `customer_gstin` field not yet on sales/service_bills schemas → party GSTIN blank → all rows route B2CL/B2CS not B2B. HSN/SAC mapping table pending CA input. Verify against next CA filing.
 
 ---
+
+## Recent Hardening (05 Sep 2026) — Sales search
+
+**Chassis number search never worked; customer vehicle auto-fetch matched on the wrong field.**
+
+Job card "Or search by vehicle number / chassis…" promised chassis lookup that the backend never implemented. `list_sales` `$or` covered only `invoice_number`, `customer_name`, `vehicle_model`, `vehicle_number`. Typing a chassis returned zero rows and the dropdown simply didn't render — no error, no empty state, so it read as a broken field rather than a missing feature.
+
+Separately, `ServicePage.jsx` fetched a customer's previously-sold vehicles via `salesApi.list({ search: selCust.mobile })` — but `customer_mobile` wasn't in the `$or` either, so the mobile-number search matched nothing and every customer showed "No sales records found for this customer," even ones with sales on file. The client then re-filtered the (empty) result on `customer_mobile === selCust.mobile`, double-guarding a query that had already failed.
+
+**Fixes:**
+1. `list_sales` search `$or` extended with `customer_mobile`, `chassis_number`, `engine_number` (server.py:1272). All four confirmed present on sale docs written by `create_sale`.
+2. Customer vehicle fetch switched from fuzzy `search: mobile` to `customer_id: selCustId` — exact FK, already an indexed field and already a supported query param. Client-side re-filter dropped as redundant.
+3. Dropdown rows now show the chassis number as a second line (relevant when the search term *was* a chassis), and fall back to "(no reg. no.)" for pre-registration sales where `vehicle_number` is blank — those rows previously rendered a blank bold element.
+4. Explicit no-match message under the input when a >3-char search returns nothing, so a genuine miss is distinguishable from a broken field.
+5. Indexes added on `sales.chassis_number`, `sales.vehicle_number`, `sales.customer_mobile`.
+
+**Note on regex + index:** unanchored `$regex` won't use these indexes for substring matches, so they help exact/prefix lookups only. Fine at current volume. If sales grow past ~50k rows, switch this endpoint to a text index or anchor the pattern with `^` for chassis (chassis lookups are near-always full-value, scanned or typed complete).
+
+
+**Service-bill stock symmetry — deduct on create/update, restore on delete, all transactional. Silent frontend adjust-stock hacks removed.**
+
+Two intertwined bugs behind one symptom ("delete inflates stock"). Old model: `create_service_bill` and `update_service_bill` didn't touch `spare_parts.stock`, but `delete_service_bill` restored qty via `$inc`. The reason the shop hadn't noticed catastrophic drift was that `ServicePage.jsx` was silently calling `partsApi.adjustStockByNumber(...).catch(()=>{})` on every save and every row-remove — a client-side hack compensating for the missing backend deduction, with **swallowed** network failures. Failure modes that actually corrupted stock: (a) transient adjust-stock network error → bill created but stock never deducted → later delete adds phantom qty; (b) Excel-imported service bills (which never ran the frontend loop) → same phantom qty on any subsequent delete; (c) every `stock_log` entry from those adjust calls was orphaned — no `bill_number` link, unauditable.
+
+**Fix, all in one patch:**
+
+1. **Backend deduct is now the only source of truth.** `create_service_bill` (server.py:1956 area) wraps its stock logic + bill insert + job status update in `session.with_transaction` — first transaction usage in the codebase. Two helpers added just before the service-bills section (server.py ~1943): `_resolve_spare_part(desc, part_number, session)` does 3-tier lookup — exact `part_number` → `aliases.part_number` → `name` exact match if unique (ambiguous name → None, safer than wrong-part deduction); `_aggregate_bill_needs(items, session)` sums qty by part across all lines (multiple lines pointing at the same part are merged); `_collect_shortages(needs, session)` returns list of `{part_number, name, have, need}` for any part where `stock < need`. On any shortage, callback raises `HTTPException(409, detail={"error": "insufficient_stock", "shortages": [...]})` — txn aborts, zero writes, structured error propagates to client. Motor's `with_transaction` retries only on `TransientTransactionError`, so 409 propagates cleanly. Post-shortage-check deducts are still guarded (`stock: {"$gte": qty}`) as defense-in-depth vs concurrent transactions.
+
+2. **`update_service_bill` mirrors the pattern.** Inside a transaction: restore stock from old items (aggregated), then check shortages against new items, then deduct new items (guarded), then persist bill + job update. If new items 409, restore has already committed inside the same txn — abort rolls it back atomically. Restore uses reason `service_bill_edit_restore`, deduct uses `service_bill_edit`. Old items are wrapped in a tiny `_OldItem` shim because the helpers read via `getattr` (built for Pydantic items).
+
+3. **`delete_service_bill` now audit-logs the restore.** Same `$inc: {stock: qty}` behavior, but with a `stock_log` push carrying `reason: "service_bill_delete"` and `bill_number`. Also switched from raw `part_number` string match to `_resolve_spare_part` so aliases + name-matched deducts are correctly restored.
+
+4. **Frontend hacks removed.** `ServicePage.jsx` `removeRow` no longer calls `adjustStockByNumber` (backend delete handles restore). `saveMut.mutationFn` no longer runs the per-row adjust-stock loop (backend transaction handles the delta). Barcode / camera-scan paths already skipped stock — untouched. Every `stock_log` entry from now on carries a `bill_number` back-reference — audit trail is finally trustworthy.
+
+5. **409 UX — StockShortageModal.** `saveMut.onError` detects `detail.error === 'insufficient_stock'` and opens a modal listing every shortage (part, have, need, short-by) instead of a bare toast. Owner-only "Adjust & Retry" button bulk-calls `/parts/{part_number}/adjust-stock-by-number` with `qty: need - have, action: 'add', reason: 'service_bill_reconcile'` in parallel, then re-fires `saveMut`. Staff sees the shortage list but no adjust button — has to escalate to owner (deliberate: bumping stock without a purchase bill is a stock-discipline bypass, owner is the accountable role). Amber warning banner on owner view: "Only click if these parts are physically in stock." `useAuth` imported into ServicePage for the role check.
+
+**Deploy runbook:** on the day this ships, do a physical count of frequently-consumed service parts (oils, filters, brake pads, cables) and `POST /parts/{part_number}/adjust-stock-by-number` any deltas — because months of silent adjust-stock `.catch(()=>{})` failures may have left drift that a purchase-bill audit alone won't catch. From ship-time forward: stock accuracy is trustworthy and every mutation is bill-linked.
+
+**Known limitations of this patch:** (1) Parts_bills still has the same partial-state bug — same `with_transaction` pattern applies, deliberate separate patch to keep this review small. (2) `_resolve_spare_part` uses exact string match on part_number and name; case sensitivity matches how the frontend stores values (autocomplete fills them from the part record verbatim). If casing drift ever appears, switch to case-insensitive `$regex` with `re.escape` at the two find_one sites. (3) The 409-then-adjust-then-retry flow is two round-trips; on a shop LAN latency is invisible, but if UX ever slows, an explicit "pre-check stock" endpoint could pre-validate before Save. Not needed now.
 
 ## Recent Hardening (04 Sep 2026)
 
