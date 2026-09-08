@@ -6,6 +6,7 @@ import { useSortable } from '../components/ui';
 import toast from 'react-hot-toast';
 import { useDraft, DraftBar } from '../hooks/useDraft';
 import { useBadges, CustomerBadges } from '../hooks/useBadges';
+import { useAuth } from '../context/AuthContext';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const RS   = '₹';
@@ -570,15 +571,15 @@ function NewJobModal({ onClose }) {
   });
   const custs = custData?.data?.items || custData?.data || [];
 
-  // Auto-fetch this customer's vehicles from sales when customer selected
+  // Auto-fetch this customer's vehicles from sales when customer selected.
+  // Query by customer_id — exact FK, not a fuzzy mobile/name text match.
+  const selCustId = selCust?._id || selCust?.id;
   const { data:custSalesData } = useQuery({
-    queryKey: ['cust-sales-vehicles', selCust?._id || selCust?.id],
-    queryFn: () => salesApi.list({ search: selCust?.mobile || selCust?.name, limit:20 }),
-    enabled: !!selCust,
+    queryKey: ['cust-sales-vehicles', selCustId],
+    queryFn: () => salesApi.list({ customer_id: selCustId, limit:50 }),
+    enabled: !!selCustId,
   });
-  const custVehicles = (custSalesData?.data?.items || custSalesData?.data || []).filter(
-    s => s.customer_mobile === selCust?.mobile || s.customer_name === selCust?.name
-  );
+  const custVehicles = (custSalesData?.data?.items || custSalesData?.data || []);
 
   // Also search by vehicle_number while typing
   const { data:salesData } = useQuery({
@@ -752,11 +753,21 @@ function NewJobModal({ onClose }) {
                         onMouseEnter={e => e.currentTarget.style.background=C.s2}
                         onMouseLeave={e => e.currentTarget.style.background='transparent'}
                       >
-                        <strong>{s.vehicle_number}</strong>
+                        <strong>{s.vehicle_number || '(no reg. no.)'}</strong>
                         {' — '}{s.vehicle_brand} {s.vehicle_model}
                         <span style={{ fontSize:10, color:C.muted, marginLeft:8 }}>{s.customer_name}</span>
+                        {s.chassis_number && (
+                          <div style={{ fontSize:10, color:C.dim, marginTop:2, fontFamily:'IBM Plex Mono,monospace' }}>
+                            Chassis: {s.chassis_number}
+                          </div>
+                        )}
                       </div>
                     ))}
+                  </div>
+                )}
+                {vehicleSearch.length > 3 && searchVehicles.length === 0 && (
+                  <div style={{ fontSize:10, color:C.muted, marginTop:4, fontStyle:'italic' }}>
+                    No sale found matching “{vehicleSearch}” — fill the vehicle details manually below.
                   </div>
                 )}
               </div>
@@ -973,6 +984,10 @@ function printBill(job, bill, rows, total, taxable, cgst, sgst, discount = 0, pr
 
 export function ServiceBillModal({ job, onClose }) {
   const qc = useQueryClient();
+  const { user } = useAuth();
+  const isOwner = user?.role === 'owner';
+  const [shortages, setShortages] = useState(null);   // null | [{part_number,name,have,need}]
+  const [adjusting, setAdjusting] = useState(false);
 
   const jobId = job._id || job.id;
 
@@ -1097,9 +1112,7 @@ export function ServiceBillModal({ job, onClose }) {
   const removeRow   = key => {
     setRows(p => {
       const row = p.find(r => r._key===key);
-      // FIX #1: adjustStockByNumber with correct payload
-      if (row?._partNumber && row?._savedQty)
-        partsApi.adjustStockByNumber(row._partNumber, { qty: row._savedQty, action: 'add' }).catch(()=>{});
+      // Backend now owns stock on save; no client-side adjust here.
       return p.filter(r => r._key!==key);
     });
   };
@@ -1146,16 +1159,8 @@ export function ServiceBillModal({ job, onClose }) {
           complimentary: !!r.complimentary,
         })),
       };
-      // FIX #1: adjustStockByNumber with correct payload shape
-      for (const row of validRows) {
-        if (row._partNumber) {
-          const diff = Number(row.qty) - (row._savedQty||0);
-          if (diff>0)
-            await partsApi.adjustStockByNumber(row._partNumber, { qty: diff, action: 'subtract' }).catch(()=>{});
-          else if (diff<0)
-            await partsApi.adjustStockByNumber(row._partNumber, { qty: Math.abs(diff), action: 'add' }).catch(()=>{});
-        }
-      }
+      // Stock is now deducted transactionally on the backend (create/update).
+      // On 409 insufficient_stock, saveMut.onError surfaces the shortage modal.
       // createBill/updateBill → billsApi
       const billId = existingBill?.id || existingBill?._id;
       return billId
@@ -1170,8 +1175,37 @@ export function ServiceBillModal({ job, onClose }) {
       qc.invalidateQueries(['parts-list']);
       onClose();
     },
-    onError: e => toast.error(errMsg(e, 'Failed to save bill')),
+    onError: e => {
+      const d = e?.response?.data?.detail;
+      if (d && typeof d === 'object' && d.error === 'insufficient_stock' && Array.isArray(d.shortages)) {
+        setShortages(d.shortages);
+        return;
+      }
+      toast.error(errMsg(e, 'Failed to save bill'));
+    },
   });
+
+  // Owner-only: bump stock by shortfall for each listed part, then re-save.
+  const handleAdjustAndRetry = async () => {
+    if (!isOwner || !shortages?.length) return;
+    setAdjusting(true);
+    try {
+      await Promise.all(shortages.map(s =>
+        partsApi.adjustStockByNumber(s.part_number, {
+          qty: (s.need - s.have),
+          action: 'add',
+          reason: 'service_bill_reconcile',
+        })
+      ));
+      qc.invalidateQueries(['parts-list']);
+      setShortages(null);
+      saveMut.mutate();
+    } catch (err) {
+      toast.error(errMsg(err, 'Adjust failed'));
+    } finally {
+      setAdjusting(false);
+    }
+  };
 
   return (
     <ModalShell onClose={onClose}
@@ -1305,7 +1339,99 @@ export function ServiceBillModal({ job, onClose }) {
           {saveMut.isPending ? 'Saving…' : existingBill ? 'Update Bill' : 'Generate Bill'}
         </button>
       </ModalFoot>
+      {shortages && (
+        <StockShortageModal
+          shortages={shortages}
+          isOwner={isOwner}
+          adjusting={adjusting}
+          onAdjustAndRetry={handleAdjustAndRetry}
+          onCancel={() => setShortages(null)}
+        />
+      )}
     </ModalShell>
+  );
+}
+
+
+// ─── Stock Shortage Modal (surfaces 409 insufficient_stock from service bill save) ──
+function StockShortageModal({ shortages, isOwner, adjusting, onAdjustAndRetry, onCancel }) {
+  return (
+    <div style={{
+      position:'fixed', inset:0, background:'rgba(0,0,0,.75)', zIndex:10001,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20,
+    }}>
+      <div style={{
+        background:'#0F0F0F', border:'1px solid rgba(239,68,68,.4)', borderRadius:6,
+        maxWidth:560, width:'100%', maxHeight:'90vh', overflow:'auto',
+      }}>
+        <div style={{ padding:'14px 18px', borderBottom:'1px solid #1F1F1F',
+          color:'#EF4444', fontWeight:700, fontSize:13, letterSpacing:'.06em' }}>
+          INSUFFICIENT STOCK — BILL NOT SAVED
+        </div>
+        <div style={{ padding:'14px 18px' }}>
+          <p style={{ fontSize:12, color:'#B8B8B8', margin:'0 0 12px' }}>
+            The following parts don't have enough stock recorded to fulfil this bill.
+            No changes have been made — fix stock first, then save.
+          </p>
+          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11, marginBottom:12 }}>
+            <thead>
+              <tr style={{ background:'#1A1A1A' }}>
+                {['Part', 'Have', 'Need', 'Short by'].map((h,i) => (
+                  <th key={i} style={{ padding:'6px 8px', color:'#B8860B', fontWeight:700,
+                    fontSize:10, letterSpacing:'.06em', textAlign:i===0?'left':'right' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {shortages.map((s, i) => (
+                <tr key={i} style={{ borderTop:'1px solid #1F1F1F' }}>
+                  <td style={{ padding:'6px 8px', color:'#E5E5E5' }}>
+                    <div>{s.name || s.part_number}</div>
+                    {s.name && s.part_number && (
+                      <div style={{ fontSize:10, color:'#666', fontFamily:'monospace' }}>{s.part_number}</div>
+                    )}
+                  </td>
+                  <td style={{ padding:'6px 8px', color:'#E5E5E5', textAlign:'right', fontFamily:'monospace' }}>{s.have}</td>
+                  <td style={{ padding:'6px 8px', color:'#E5E5E5', textAlign:'right', fontFamily:'monospace' }}>{s.need}</td>
+                  <td style={{ padding:'6px 8px', color:'#EF4444', textAlign:'right', fontFamily:'monospace', fontWeight:700 }}>
+                    {s.need - s.have}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {isOwner && (
+            <div style={{ padding:'10px 12px', background:'rgba(184,134,11,.08)',
+              border:'1px solid rgba(184,134,11,.25)', borderRadius:4, marginBottom:12,
+              fontSize:11, color:'#B8860B' }}>
+              ⚠ Only click <b>Adjust & Retry</b> if these parts are <b>physically in stock</b>.
+              This bumps on-record stock without a purchase bill — audit trail: <code>service_bill_reconcile</code>.
+            </div>
+          )}
+          {!isOwner && (
+            <div style={{ padding:'10px 12px', background:'#1A1A1A', border:'1px solid #2A2A2A',
+              borderRadius:4, marginBottom:12, fontSize:11, color:'#B8B8B8' }}>
+              Ask the owner to adjust stock, or open Parts and record the incoming stock properly.
+            </div>
+          )}
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+            <button onClick={onCancel} disabled={adjusting}
+              style={{ padding:'7px 14px', background:'transparent', border:'1px solid #2A2A2A',
+                borderRadius:3, color:'#B8B8B8', fontSize:11, cursor:adjusting?'wait':'pointer' }}>
+              Cancel
+            </button>
+            {isOwner && (
+              <button onClick={onAdjustAndRetry} disabled={adjusting}
+                style={{ padding:'7px 14px', background:'#B8860B', border:'none',
+                  borderRadius:3, color:'#0A0A0A', fontSize:11, fontWeight:700,
+                  cursor:adjusting?'wait':'pointer', opacity:adjusting?.6:1 }}>
+                {adjusting ? 'Adjusting…' : 'Adjust & Retry'}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
