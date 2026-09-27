@@ -67,7 +67,7 @@ export default function Sidebar({ active, setActive, isOpen }) {
       </div>
 
       {/* Nav */}
-      <nav style={{ flex: 1, padding: '12px 8px', display: 'flex', flexDirection: 'column', gap: 1 }}>
+      <nav className="sidebar-nav-scroll" style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px 8px', display: 'flex', flexDirection: 'column', gap: 1 }}>
         <div className="label-xs" style={{ padding: '4px 8px 8px' }}>Navigation</div>
         {allowed.map((item) => {
           const isActive = currentPage === item.id;
