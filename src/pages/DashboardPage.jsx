@@ -147,7 +147,7 @@ export default function DashboardPage({ setActive }) {
       </div>
 
       {/* Body */}
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 290px', minHeight:'calc(100vh - 120px)' }}>
+      <div className="dashboard-body-grid" style={{ display:'grid', gridTemplateColumns:'1fr 290px', minHeight:'calc(100vh - 120px)' }}>
 
         {/* Left panel */}
         <div style={{ borderRight:'1px solid var(--border)', display:'flex', flexDirection:'column' }}>
