@@ -65,7 +65,7 @@ function AppLayout() {
       <Sidebar active={active} setActive={setActive} isOpen={sidebarOpen} />
       <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }} className="main-content">
         <Topbar active={active} onMenuToggle={() => setSidebarOpen(o => !o)} />
-        <div style={{ flex:1, overflowY:'auto' }}>
+        <div style={{ flex:1, overflowY:'auto', overflowX:'auto' }} className="main-scroll-area">
           <ErrorBoundary>
             <Routes>
               <Route path="/"          element={<DashboardPage setActive={setActive} />} />
