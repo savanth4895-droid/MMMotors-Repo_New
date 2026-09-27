@@ -185,3 +185,35 @@ button { transition: opacity .15s, background .15s, border-color .15s; }
 }
 .hamburger-btn span::before { top: -5px; }
 .hamburger-btn span::after  { top:  5px; }
+
+/* ═══════════════════════════════════════════════════════════
+   MOBILE LAYOUT FIXES (added Sep 2026)
+   ═══════════════════════════════════════════════════════════ */
+
+/* Sidebar nav scroll — flex overflow gotcha. Nav must have min-height:0
+   for overflow-y:auto to work when parent is flex column.
+   Applies on all viewports so tall sidebars scroll on desktop too. */
+.sidebar-nav-scroll { min-height: 0; overflow-y: auto; }
+.sidebar-nav-scroll::-webkit-scrollbar { width: 3px; }
+
+@media (max-width: 768px) {
+  /* Dashboard: collapse 2-col grid (main + right rail) to stacked */
+  .dashboard-body-grid {
+    grid-template-columns: 1fr !important;
+    min-height: auto !important;
+  }
+
+  /* Safety net: any fixed-pixel right rail patterns → stack */
+  [style*="1fr 290px"],
+  [style*="1fr 320px"],
+  [style*="1fr 260px"],
+  [style*="1fr 300px"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Main scroll area: ensure it can scroll horizontally too */
+  .main-scroll-area { -webkit-overflow-scrolling: touch; }
+
+  /* Sidebar drawer: constrain width so it doesn't cover the whole viewport */
+  .sidebar-nav { width: min(260px, 82vw) !important; min-width: 0 !important; }
+}
