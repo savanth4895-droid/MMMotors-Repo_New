@@ -54,7 +54,7 @@ export default function Topbar({ active, onMenuToggle }) {
       </div>
 
       {/* Page header bar */}
-      <div style={{
+      <div className="topbar-bar" style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '0 24px', height: 46,
         background: 'var(--surface)', borderBottom: '1px solid var(--border)',
@@ -67,12 +67,12 @@ export default function Topbar({ active, onMenuToggle }) {
           <span style={{ fontSize: 13, fontWeight: 600, letterSpacing: '-.01em' }}>
             {PAGE_LABELS[active] || 'Dashboard'}
           </span>
-          <span className="mono" style={{ fontSize: 10, color: 'var(--dim)' }}>{dateStr}</span>
+          <span className="mono topbar-date" style={{ fontSize: 10, color: 'var(--dim)' }}>{dateStr}</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <div className="dot dot-green pulse" />
-          <span className="label-xs">System live</span>
-          <div style={{ width: 1, height: 16, background: 'var(--border)', margin: '0 4px' }} />
+          <span className="label-xs topbar-status-label">System live</span>
+          <div className="topbar-status-label" style={{ width: 1, height: 16, background: 'var(--border)', margin: '0 4px' }} />
           <Avatar name={user?.name} size={28} />
         </div>
       </div>
