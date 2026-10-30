@@ -38,6 +38,26 @@ def norm_status(s: str) -> str:
     """'IN STOCK' | 'Instock' | 'in-stock' → 'in_stock'"""
     return s.strip().lower().replace(" ", "_").replace("-", "_")
 
+VEHICLE_STATUSES = ("in_stock", "sold", "in_service", "returned")
+_VEHICLE_STATUS_ALIASES = {
+    "": "in_stock", "instock": "in_stock", "in_stock": "in_stock", "stock": "in_stock",
+    "available": "in_stock", "in_showroom": "in_stock",
+    "sold": "sold", "sold_out": "sold", "delivered": "sold",
+    "in_service": "in_service", "inservice": "in_service", "service": "in_service",
+    "returned": "returned", "return": "returned",
+}
+
+def canon_vehicle_status(s) -> str:
+    """Any vehicle status spelling → canonical. 'Instock' | 'IN STOCK' | '' → 'in_stock'.
+    Unknown values come back normalized (lower/underscored) so they surface as 'other'."""
+    key = norm_status(str(s or ""))
+    return _VEHICLE_STATUS_ALIASES.get(key, key)
+
+def canon_vehicle_type(s) -> str:
+    """'NEW' | '' → 'new'; 'Used' | 'pre-owned' | 'preowned' → 'used'."""
+    key = norm_status(str(s or ""))
+    return "used" if key in ("used", "pre_owned", "preowned", "second_hand") else "new"
+
 def norm_role(s: str) -> str:
     """'OWNER' | 'Owner' → 'owner'"""
     return s.strip().lower()
