@@ -63,7 +63,7 @@ function AppLayout() {
       {/* Mobile overlay */}
       <div className={`sidebar-overlay${sidebarOpen ? ' open' : ''}`} onClick={() => setSidebarOpen(false)} />
       <Sidebar active={active} setActive={setActive} isOpen={sidebarOpen} />
-      <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }} className="main-content">
+      <div style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', overflow:'hidden' }} className="main-content">
         <Topbar active={active} onMenuToggle={() => setSidebarOpen(o => !o)} />
         <div style={{ flex:1, overflowY:'auto', overflowX:'auto' }} className="main-scroll-area">
           <ErrorBoundary>
