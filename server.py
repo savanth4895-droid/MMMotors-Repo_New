@@ -62,12 +62,28 @@ from database import (
     next_sequence, _sync_counter,
     oid, oids, obj_id, paginate_params, now, utcnow,
     calc_gst_line, calc_bill_totals, amount_in_words,
+    VEHICLE_STATUSES, canon_vehicle_status, canon_vehicle_type,
 )
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 
 # Module-level db/fs aliases — set in lifespan
 db = None
 fs = None
+
+async def _normalize_vehicle_fields():
+    """Idempotent: rewrite known status/type spellings ('Instock', 'In Stock', 'NEW')
+    to canonical values so count_documents({"status": "in_stock"}) is exact everywhere."""
+    for field, canon in (("status", canon_vehicle_status), ("type", canon_vehicle_type)):
+        for raw in await _db.db.vehicles.distinct(field):
+            target = canon(raw)
+            if raw != target and (field == "type" or target in VEHICLE_STATUSES):
+                res = await _db.db.vehicles.update_many({field: raw}, {"$set": {field: target}})
+                print(f"[MM Motors] vehicles.{field}: {raw!r} → {target!r} ({res.modified_count})")
+        # missing field entirely
+        default = "in_stock" if field == "status" else "new"
+        res = await _db.db.vehicles.update_many({field: {"$exists": False}}, {"$set": {field: default}})
+        if res.modified_count:
+            print(f"[MM Motors] vehicles.{field}: missing → {default!r} ({res.modified_count})")
 
 @asynccontextmanager
 async def lifespan(app):
@@ -86,6 +102,7 @@ async def lifespan(app):
         await _ensure_indexes()
         await _seed_owner()
         await _seed_badge_types()
+        await _normalize_vehicle_fields()
         print(f"[MM Motors] Connected to MongoDB · DB: {DB_NAME}")
     except Exception as e:
         print(f"[MM Motors] WARNING: DB connection failed: {e}")
@@ -310,7 +327,7 @@ class VehicleCreate(BaseModel):
     location:          Optional[str] = ""
     outbound_date:     Optional[str] = ""
     outbound_location: Optional[str] = ""
-    status:            Optional[str] = "Instock"
+    status:            Optional[str] = "in_stock"
     type:           Optional[str] = "new"
     notes:          Optional[str] = ""
 
@@ -1006,8 +1023,8 @@ async def list_vehicles(
 ):
     query: dict = {}
     if brand:  query["brand"]  = brand.upper()
-    if status: query["status"] = status
-    if type:   query["type"]   = type
+    if status: query["status"] = canon_vehicle_status(status)
+    if type:   query["type"]   = canon_vehicle_type(type)
     if search:
         s = re.escape(search)
         query["$or"] = [
@@ -1028,24 +1045,57 @@ async def create_vehicle(body: VehicleCreate, current_user=Depends(verify_token)
     doc = body.dict()
     doc["chassis_number"] = chassis
     doc["brand"]          = doc["brand"].upper()
+    doc["status"]         = canon_vehicle_status(doc.get("status"))
+    doc["type"]           = canon_vehicle_type(doc.get("type"))
     doc["created_at"]     = utcnow().isoformat()
     result = await db.vehicles.insert_one(doc)
     doc["id"] = str(result.inserted_id); doc.pop("_id", None)
     return doc
 
 @api_router.get("/vehicles/stats/summary")
-async def vehicle_stats(current_user=Depends(verify_token)):
-    in_stock, sold, in_service, new_count, used_count = await asyncio.gather(
-        db.vehicles.count_documents({"status": "in_stock"}),
-        db.vehicles.count_documents({"status": "sold"}),
-        db.vehicles.count_documents({"status": "in_service"}),
-        db.vehicles.count_documents({"type": "new"}),
-        db.vehicles.count_documents({"type": "used"}),
-    )
-    pipeline = [{"$match": {"status": "in_stock"}}, {"$group": {"_id": None, "total": {"$sum": "$purchase_price"}}}]
-    result   = await db.vehicles.aggregate(pipeline).to_list(1)
-    stock_val = result[0]["total"] if result else 0
-    return {"in_stock": in_stock, "sold": sold, "in_service": in_service, "new": new_count, "used": used_count, "stock_value": stock_val}
+async def vehicle_stats(
+    brand: Optional[str] = Query(None),
+    current_user=Depends(verify_token),
+):
+    """Counts by status + type, optionally for one brand, plus per-brand breakdown.
+    Statuses are canonicalised on write and at startup; anything still unrecognised is
+    reported under `other` / `unknown_statuses` instead of silently vanishing."""
+    match = {"brand": brand.upper()} if brand else {}
+    rows = await db.vehicles.aggregate([
+        {"$match": match},
+        {"$group": {
+            "_id": {"brand": "$brand", "status": "$status", "type": "$type"},
+            "n": {"$sum": 1},
+            "value": {"$sum": {"$ifNull": ["$purchase_price", 0]}},
+        }},
+    ]).to_list(None)
+
+    out = {"total": 0, "in_stock": 0, "sold": 0, "in_service": 0, "returned": 0,
+           "other": 0, "new": 0, "used": 0, "stock_value": 0}
+    by_brand: dict = {}
+    unknown: dict = {}
+    for r in rows:
+        b  = (r["_id"].get("brand") or "UNKNOWN")
+        st = canon_vehicle_status(r["_id"].get("status"))
+        ty = canon_vehicle_type(r["_id"].get("type"))
+        n  = r["n"]
+        bucket = st if st in VEHICLE_STATUSES else "other"
+        if bucket == "other":
+            raw = str(r["_id"].get("status"))
+            unknown[raw] = unknown.get(raw, 0) + n
+        out["total"] += n
+        out[bucket]  += n
+        out[ty]      += n
+        if st == "in_stock":
+            out["stock_value"] += r["value"] or 0
+        bb = by_brand.setdefault(b, {"brand": b, "total": 0, "in_stock": 0, "sold": 0,
+                                     "in_service": 0, "returned": 0, "other": 0})
+        bb["total"] += n
+        bb[bucket]  += n
+
+    out["by_brand"] = sorted(by_brand.values(), key=lambda x: (-x["in_stock"], x["brand"]))
+    out["unknown_statuses"] = unknown
+    return out
 
 @api_router.get("/vehicles/{veh_id}")
 async def get_vehicle(veh_id: str, current_user=Depends(verify_token)):
@@ -1061,6 +1111,10 @@ async def update_vehicle(veh_id: str, body: VehicleUpdate, current_user=Depends(
         update["chassis_number"] = update["chassis_number"].strip().upper()
     if "brand" in update:
         update["brand"] = update["brand"].upper()
+    if "status" in update:
+        update["status"] = canon_vehicle_status(update["status"])
+    if "type" in update:
+        update["type"] = canon_vehicle_type(update["type"])
     await db.vehicles.update_one({"_id": obj_id(veh_id)}, {"$set": update})
     return oid(await db.vehicles.find_one({"_id": obj_id(veh_id)}))
 
@@ -4058,7 +4112,7 @@ async def import_vehicles(request: Request, file: UploadFile = File(...), mode: 
             if not chassis: skipped.append({"row":rn,"reason":"Missing chassis_number"}); continue
             if not brand:   skipped.append({"row":rn,"reason":"Missing brand"});          continue
             if not model:   skipped.append({"row":rn,"reason":"Missing model"});          continue
-            doc = {"brand":brand,"model":model,"variant":safe(row.get("variant")),"color":safe(row.get("color")),"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"key_number":safe(row.get("key_number")),"type":safe(row.get("type","new")).lower() or "new","status":safe(row.get("status","in_stock")).lower() or "in_stock","inbound_date":safe(row.get("inbound_date","")),"inbound_location":safe(row.get("inbound_location","")),"return_date":safe(row.get("return_date","")),"returned_location":safe(row.get("returned_location","")),"created_at":utcnow().isoformat()}
+            doc = {"brand":brand,"model":model,"variant":safe(row.get("variant")),"color":safe(row.get("color")),"chassis_number":chassis,"engine_number":safe(row.get("engine_number")),"vehicle_number":safe(row.get("vehicle_number")),"key_number":safe(row.get("key_number")),"type":canon_vehicle_type(safe(row.get("type","new"))),"status":canon_vehicle_status(safe(row.get("status","in_stock"))),"inbound_date":safe(row.get("inbound_date","")),"inbound_location":safe(row.get("inbound_location","")),"return_date":safe(row.get("return_date","")),"returned_location":safe(row.get("returned_location","")),"created_at":utcnow().isoformat()}
             if chassis in existing_chassis:
                 if mode=="overwrite": to_update.append(doc)
                 else: skipped.append({"row":rn,"reason":f"Chassis {chassis} already imported"})
