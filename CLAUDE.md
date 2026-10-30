@@ -21,7 +21,7 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
 
 ```
 .
-├── server.py          # FastAPI app, all route handlers, Pydantic models (~4,470 lines)
+├── server.py          # FastAPI app, all route handlers, Pydantic models (~5,070 lines, 129 routes)
 ├── database.py        # Shared DB state, auth helpers, GST utils, normalizers
 ├── requirements.txt
 ├── render.yaml
@@ -56,10 +56,10 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
         ├── LoginPage.jsx
         ├── DashboardPage.jsx
         ├── VehiclesPage.jsx
-        ├── SalesPage.jsx           # ~1,073 lines, includes print + PDF path
-        ├── ServicePage.jsx         # ~1,602 lines, largest page
+        ├── SalesPage.jsx           # ~1,230 lines, includes print + PDF path
+        ├── ServicePage.jsx         # ~1,830 lines, largest page
         ├── ServiceDuePage.jsx
-        ├── PartsPage.jsx           # ~1,511 lines, parts + parts-bill modal
+        ├── PartsPage.jsx           # ~1,560 lines, parts + parts-bill modal
         ├── CustomersPage.jsx
         ├── StaffPage.jsx
         ├── ReportsPage.jsx
@@ -458,3 +458,32 @@ CLAUDE.md rewritten same day to reflect actual routing (`/api`, not `/api/v1`), 
 - **Service due** — rewritten for 30-day first service (sold), 90-day subsequent, 90-day flat for service-only, configurable cutoff.
 
 ---
+
+## Repo Audit (30 Oct 2026)
+
+Verified against code. All previously listed open items **still open**: page ACL (backend never reads `allowed_pages`), dead `/parts-sales` (server.py ~2827–2890), six unescaped `document.write` print sites, no transaction in `create_parts_bill`/`update_parts_bill` (server.py ~2918/3006), login timing oracle (server.py:731), `/health` returns 200 with DB down (lifespan swallows exception, server.py:90).
+
+**New findings:**
+1. **Print XSS is token theft, not embarrassment.** `window.open('')` inherits app origin; a `<script>` in a customer name / note (including Excel-imported rows) runs there and can read `localStorage.mm_token` → owner session. Re-rate: high. Fix `esc()` first.
+2. **CORS fails open.** `ALLOW_ORIGINS` unset → `["*"]` with `allow_credentials=True`; Starlette then echoes the request Origin, and the cookie is `SameSite=None`. Any site could make authenticated calls. Fix: raise on startup if `ALLOW_ORIGINS` empty (same as `JWT_SECRET_KEY`).
+3. **Upload unbounded.** `POST /upload` has no size/type limit; GridFS writes into Atlas M0 (512 MB cap). One large upload can fill the cluster and take every write down. Fix: cap size (e.g. 5 MB) + content-type allowlist.
+4. **No tests.** Zero test files. Transactional stock logic is verified manually only. Minimum: pytest for `calc_gst_line`, `calc_bill_totals`, service-bill create/update/delete stock symmetry.
+5. **IST date drift.** Frontend `new Date().toISOString().split('T')[0]` yields UTC date — sales saved 00:00–05:30 IST get yesterday's date. Use local date formatting.
+6. **Backup = single point of failure.** M0 has no Atlas backups; only manual weekly ZIP. Highest business risk in the system.
+
+## Mobile Layout Fix (30 Oct 2026)
+
+**Symptom:** on phone, ~40px strip of sidebar stuck on left edge; dashboard content clipped/overlapped.
+
+**Root cause (two bugs):**
+1. Drawer width vs hide offset mismatch. `index.css` sets mobile `.sidebar-nav { width: min(260px, 82vw) }` but closed state used hardcoded `left: -220px`. 260 − 220 = 40px of drawer always visible. Measured: drawer right edge at 40px before fix, matching screenshot.
+2. Horizontal overflow. `.main-content` flex child had no `min-width: 0`; KPI grid `repeat(6,1fr)` min-content widths pushed scroll area to 556px on a 390px screen.
+
+**Fix:**
+- Drawer hidden via `transform: translateX(-100%)` + `visibility: hidden` (width-independent; also removes closed drawer from tab order). Never hardcode drawer offset again.
+- `minWidth: 0` on `.main-content` (App.jsx) + CSS guard.
+- KPI grid → `className="kpi-grid"`, `repeat(6,minmax(0,1fr))`; mobile 2 columns.
+- Topbar: `.topbar-date` + `.topbar-status-label` hidden ≤768px; `.topbar-bar` padding 12px.
+- `html, body { overflow-x: hidden }` on mobile as backstop.
+
+**Verified (Playwright, 390×844):** closed drawer right = 0, hidden; scroll width 390 = viewport. Open drawer 0→260px visible. Desktop 1280px sidebar unchanged (196px).
