@@ -98,7 +98,7 @@ export const vehiclesApi = {
   create: (data)   => api.post('/vehicles', data),
   update: (id, d)  => api.put(`/vehicles/${id}`, d),
   delete: (id)     => api.delete(`/vehicles/${id}`),
-  stats:  ()       => api.get('/vehicles/stats/summary'),
+  stats:  (params) => api.get('/vehicles/stats/summary', { params }),
 };
 
 // ── Sales ───────────────────────────────────────────────────────────
