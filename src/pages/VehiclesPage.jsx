@@ -159,16 +159,17 @@ export default function VehiclesPage() {
   const [search, setSearch]     = useState('');
   const [brand,  setBrand]      = useState('');
   const [typeF,  setTypeF]      = useState('all');
+  const [statusF, setStatusF]   = useState('all');
 
   const { data: stats } = useQuery({
-    queryKey: ['vehicle-stats'],
+    queryKey: ['vehicle-stats', brand],
     refetchInterval: 30_000,
-    queryFn: () => vehiclesApi.stats().then(r => r.data),
+    queryFn: () => vehiclesApi.stats({ brand: brand || undefined }).then(r => r.data),
   });
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ['vehicles', search, brand, typeF],
-    queryFn: () => vehiclesApi.list({ search: search || undefined, brand: brand || undefined, type: typeF !== 'all' ? typeF : undefined, limit: 2000 }).then(r => r.data),
+    queryKey: ['vehicles', search, brand, typeF, statusF],
+    queryFn: () => vehiclesApi.list({ search: search || undefined, brand: brand || undefined, type: typeF !== 'all' ? typeF : undefined, status: statusF !== 'all' ? statusF : undefined, limit: 5000 }).then(r => r.data),
     refetchInterval: 30_000,
   });
 
@@ -207,20 +208,43 @@ export default function VehiclesPage() {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', borderBottom: '1px solid var(--border)' }}>
+      <div className="kpi-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5,minmax(0,1fr))', borderBottom: '1px solid var(--border)' }}>
         {[
-          { l: 'In stock',   v: st.in_stock ?? '—',  c: 'var(--accent)' },
-          { l: 'New',        v: st.new ?? '—',       c: 'var(--green)' },
-          { l: 'Pre-owned',  v: st.used ?? '—',      c: 'var(--blue)' },
-          { l: 'In service', v: st.in_service ?? '—', c: 'var(--accent)' },
-          { l: 'Sold',       v: st.sold ?? '—',      c: 'var(--dim)' },
-        ].map((s, i) => (
-          <div key={i} style={{ padding: '14px 20px', borderRight: i < 4 ? '1px solid var(--border)' : 0 }}>
-            <div className="label-xs">{s.l}</div>
-            <div className="display" style={{ fontSize: 24, color: s.c, marginTop: 6 }}>{s.v}</div>
+          { l: brand ? `${brand} in stock` : 'In stock', v: st.in_stock ?? '—', c: 'var(--accent)', f: 'in_stock' },
+          { l: 'In service', v: st.in_service ?? '—', c: 'var(--accent)', f: 'in_service' },
+          { l: 'Sold',       v: st.sold ?? '—',       c: 'var(--dim)',    f: 'sold' },
+          { l: 'Returned',   v: st.returned ?? '—',   c: 'var(--red)',    f: 'returned' },
+          { l: 'Total',      v: st.total ?? '—',      c: 'var(--text)',   f: 'all',
+            sub: st.total != null ? `${st.new || 0} new · ${st.used || 0} pre-owned` : null },
+        ].map((k, i) => (
+          <div key={i} onClick={() => setStatusF(k.f)} style={{ padding: '14px 20px', borderRight: i < 4 ? '1px solid var(--border)' : 0, cursor: 'pointer',
+            background: statusF === k.f ? 'var(--surface2)' : 'transparent' }}>
+            <div className="label-xs">{k.l}</div>
+            <div className="display" style={{ fontSize: 24, color: k.c, marginTop: 6 }}>{k.v}</div>
+            {k.sub && <div style={{ fontSize: 10, color: 'var(--dim)', marginTop: 2 }}>{k.sub}</div>}
           </div>
         ))}
       </div>
+
+      {st.other > 0 && (
+        <div style={{ padding: '8px 20px', fontSize: 11, color: 'var(--red)', background: 'rgba(220,38,38,.06)', borderBottom: '1px solid var(--border)' }}>
+          ⚠ {st.other} vehicle{st.other > 1 ? 's have' : ' has'} an unrecognised status ({Object.keys(st.unknown_statuses || {}).join(', ')}) — not counted above. Set the correct status from the row dropdown.
+        </div>
+      )}
+
+      {!brand && Array.isArray(st.by_brand) && st.by_brand.length > 0 && (
+        <div style={{ display: 'flex', gap: 8, padding: '10px 20px', borderBottom: '1px solid var(--border)', overflowX: 'auto', alignItems: 'center' }}>
+          <span className="label-xs" style={{ flexShrink: 0 }}>In stock by brand</span>
+          {st.by_brand.filter(b => b.in_stock > 0).map(b => (
+            <button key={b.brand} onClick={() => { setBrand(b.brand); setStatusF('in_stock'); }} style={{
+              flexShrink: 0, padding: '4px 10px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 3,
+              cursor: 'pointer', fontSize: 11, color: 'var(--text)', fontFamily: 'IBM Plex Sans,sans-serif',
+            }}>
+              {b.brand} <strong style={{ color: 'var(--accent)', marginLeft: 4 }}>{b.in_stock}</strong>
+            </button>
+          ))}
+        </div>
+      )}
 
       {showAdd && (
         <div style={{ margin: 20, padding: 20, background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 4 }}>
@@ -243,7 +267,16 @@ export default function VehiclesPage() {
             cursor: 'pointer', fontSize: 10, letterSpacing: '.06em', fontFamily: 'IBM Plex Sans,sans-serif'
           }}>{t === 'all' ? 'ALL' : t === 'new' ? 'NEW' : 'PRE-OWNED'}</button>
         ))}
-        <span className="label-xs" style={{ marginLeft: 'auto' }}>{vehicles.length} vehicles</span>
+        <select value={statusF} onChange={e => setStatusF(e.target.value)} style={{ width: 130, background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 3, padding: '8px 10px', color: 'var(--text)', outline: 'none', fontSize: 13, fontFamily: 'IBM Plex Sans,sans-serif' }}>
+          <option value="all">All status</option>
+          <option value="in_stock">In stock</option>
+          <option value="in_service">In service</option>
+          <option value="sold">Sold</option>
+          <option value="returned">Returned</option>
+        </select>
+        <span className="label-xs" style={{ marginLeft: 'auto' }}>
+          {vehicles.length} {statusF === 'all' ? '' : (statusF.replace('_', ' ') + ' ')}vehicles{brand ? ` · ${brand}` : ''}
+        </span>
         <Btn onClick={() => setShowAdd(v => !v)}>+ Add vehicle</Btn>
       </div>
 
@@ -278,8 +311,8 @@ export default function VehiclesPage() {
                   returned:   { color:'var(--red)', bg:'rgba(220,38,38,.1)',   border:'rgba(220,38,38,.25)',   label:'Returned' },
                   in_service: { color:'#f0c040',  bg:'rgba(240,192,64,.1)',   border:'rgba(240,192,64,.25)',  label:'In service' },
                 };
-                const normalizedStatus = (v.status||'in_stock').toLowerCase().replace(' ','_');
-                const scfg = STATUS_CFG[normalizedStatus] || STATUS_CFG.in_stock;
+                const normalizedStatus = String(v.status ?? 'in_stock').trim().toLowerCase().replace(/[\s-]+/g,'_');
+                const scfg = STATUS_CFG[normalizedStatus] || { color:'var(--red)', bg:'rgba(220,38,38,.1)', border:'rgba(220,38,38,.4)', label:'Unknown' };
 
                 return (
                   <tr key={v.id} style={{ borderBottom: '1px solid var(--border)' }}>
@@ -337,6 +370,7 @@ export default function VehiclesPage() {
                         <option value="sold"        style={{ background:'#141414', color:'#888'     }}>Sold</option>
                         <option value="returned"    style={{ background:'#141414', color:'#f87171'  }}>Returned</option>
                         <option value="in_service"  style={{ background:'#141414', color:'#f0c040'  }}>In service</option>
+                        {!STATUS_CFG[normalizedStatus] && <option value={normalizedStatus} disabled>? {v.status}</option>}
                       </select>
                     </td>
                     <td style={{ padding: '10px 16px' }}>
