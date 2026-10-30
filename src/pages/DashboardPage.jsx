@@ -117,7 +117,7 @@ export default function DashboardPage({ setActive }) {
   return (
     <div>
       {/* KPI bar */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(6,1fr)', borderBottom:'1px solid var(--border)' }}>
+      <div className="kpi-grid" style={{ display:'grid', gridTemplateColumns:'repeat(6,minmax(0,1fr))', borderBottom:'1px solid var(--border)' }}>
         {statsLoading ? (
           Array.from({length:6}).map((_,i)=>(
             <div key={i} style={{ padding:'16px 22px', borderRight:'1px solid var(--border)' }}>
