@@ -487,3 +487,27 @@ Verified against code. All previously listed open items **still open**: page ACL
 - `html, body { overflow-x: hidden }` on mobile as backstop.
 
 **Verified (Playwright, 390×844):** closed drawer right = 0, hidden; scroll width 390 = viewport. Open drawer 0→260px visible. Desktop 1280px sidebar unchanged (196px).
+
+## Vehicle Stock Counts by Brand (30 Oct 2026)
+
+**Symptom:** no way to get exact in-stock count per brand. Brand filter showed "196 vehicles" (all statuses); KPIs ignored brand; KPI math looked off (New 931 vs In stock 51 + Sold 640 + In service 0 = 691). **Owner confirmed (30 Oct 2026): the 240 gap = vehicles `returned` to vendors** — valid status, just had no KPI tile. Not a data-loss bug.
+
+**Root cause:**
+1. `/vehicles/stats/summary` took no `brand` param — KPIs always global.
+2. No status filter on Vehicles page; count label = all statuses.
+3. **Status never canonicalised on write.** `VehicleCreate.status` defaulted to `"Instock"`; Excel import did `.lower()` only (`"In Stock"` → `"in stock"`); create/update stored raw. Stats count exact `"in_stock"` only → variants vanished from every count (Vehicles, Dashboard, Reports).
+4. **UI masked it.** `VehiclesPage` normalised with `.replace(' ','_')` and fell back to `STATUS_CFG.in_stock` for any unknown value → bad rows rendered as green IN STOCK. `SalesPage` vehicle picker hard-codes `'Instock'` as a second accepted value — evidence the variant exists in prod.
+
+**Fix:**
+- `database.py`: `VEHICLE_STATUSES`, `canon_vehicle_status()` (aliases: instock/available/stock/'' → in_stock; delivered/sold_out → sold; service/inservice → in_service; return → returned; unknown → normalised, left as-is), `canon_vehicle_type()`.
+- `server.py`: canonicalise on create, update, Excel import, and list `status`/`type` filters. `VehicleCreate.status` default → `"in_stock"`.
+- `_normalize_vehicle_fields()` runs on every boot (lifespan, after seeds): idempotent `update_many` of known variants + missing fields. Unknown values (e.g. `booked`) deliberately NOT guessed — reported instead.
+- `/vehicles/stats/summary?brand=` — single aggregation; returns `total, in_stock, sold, in_service, returned, other, new, used, stock_value, by_brand[], unknown_statuses{}`. Old keys unchanged (Dashboard/Reports compatible).
+- `VehiclesPage`: KPIs follow brand filter + clickable (set status filter); status dropdown filter; "In stock by brand" chip strip (click → brand + in_stock); red banner when `other > 0`; unknown statuses render red "Unknown" instead of fake IN STOCK. Count label shows status + brand.
+- `client.js`: `vehiclesApi.stats(params)`.
+
+**Verified:** canon unit cases; stats logic with stub DB (HERO: 40 in_stock + 5 'Instock' → 45 in stock / 196 total, 1 'booked' → other); startup normaliser leaves unknowns. JSX parse-checked with tsc. Not run against live Atlas.
+
+**After deploy:** Render log prints each `vehicles.status: 'X' → 'in_stock' (n)` rewrite. Check Vehicles page for red banner; fix remaining unknowns by hand. SalesPage `'Instock'` check now redundant — remove later.
+
+**Correction:** cause #3 (status variants) is a real code defect, but owner data shows no impact — gap was `returned`. Boot normaliser kept as a guard. Returned vehicles inflated brand list counts (HERO 196) because list had no status filter; now `Returned` has its own KPI tile and the in-stock-by-brand strip excludes them.
