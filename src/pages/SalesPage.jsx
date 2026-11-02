@@ -788,7 +788,7 @@ const createMut = useMutation({
           <table className="data-table">
             <thead>
               <tr>
-                {[['Invoice #','invoice_number'],['Date','sale_date'],['Customer','customer_name'],['Vehicle','vehicle_model'],['Amount','total_amount'],['Payment','payment_mode'],['Status','status'],['','']].map(([h,f])=>(
+                {[['Invoice #','invoice_number'],['Date','sale_date'],['Customer','customer_name'],['Mobile','customer_mobile'],['Vehicle','vehicle_model'],['Vehicle No','vehicle_number'],['Amount','total_amount'],['Payment','payment_mode'],['Status','status'],['','']].map(([h,f])=>(
                   <SalesTh key={h} field={f||null} className={f === 'total_amount' ? 'num' : undefined}>{h || <span className="visually-hidden">Actions</span>}</SalesTh>
                 ))}
               </tr>
@@ -802,7 +802,9 @@ const createMut = useMutation({
                     <span style={{ verticalAlign:'middle' }}>{s.customer_name}</span>
                     <CustomerBadges names={badgesFor(s.customer_mobile)} byName={byName} compact />
                   </td>
+                  <td className="mono cell-nowrap">{s.customer_mobile || '—'}</td>
                   <td className="cell-muted">{s.vehicle_brand} {s.vehicle_model}</td>
+                  <td className="mono cell-nowrap">{s.vehicle_number || '—'}</td>
                   <td className="num cell-amount">₹{s.total_amount?.toLocaleString('en-IN')||0}</td>
                   <td>{s.payment_mode}</td>
 
