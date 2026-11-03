@@ -92,7 +92,11 @@ Render free tier sleeps after 15 min of inactivity.
 
 Fix with UptimeRobot (free):
 1. https://uptimerobot.com → New Monitor
-2. Type: HTTP(s) · URL: `https://YOUR-RENDER-URL/health` · Interval: 14 min
+2. Type: HTTP(s) · URL: `https://YOUR-RENDER-URL/ready` · Interval: 14 min
+
+Point it at `/ready`, not `/health`. `/ready` pings MongoDB and returns 503 when the
+database is unreachable, so the monitor also warns you about a database outage.
+`/health` is static and returns 200 even with the database down.
 
 ---
 
@@ -127,6 +131,93 @@ New staff accounts get their own one-time password, shown once to the owner when
 | `JWT_SECRET_KEY`  | 64-char hex (generate in Step 1)   | ✓        |
 | `ALLOW_ORIGINS`   | Your Vercel URL (never `*`; unset allows only localhost:5173) | ✓        |
 | `OWNER_INITIAL_PASSWORD` | First owner password on an empty database | optional |
+
+---
+
+## Testing a release on staging
+
+### Deploy the backend first
+
+The frontend sends new fields that an old backend silently drops. In particular the
+priority star would appear to work and change nothing, because Pydantic discards a
+field the model does not declare and still returns 200. Backend, then frontend.
+
+### 1. Run the tests
+
+```bash
+pip install pytest
+TEST_MONGO_URL="<throwaway-atlas-url>" pytest tests/
+```
+
+Expect **28 passed, 1 xfailed**. The xfailed one is the known CGST/SGST paisa rounding,
+waiting on the CA. Without `TEST_MONGO_URL` you get 28 passed, 1 skipped — the skipped
+test is the one that covers transactions, so run it with a URL before trusting a release.
+
+It creates and drops a database called `mmmotors_test`, so staging data is safe. The URL
+must be a replica set (Atlas is one; a plain local `mongod` is not) or the transaction
+tests fail.
+
+### 2. Check the Render log on first boot
+
+- `WARNING: duplicate parts_bills.bill_number values` means old duplicate bill numbers
+  exist and the unique index could not be created. Find and renumber them.
+- Confirm the health check is hitting `/ready` and passing.
+
+### 3. Priority parts and low-stock alerts
+
+| Check | Expected |
+|---|---|
+| Star a part in the Parts table | Star fills, toast confirms, survives a reload |
+| Star a part whose reorder level is 0 | Level becomes 5 automatically |
+| Priority filter chip | Shows only starred parts |
+| Sidebar | Parts link shows a count badge when a starred part is low |
+| Bill a starred part down to its reorder level | Alert names the part, stays until dismissed |
+| Bill it again | **No** second alert |
+| Bill a starred part down to zero | Alert appears, even though it was already low |
+| Bill a non-starred part down to zero | No alert at all |
+| Order list | Two sections, priority first, zero-stock parts present |
+| Mark ordered | Row shows "Ordered <date>", **reorder level unchanged** |
+| Add stock (±Adj or a purchase bill) | The "Ordered" mark disappears |
+| Suggest priority parts | Lists real fast movers from bills; Add stars one |
+| Print order list | Priority parts first, starred rows marked ★ |
+
+The two that matter most: "Bill it again" is the whole anti-noise design, and
+"Mark ordered" is the bug that made the old order list untrustworthy.
+
+### 4. Sale fittings
+
+Set up first: Parts → Edit on a tank cover → **Standard fitting** → tick a brand you
+have a bike in stock for, set how many per bike. Repeat for a second accessory and
+leave that one at **zero stock** so you can test the shortage path.
+
+| Check | Expected |
+|---|---|
+| New Sale, pick a bike of that brand | Fittings step is pre-filled with the brand's set |
+| Save **without** opening the Fittings step | Fittings still recorded, stock still deducted |
+| Stock after saving | Down by the fitted quantity, never below zero |
+| Stock log on the part | Entry carries the invoice number |
+| The out-of-stock accessory | Sale still saves; toast says it went out without it |
+| Sales table | **⚠** next to that invoice number; hover lists what is missing |
+| Toolbar | "⚠ Fitting pending (n)" chip filters to those bikes |
+| Add stock, then click the ⚠ | Confirms, deducts the stock, marker clears |
+| Mark a fitting Free | Price shows FREE, stock **still** comes off |
+| Edit the sale, remove a fitting | That stock goes back |
+| Delete the sale | All fitting stock returns, vehicle back to In stock |
+| Print the invoice | "Fittings supplied with this vehicle" block below the total |
+| Sale total | Unchanged by fittings — still what was typed in step 4 |
+| A brand with no set | Fittings step starts empty, rows can be added by hand |
+
+### 5. Staff account
+
+Sign in as staff with the Parts and Sales pages allowed. The star, mark-ordered,
+suggestions, the fittings step and the ⚠ should all work — they sit under the existing
+`parts` and `sales` permission areas.
+
+### Before going live
+
+Accessory stock has never been deducted by sales, so the counts are too high. Do a
+physical count of tank covers, seat covers, foot rests and grills and correct them,
+or the first alerts will fire on wrong numbers.
 
 ---
 
