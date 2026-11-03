@@ -21,8 +21,9 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
 
 ```
 .
-├── server.py          # FastAPI app, all route handlers, Pydantic models (~5,070 lines, 129 routes)
+├── server.py          # FastAPI app, all route handlers, Pydantic models (~5,140 lines, 122 routes)
 ├── database.py        # Shared DB state, auth helpers, GST utils, normalizers
+├── tests/             # pytest: GST maths + low-stock alerts (no DB) · parts-bill stock (needs TEST_MONGO_URL)
 ├── requirements.txt
 ├── render.yaml
 ├── package.json
@@ -133,7 +134,14 @@ uvicorn server:app --reload --port 8000
 npm install
 echo "VITE_API_URL=http://localhost:8000" > .env
 npm run dev   # → http://localhost:5173
+
+# Tests (pytest is not in requirements.txt)
+pip install pytest
+pytest tests/                                  # GST tests run; DB test skips
+TEST_MONGO_URL="mongodb+srv://..." pytest tests/   # also runs parts-bill stock test
 ```
+
+`TEST_MONGO_URL` must be a replica set (Atlas is) because the stock test uses transactions. The test creates and drops the database `mmmotors_test`; use a throwaway cluster, not production.
 
 ---
 
@@ -143,6 +151,7 @@ npm run dev   # → http://localhost:5173
 - `verify_token` accepts either cookie or `Authorization: Bearer` header
 - Token expiry: 12 hours
 - Max login attempts: 5 per `(username, ip)` · Lockout: 30 min (TTL-collection based)
+- Client IP (`_client_ip`) = **last** `X-Forwarded-For` entry, the one Render's proxy appends. Earlier entries are client-supplied; using the first let attackers rotate fake IPs and skip the lockout.
 - Roles: `owner` (admin), `staff`
 - Page-level UI gating: `user.allowed_pages` array; `Sidebar.jsx` filters `NAV` by this list
 - `require_admin` — owner only
@@ -169,13 +178,12 @@ All routes on `api_router` are under `/api`. Import routes under `/api/import`.
 | Users/Staff      | CRUD `/users`, `/users/{id}/password` (all admin-only)                    |
 | Customers        | CRUD `/customers`, `/customers/{id}/timeline`, `PUT /customers/{id}/tags` (admin — replaces badge list), `GET /customer-badges-map` (mobile → [badges] for all customers) |
 | Vehicles         | CRUD `/vehicles`, `/vehicles/stats/summary`                               |
-| Sales            | CRUD `/sales`, `/sales/stats/summary`, `PATCH /sales/{id}/milestone` (accepts `{key, value, date?}` — date recorded when value=true, cleared when false), `GET /sales/{id}/pdf` |
+| Sales            | CRUD `/sales`, `/sales/stats/summary`, `POST /sales/{id}/fittings-fitted` (clears the pending-fitting marker), `PATCH /sales/{id}/milestone` (accepts `{key, value, date?}` — date recorded when value=true, cleared when false), `GET /sales/{id}/pdf` |
 | Service Jobs     | CRUD `/service`, `/service/due`, `/service/stats`                        |
 | Service Due      | `/service/due/{vehicle_number}/notified`, `/service/due/notifications`   |
 | Service Bills    | CRUD `/service-bills` (delete admin-only)                                 |
-| Parts            | CRUD `/parts`, `/parts/stats/summary`, `/parts/low-stock`, `/parts/out-of-stock`, `/parts/{id}/adjust-stock`, `/parts/{part_number}/adjust-stock-by-number`, `/parts/search-alias` |
-| Parts Sales      | CRUD `/parts-sales` **[DEAD — no frontend caller, but endpoints still live and share `part_bill` counter; delete when convenient]** |
-| Parts Bills      | CRUD `/parts-bills` (delete admin-only, PUT restores + re-deducts stock)  |
+| Parts            | CRUD `/parts`, `/parts/stats/summary`, `/parts/low-stock?include_out=`, `/parts/out-of-stock`, `/parts/fittings?brand=`, `/parts/suggest-priority?days=&limit=`, `/parts/{id}/mark-ordered`, `/parts/{id}/adjust-stock`, `/parts/{part_number}/adjust-stock-by-number`, `/parts/search-alias` |
+| Parts Bills      | CRUD `/parts-bills` (delete admin-only; POST and PUT are transactional; PUT restores + re-deducts stock, rejects an empty `items` list) |
 | Vendors          | CRUD `/vendors`, `/vendors/{id}/summary` (delete admin-only)              |
 | Purchase Bills   | CRUD `/purchase-bills` (PUT + DELETE admin-only)                          |
 | Dashboard        | `GET /dashboard/stats`, `GET /dashboard/recent-activity`                 |
@@ -201,9 +209,10 @@ Import supports entities: `customers`, `vehicles`, `sales`, `service`, `parts`, 
 - `sales`
 - `service_jobs`
 - `service_bills`
-- `spare_parts` — parts inventory (has `stock_log[]` sub-doc for audit trail, `aliases[]` for vendor-scoped SKU lookup)
-- `parts_sales` — **[DEAD collection, ignore]**
-- `parts_bills` — active parts billing (shares `part_bill` counter with `parts_sales`)
+- `spare_parts` — parts inventory (has `stock_log[]` sub-doc for audit trail, `aliases[]` for vendor-scoped SKU lookup, `priority` bool for the fast-mover alert list, `ordered_at`/`ordered_by` while awaiting a delivery, `fitting_brands[]`/`fitting_qty` marking it a standard fitting for those vehicle brands)
+- `sales` — also carries `fittings[]` (accessories supplied with the bike, each with `qty_deducted`) and `pending_fittings[]` (what was short at sale time; drives the warning marker)
+- `parts_sales` — legacy, read-only. Endpoints removed 02 Nov 2026; old rows kept because revenue/monthly/top-parts/P&L reports still merge them into "Parts".
+- `parts_bills` — active parts billing (`part_bill` counter, `bill_number` unique index)
 - `vendors` — spare-parts suppliers
 - `purchase_bills` — one doc per vendor invoice, multi-line
 - `debts` + embedded `payments[]`
@@ -234,6 +243,7 @@ Canonical list in `database.py`:
 ### GST
 Rates: `[5, 12, 18]`. Use `calc_gst_line(price, qty, gst_rate, discount=0)` / `calc_bill_totals(items)`.
 Prices are always GST-inclusive; taxable back-calculated. Karnataka intra-state → CGST = SGST = tax/2.
+**Known rounding bug [open]:** CGST and SGST are each rounded from `tax/2`, so their sum is often 1 paisa short of `gst_total` (₹1 @ 18% → 0.07 + 0.07 vs 0.15; 1,017 of prices ₹1–1,999). Pinned by the `xfail(strict=True)` test in `tests/test_gst.py`. Fix options: `sgst = gst_amt - cgst` (exact total, halves may differ by 1 paisa) or keep halves equal and set `gst_amt = 2 * cgst` (taxable absorbs the paisa). Needs the CA's call; changes printed invoices. When fixed, drop the `xfail` marker.
 
 ### Discounts
 - **Per-line** (`item.discount`) — rupee amount off inclusive line total; GST re-split from discounted amount. Complimentary items force discount = 0.
@@ -244,11 +254,11 @@ Prices are always GST-inclusive; taxable back-calculated. Karnataka intra-state 
 `complimentary: bool` flag per line on both `service_bills` and `parts_bills`. When true: `unit_price=0`, `mrp` preserves original, `gst_rate=0`, all tax/total = 0. Stock still deducts (log reason `"complimentary"`). UI shows FREE badge + strike-through MRP. Reported via `GET /reports/complimentary?date_from&date_to`.
 
 ### Counters
-`next_sequence(name)` uses `ReturnDocument.AFTER`.
+`next_sequence(name, session=None)` uses `ReturnDocument.AFTER`. Pass `session=` inside a transaction so an aborted bill doesn't burn a number.
 Prefixes (`database.py:_PREFIX`):
 - `invoice` → `INV-000001`
 - `job` → `SRV-000001`
-- `part_bill` → `PRT-000001` (shared by parts_sales + parts_bills — parts_sales is dead)
+- `part_bill` → `PRT-000001` (parts_bills only; legacy parts_sales rows used it too)
 - `part` → `PT-000001`
 - `accident_estimate` → `EST-0001`
 
@@ -281,6 +291,29 @@ if res.matched_count == 0:
 ```
 No check-then-write TOCTOU race.
 
+Multi-line bills (`service_bills`, `parts_bills`) also wrap every stock write + counter + bill write in `session.with_transaction`, passing `session=s` to every DB call, so a 409 on a later line rolls back earlier lines. Every `stock_log` entry carries `bill_number`. New bill types must follow this pattern.
+
+### Low-stock alerts (priority parts)
+Only parts flagged `priority: true` raise alerts — the owner curates that list so it stays small enough to act on. Normal parts still show the amber pill and sit on the order list; they just never interrupt anyone.
+
+- Each bill endpoint fills a `touched` dict (`{part _id: qty deducted}`) inside its transaction and, after commit, returns `low_stock_alerts` from `_priority_low_alerts()`. The field is response-only; it is never stored on the bill. On an edit, `touched` holds the **net** removal (new qty − old qty), so a shrinking edit cannot raise an alert.
+- `_priority_low_alerts` reports a part only when **this bill** pushed it over the line: above the reorder level before and at or below it now, or it just hit zero (worth saying even if already low). A part sitting below its level does not re-alert on every later bill — that is what would make the alerts ignorable. Pinned by `tests/test_low_stock_alerts.py` (stub DB, no MongoDB needed).
+- Frontend: `notifyLowStock()` in `src/utils/lowStockToast.js`, called from the service-bill and both parts-bill save paths. Toast has `duration: Infinity` and a fixed `id`, so it waits to be dismissed and cannot stack up.
+- `GET /parts/stats/summary` returns `priority_low` (priority parts at or below level, zero-stock included) for the Sidebar count badge.
+- `POST /parts/{id}/mark-ordered` stamps `ordered_at`/`ordered_by`. It deliberately does **not** touch `reorder_level`: the old "remove from order list" button set it to 0, which hid the part from every future low-stock check. The flag clears on a genuine stock arrival (adjust-stock "add", purchase-bill add), not on bill-edit or delete restores, which are corrections rather than deliveries.
+- `GET /parts/suggest-priority` ranks parts by quantity consumed in the last N days from `stock_log`, excluding ones already priority — so the owner does not have to guess the initial list.
+- Starring a part whose `reorder_level` is 0 sets it to 5 in the same request, otherwise the star would be on but could never fire.
+
+### Sale fittings
+Accessories supplied with a bike (tank cover, seat cover, foot rest, grills) are ordinary `spare_parts` rows, so reorder levels, the priority star, purchase bills and the alerts above all apply. The missing piece was that sales never touched stock.
+
+- A part is a standard fitting via `fitting_brands[]` (canonical uppercase, normalised on write in `create_part`/`update_part`) plus `fitting_qty`. `GET /parts/fittings?brand=` returns that brand's set; `SaleForm` loads it **when the vehicle is picked**, not when the Fittings tab opens, so a sale saved without visiting that tab still records its fittings. The list is derived (`f.fittings ?? standard set`), so an emptied list stays empty and no effect syncs state.
+- `_deduct_fittings` runs inside `create_sale`'s transaction, alongside the sale insert and the vehicle status change. **A vehicle sale is never blocked by a missing accessory**: it deducts what is on the shelf, never below zero, and returns `pending` for the rest. Each stored line keeps `qty_deducted`, which is what `_restore_fittings` puts back on an edit or delete — not the quantity fitted.
+- `pending_fittings` on the sale drives the ⚠ marker on the Sales row and the "Fitting pending (n)" chip. `POST /sales/{id}/fittings-fitted` finishes the deduction (stock has usually arrived on a purchase bill by then) and clears the marker; if stock still is not there it clears anyway, since the part is physically on the bike, and writes a `sale_fitting_unrecorded` note to `stock_log` so the gap stays auditable.
+- `stock_log` reasons: `sale_fitting`, `sale_fitting_edit`, `sale_fitting_late`, `sale_fitting_restore`, `sale_fitting_delete`, plus `complimentary` for a free fitting (it still leaves the shelf).
+- Money is deliberately untouched: `total_amount` stays whatever the salesperson types, because GSTR-1 back-calculates 18% out of it (`server.py` sales loop). Fitting prices are recorded and printed in a separate "Fittings supplied with this vehicle" block on the invoice, never as a price row — a row there would stop the invoice adding up to its own total. Revisit only with the CA.
+- `tests/test_sale_fittings.py` pins the partial-deduct arithmetic against a stub DB; the end-to-end flow is in `tests/test_parts_bill_stock.py::test_sale_fittings_end_to_end` (needs `TEST_MONGO_URL`).
+
 ### Security
 - No `eval` / `exec` / `pickle` / `yaml.unsafe_load`. No `shell=True`. API keys from env vars only.
 - No f-strings in DB queries — parameterized only.
@@ -297,7 +330,7 @@ No check-then-write TOCTOU race.
 - `ErrorBoundary` wraps every route.
 - Form drafts: `useDraft` hook + `DraftBar` component (`src/hooks/useDraft.jsx`). Autosave every 3s to localStorage. Manual "Save Draft" button. Restore prompt on return. Wired into Sales/Service/PartsBill/AccidentEstimate **new-record** forms only (skipped for edit modals via `enabled` flag). Draft cleared on successful submit. Keys: `mm_draft_sale`, `mm_draft_service`, `mm_draft_parts_bill`, `mm_draft_accident`.
   - File **must** be `.jsx` (contains JSX) — Vite won't transform `.js`.
-- Print bills: `window.open()` + `document.write(html)` pattern in `SalesPage`, `ServicePage`, `PartsPage`, `AccidentEstimatePage`. **All interpolated strings must be HTML-escaped** before injection — customer names / notes are attacker-controlled. [TODO: add `esc()` helper]
+- Print bills: `window.open()` + `document.write(html)` pattern in `SalesPage`, `ServicePage`, `PartsPage`, `AccidentEstimatePage`. **All interpolated strings must be HTML-escaped** before injection — customer names / notes are attacker-controlled. Done via `escapeDeep()` from `src/utils/escapeHtml.js`, applied to the data object at the top of each print function (5 sites). Any new print template must do the same.
 - File uploads: `FileUpload.jsx` uses `filesApi.getFileBlobUrl` (authenticated blob fetch + `URL.createObjectURL`); revoke on unmount.
 
 ---
@@ -318,11 +351,13 @@ Sales invoice: navy/gold theme, two-column grids, amount-in-words, three-column 
 
 ```
 Frontend  →  Vercel     (Vite, output: dist/)
-Backend   →  Render     (Python 3.11, free tier, health: /health)
+Backend   →  Render     (Python 3.11, free tier, health check: /ready)
 Database  →  MongoDB Atlas M0 free tier
 ```
 
-Keep Render alive on free tier — UptimeRobot pings `/health` every 14 min.
+Render's `healthCheckPath` is `/ready` (pings MongoDB → 503 if down), so a dead DB connection gets the service restarted. `/health` is static 200 — liveness only.
+
+Keep Render alive on free tier — UptimeRobot pings every 14 min. Point it at `/ready` so it also alerts on DB outages.
 
 Python pinned to 3.11 (avoids Python 3.14 pydantic-core build failures).
 `bcrypt==3.2.2` pinned (works with passlib 1.7.4 — do **not** upgrade to 4.x without testing).
@@ -342,23 +377,27 @@ After deploy:
 - **Risk:** human forgets → data loss window equals days since last download.
 - Old B2 / APScheduler / boto3 / SMTP stripped 08 Jul 2026.
 
-### Access-control gap **[open]**
-`allowed_pages` is enforced in `Sidebar.jsx` **only** — backend endpoints check role, not page. A staff user can hit `/api/expenses` or `/api/debts` directly via URL bar or API call and bypass the sidebar filter. Todo: map page → endpoint prefixes and enforce in a dependency.
+### GST CGST/SGST rounding **[open — needs CA decision]**
+See Key Conventions → GST. CGST + SGST can be 1 paisa short of `gst_total`.
 
-### Dead `parts_sales` code path **[open]**
-Full CRUD endpoints + collection still live in `server.py` (~lines 2340–2400). No frontend caller. Shares `part_bill` counter with `parts_bills`, so `_sync_counter` on `delete_parts_sale` can reset the sequence based on an unwritten collection. Delete the endpoints + collection when convenient.
-
-### Print HTML injection **[open]**
-Six `document.write(html)` sites interpolate customer name / notes / part descriptions without escaping. Low exploitability (attacker = own staff), high embarrassment if triggered. Fix: single `esc()` helper wrapped around every `${...}` in print templates.
-
-### No multi-doc transactions **[open — service_bills done, parts_bills pending]**
-Bill insert + N stock decrements + counter bump = separate operations. Failure mid-loop leaves partial state (stock decremented, bill unwritten). Service bills now use `session.with_transaction` (05 Sep 2026). Apply the same pattern to `create_parts_bill` and `update_parts_bill`.
-
-### Login timing oracle **[minor]**
+### Login timing oracle **[minor, open]**
 `not user or not pwd_ctx.verify(...)` — missing user skips bcrypt (~200 ms), enabling username enumeration by timing. Lockout blunts it. Fix: verify against a fixed dummy hash when user is missing.
 
-### Lifespan swallows DB failure **[minor]**
-Startup `except Exception: print(WARNING)` then `yield`. `/health` still returns 200 even if `db is None`. UptimeRobot won't notice — every real request 500s. Fix: `/health` should ping DB, or lifespan should raise on DB failure.
+### IST date drift **[minor, open]**
+`new Date().toISOString().split('T')[0]` gives the UTC date: `SalesPage.jsx:401` (default sale date) and `ReportsPage.jsx:135`. Entries between 00:00 and 05:30 IST default to yesterday. Backend `bill_date` / dashboard "today" use `utcnow()` with the same drift. Fix: format the local date.
+
+### Staff can edit parts bills **[by design]**
+`PUT /parts-bills/{id}` is open to staff with the parts/service page (delete is owner-only). Empty `items` is rejected so edit can't act as delete, but staff can still lower quantities. Make it `require_admin` (like purchase-bill PUT) if that becomes a problem; the Parts page edit button would then 403 for staff.
+
+### Lifespan swallows DB failure **[mitigated]**
+Startup still `print(WARNING)`s and serves with `db is None`, but Render now health-checks `/ready`, which 503s, so the service gets restarted.
+
+### Closed
+- Access-control gap — server-side `PAGE_ACCESS` check in `verify_token`.
+- Print HTML injection — `escapeDeep()` at all 5 print sites.
+- CORS fail-open — falls back to localhost only.
+- Unbounded upload — 10 MB cap + JPEG/PNG/WebP/PDF sniffing.
+- Parts-bill transactions, dead `parts_sales` endpoints, login lockout bypass, missing tests — see "Fixes (02 Nov 2026)" below.
 
 ### GST Export (GSTR-1)
 - `GET /reports/gstr1?month=YYYY-MM` — admin, returns xlsx blob, single sheet `GST`, 34 columns matching CA flat template exactly.
@@ -464,6 +503,8 @@ CLAUDE.md rewritten same day to reflect actual routing (`/api`, not `/api/v1`), 
 
 ## Repo Audit (30 Oct 2026)
 
+> Historical snapshot. Most items below are now closed — current status is in "Known Issues / Open Items" and "Fixes (02 Nov 2026)".
+
 Verified against code. All previously listed open items **still open**: page ACL (backend never reads `allowed_pages`), dead `/parts-sales` (server.py ~2827–2890), six unescaped `document.write` print sites, no transaction in `create_parts_bill`/`update_parts_bill` (server.py ~2918/3006), login timing oracle (server.py:731), `/health` returns 200 with DB down (lifespan swallows exception, server.py:90).
 
 **New findings:**
@@ -514,3 +555,62 @@ Verified against code. All previously listed open items **still open**: page ACL
 **After deploy:** Render log prints each `vehicles.status: 'X' → 'in_stock' (n)` rewrite. Check Vehicles page for red banner; fix remaining unknowns by hand. SalesPage `'Instock'` check now redundant — remove later.
 
 **Correction:** cause #3 (status variants) is a real code defect, but owner data shows no impact — gap was `returned`. Boot normaliser kept as a guard. Returned vehicles inflated brand list counts (HERO 196) because list had no status filter; now `Returned` has its own KPI tile and the in-stock-by-brand strip excludes them.
+
+## Fixes (02 Nov 2026)
+
+Code review of the whole repo. CLAUDE.md's open-items list was stale: page ACL, print escaping, CORS fallback and upload limits were already fixed in code. Real remaining bugs fixed:
+
+1. **Parts-bill create was not transactional** (`create_parts_bill`). Lines deducted one by one, so a 409 on line 3 left lines 1–2 deducted with no bill saved — stock vanished on an ordinary shortage, not only on crashes. Now one `session.with_transaction`: counter bump (`next_sequence(..., session=s)`), all guarded deducts and the insert. `stock_log` entries gain `bill_number`.
+2. **Parts-bill edit double-counted stock on 409** (`update_parts_bill`). Old stock was restored, then a short new line raised, leaving the restore committed and the bill unchanged. Now restore + deduct + bill `$set` run in one transaction. Restores are logged (`reason: parts_bill_edit_restore`, `action: add`, `bill_number`) — previously they left no `stock_log` entry.
+3. **Login lockout bypass** (`_client_ip`). Used the first `X-Forwarded-For` entry, which the client controls; rotating fake IPs gave unlimited password guesses. Now uses the last entry (appended by Render's proxy). **Verify Render appends the real client IP as the last hop** — if not, all users share one lockout bucket.
+4. **Parts-bill numbers could repeat.** Deleting a `parts_sales` doc (or `DELETE /import/clear/parts_sales`) ran `_sync_counter("part_bill", "parts_sales", ...)`, resetting the counter shared with parts_bills toward 0; `parts_bills.bill_number` index was non-unique, so duplicates saved silently. Removed: all `/parts-sales` endpoints, `PartsSaleItem`/`PartsSaleCreate`, `parts_sales` indexes, its `PAGE_ACCESS` entry and the import-clear mapping. Collection data kept for reports. `_ensure_indexes` now upgrades `bill_number_1` to unique; if duplicates already exist it keeps a plain index and prints `WARNING: duplicate parts_bills.bill_number values` — check the Render log after deploy and renumber by hand.
+5. **Edit-as-delete bypass.** `PUT /parts-bills/{id}` with `items: []` restored all stock and zeroed the bill, sidestepping owner-only delete. Now 400 `At least one item required`.
+6. **Health check blind to DB.** `render.yaml` `healthCheckPath` → `/ready`.
+7. **First tests.** `tests/test_gst.py` (5 tests, no DB: inclusive back-calc, qty + line discount, discount clamp, 0% rate, per-slab totals; plus a strict xfail pinning the CGST/SGST rounding bug). `tests/test_parts_bill_stock.py` (needs `TEST_MONGO_URL`: short create → no stock change and no bill; short edit → stock and bill unchanged; good edit → correct delta).
+
+**Verified:** `server.py` imports with real requirements; GST tests pass; empty-edit returns 400; `_client_ip` returns the last hop; no `/parts-sales` routes remain. **Not verified:** the transaction test has not run against a real replica set.
+
+**Still open:** CGST/SGST rounding (CA decision), login timing oracle, IST date drift, staff can edit parts-bill quantities, manual-only backups.
+
+## Priority parts + low-stock alerts (03 Nov 2026)
+
+Owner could not keep track of spare parts or order them in time. Low-stock detection already existed (`/parts/low-stock`, dashboard alert, order modal) but was passive — you had to go and look — and two things made what you saw untrustworthy.
+
+**The dismiss bug.** "Remove from order list" (bulk and per row) set `reorder_level: 0`. The low-stock query needs `stock <= reorder_level`, so every part ever marked as ordered became permanently invisible to it. Replaced with `POST /parts/{id}/mark-ordered`, which stamps `ordered_at`/`ordered_by` and leaves the level alone; the row stays listed showing "Ordered 03 Nov", and the stamp clears when stock actually arrives.
+
+**Nothing recorded what was on order,** so a part looked un-actioned until delivery and got ordered twice or ignored.
+
+**Design — alerts are opt-in per part.** The owner stars fast movers (`priority` bool). Only starred parts raise an alert or count toward the sidebar badge; everything else behaves as before. This was the owner's call and it is the right axis: the list stays short enough to act on, and an alert always means "order this now".
+
+**What ships:**
+1. `priority` on `SparePartCreate`/`SparePartUpdate`. Both endpoints use `body.dict()`, so no doc dict or whitelist edit was needed — but note `update_part` keeps falsy-but-not-None values, which is what lets the star be turned off.
+2. Star toggle in the parts table, a Priority filter chip, and a checkbox on the part form. Starring a part at `reorder_level: 0` sets it to 5 in the same call.
+3. Instant alert: each bill endpoint collects `{part _id: qty}` inside its transaction and returns `low_stock_alerts` after commit. Edits use the net removal. `notifyLowStock()` shows a toast that stays until dismissed.
+4. Sidebar badge from `priority_low` in `/parts/stats/summary`, polled every 60s, only for users who can see Parts.
+5. Order modal: split into "Order now — priority parts" and "Can wait", `include_out=true` so zero-stock parts finally appear (they were excluded, despite being the most urgent), "Mark ordered" buttons, and the print sheet leads with priority parts.
+6. `GET /parts/suggest-priority` — ranks parts by quantity used in the last 60 days from `stock_log`, excluding starred ones; "Suggest priority parts" in the order modal lists them with one-click Add.
+
+**A test caught a real gap.** The first version alerted only on crossing the reorder level, so a part already low that got used down to **zero** said nothing. Running out is a new and worse state, so the rule is now "crossed the level, or just hit zero".
+
+**Verified:** 18 pytest tests pass (`test_low_stock_alerts.py` pins the crossing arithmetic against a stub DB — boundaries, already-low, non-priority, zero-level); `npm run lint` holds at the 40-error pre-existing baseline, no new errors; `npm run build` succeeds; `server.py` imports and new routes register ahead of `/parts/{part_id}`, which would otherwise swallow `/parts/suggest-priority`.
+
+**Not verified:** no MongoDB available locally, so nothing ran against a real database. Untested in practice: the `touched` wiring in all four bill endpoints, the `suggest-priority` aggregation, `mark-ordered`, and the `ordered_at` clearing. `tests/test_parts_bill_stock.py::test_priority_alerts_and_ordered_flag` covers all of it — run it with `TEST_MONGO_URL` before trusting the feature.
+
+**After deploy:** existing parts have no `priority` field, so nothing alerts until the owner stars something — open the order list, hit "Suggest priority parts" and star the fast movers. Parts still sitting at `reorder_level: 0` from the old dismiss button stay quiet unless starred, which is why no bulk data fix was needed. Set higher reorder levels on fast movers; the default of 5 is why warnings arrived late.
+
+## Sale fittings tracking (03 Nov 2026)
+
+Owner wanted to stop running out of the accessories fitted to every bike (tank cover, seat cover, foot rest, grills). See Key Conventions → Sale fittings for how it works.
+
+**Why nothing existed:** accessories were already a parts category with stock and reorder levels, but `create_sale` never touched stock, so fitting four accessories to every bike never moved a number. Separately, `SalesPage.jsx` printed an "Accessories" rupee row from `sale.accessories`, a field absent from `SaleCreate`/`SaleUpdate` and written by nothing — dead since it was added. (The whole `descRows` price breakdown is dead code: the variable is unused, which eslint already reported. Left in place; the Accessories entry was removed so it cannot contradict the new fittings block if anyone revives it.)
+
+**Decisions the owner made:** sets per brand rather than one global set; fittings sometimes charged and sometimes free; stock off when the sale saves; and — better than the options offered — a persistent warning marker on the sales row for a bike sold without its fittings, cleared once fitted. That last one turns a transient toast into a worklist.
+
+**Scope note:** `update_sale` has a field whitelist and only deducts/restores when `body.fittings` is not None, so existing callers that omit it (status flips, milestone edits) are untouched. `delete_sale` now runs in a transaction because it restores stock as well as the vehicle.
+
+**Verified:** 28 pytest tests pass, including 11 new ones pinning the partial-deduct arithmetic (`test_sale_fittings.py`: partial stock, zero stock, untracked part, free fitting, invoice linkage, same part twice, bad part_id fallback). `npm run lint` is at 39 errors against a 40 pre-existing baseline — one fewer, since the duplicate-key pattern was avoided in the part form. `npm run build` succeeds. Models confirmed to declare `fittings` on both sale models, and routes register ahead of `/parts/{part_id}`.
+
+**Not verified:** no MongoDB locally, so nothing ran against a real database — the transaction in `create_sale`, `mark_fittings_fitted`, and the restores on edit and delete are covered only by `test_sale_fittings_end_to_end`, which needs `TEST_MONGO_URL`.
+
+**After deploy:** accessory stock has never been deducted by sales, so current counts are too high. Do a physical count of tank covers, seat covers, foot rests and grills on the day this ships. Then set `fitting_brands` on each accessory (Parts → Edit → Standard fitting) — until a brand has a set, the Fittings step starts empty and staff add rows by hand.
+
