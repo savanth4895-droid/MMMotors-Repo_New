@@ -101,7 +101,6 @@ PAGE_ACCESS = {
     "service-bills":       {"service"},
     "parts":               {"parts", "service", "dashboard", "reports", "purchase-bills"},
     "parts-bills":         {"parts", "service"},
-    "parts-sales":         {"parts", "service"},
     "vendors":             {"vendors", "purchase-bills"},
     "purchase-bills":      {"purchase-bills"},
     "dashboard":           {"dashboard", "reports"},
@@ -178,11 +177,11 @@ def require_roles(*roles):
 # ── Sequential counters ─────────────────────────────────────────────────────────
 _PREFIX = {"invoice": ("INV", 6), "job": ("SRV", 6), "part_bill": ("PRT", 6), "part": ("PT", 6), "accident_estimate": ("EST", 4)}
 
-async def next_sequence(name: str) -> str:
+async def next_sequence(name: str, session=None) -> str:
     prefix, pad = _PREFIX[name]
     result = await db.counters.find_one_and_update(
         {"_id": name}, {"$inc": {"seq": 1}}, upsert=True,
-        return_document=ReturnDocument.AFTER,
+        return_document=ReturnDocument.AFTER, session=session,
     )
     return f"{prefix}-{str(result['seq']).zfill(pad)}"
 
