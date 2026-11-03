@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: mmmotors-api
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: MONGO_URL
+        sync: false
+      - key: DB_NAME
+        value: mmmotors
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: ALLOW_ORIGINS
+        sync: false   # set to your Vercel URL, e.g. https://mmmotors-frontend.vercel.app
+      - key: OWNER_INITIAL_PASSWORD
+        sync: false   # optional; first owner password on an empty database
+      - key: SERVICE_DUE_CUTOFF
+        value: "2026-05-01"   # YYYY-MM-DD — vehicles sold before this date excluded from Service Due
+    healthCheckPath: /ready   # pings MongoDB; /health stays 200 even when the DB is down
