@@ -116,6 +116,82 @@ New staff accounts get their own one-time password, shown once to the owner when
 
 ---
 
+## Step 8 — Google Sheet sync (optional)
+
+Mirrors every sale into the shop's existing "M M Motors Sales" spreadsheet. Leave the
+two environment variables unset and the app simply does not do it — nothing else changes.
+
+### First, check who can see the sheet
+
+The spreadsheet holds customer names, mobile numbers and home addresses. Open
+**Share → General access** and set it to **Restricted**, then add the specific people
+who need it. Anyone holding a "anyone with the link" URL can download the lot without
+signing in. The sync below keeps working on a restricted sheet, because the script runs
+as you.
+
+### 1. Add the script
+
+1. Open the spreadsheet → **Extensions → Apps Script**.
+2. Delete whatever is in `Code.gs` and paste the contents of
+   [`google-sheet-sync.gs`](google-sheet-sync.gs) from this repo.
+3. Generate a long random password and put it in `SHARED_SECRET` at the top:
+   ```bash
+   python3 -c "import secrets; print(secrets.token_hex(24))"
+   ```
+4. Check `SHEET_GID` matches the tab you want. It is the `gid=` number in the sheet's
+   URL when that tab is open. Default: `30546625`.
+5. Save.
+
+### 2. Deploy it
+
+1. **Deploy → New deployment → Select type → Web app**.
+2. Execute as: **Me**. Who has access: **Anyone**.
+3. **Deploy**, approve the permission prompt, and copy the **Web app URL** — it ends
+   in `/exec`.
+
+"Anyone" means anyone who knows that URL can write to the sheet, which is why the
+script also checks `SHARED_SECRET`. Treat the URL as a password: Render only, never in
+a message or a commit.
+
+### 3. Tell the backend
+
+In Render → Environment:
+
+| Key | Value |
+|-----|-------|
+| `SHEETS_WEBHOOK_URL` | the `/exec` URL from step 2 |
+| `SHEETS_WEBHOOK_SECRET` | the same string as `SHARED_SECRET` |
+
+Save, and Render redeploys.
+
+### 4. Check it
+
+Record a test sale. A new row should appear at the bottom of the sheet within a few
+seconds. Then edit that sale's colour in the app — the same row should change rather
+than a second row appearing. Delete the test sale and the row should disappear.
+
+If a sale does not reach the sheet, the app says so and puts a red **⟳** next to the
+invoice number on the Sales list, with the error on hover. Click it to retry. A
+**"⟳ Not in sheet (n)"** chip appears in the toolbar while any sale is unsynced.
+
+### Things worth knowing
+
+- **Rows are matched on chassis number** (column K), the only unique value the sheet
+  has — it has no invoice-number column. A sale with a blank chassis is always appended
+  and never matched afterwards.
+- **The app fills only the columns it owns.** Columns **A** (brand/salesperson),
+  **O** (RTO Done) and **R** (Page Number) are left for you, as are the unused
+  insurance, EMI, LAN and UTR columns.
+- **Stop entering new sales in the sheet by hand**, or you will get two rows for one
+  bike. Rows already in the sheet are left alone; only app sales are written.
+- **Deleting a sale deletes the whole row**, which shifts every row below it up. If any
+  other tab refers to this one by row number, change `sheet.deleteRow(found)` in the
+  script to clear the cells instead.
+- **Changing the script means redeploying.** Use **Deploy → Manage deployments → Edit →
+  Version: New version**, or the URL keeps serving the old code.
+
+---
+
 ## Environment variables reference
 
 ### Frontend (Vercel)
@@ -131,6 +207,8 @@ New staff accounts get their own one-time password, shown once to the owner when
 | `JWT_SECRET_KEY`  | 64-char hex (generate in Step 1)   | ✓        |
 | `ALLOW_ORIGINS`   | Your Vercel URL (never `*`; unset allows only localhost:5173) | ✓        |
 | `OWNER_INITIAL_PASSWORD` | First owner password on an empty database | optional |
+| `SHEETS_WEBHOOK_URL` | Apps Script web app URL, ends in `/exec` (Step 8) | optional |
+| `SHEETS_WEBHOOK_SECRET` | Same string as `SHARED_SECRET` in the script | optional |
 
 ---
 
@@ -207,7 +285,24 @@ leave that one at **zero stock** so you can test the shortage path.
 | Sale total | Unchanged by fittings — still what was typed in step 4 |
 | A brand with no set | Fittings step starts empty, rows can be added by hand |
 
-### 5. Staff account
+### 5. Google Sheet sync
+
+Only if Step 8 is set up on staging. Point it at a **copy** of the spreadsheet, not the
+live one, or your test sales end up in the real records.
+
+| Check | Expected |
+|---|---|
+| Record a sale | New row at the bottom within a few seconds |
+| Columns A, O, R | Still blank — the app must not touch them |
+| Date format | `3-Nov-2026`, matching the existing rows |
+| Edit the sale's colour | Same row changes; no second row appears |
+| Delete the sale | Row disappears |
+| Wrong secret in Render | Sale still saves, red ⟳ on the row, error on hover |
+| Click the ⟳ after fixing | Row appears, marker clears |
+
+The sixth row is the one that matters: a broken sheet must never stop a sale saving.
+
+### 6. Staff account
 
 Sign in as staff with the Parts and Sales pages allowed. The star, mark-ordered,
 suggestions, the fittings step and the ⚠ should all work — they sit under the existing
