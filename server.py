@@ -24,6 +24,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, Query, Request, Upl
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from pymongo.errors import OperationFailure
 import os
 import certifi
 import io
@@ -62,7 +63,7 @@ from database import (
     pwd_ctx, create_token, verify_token, require_admin, require_roles,
     next_sequence, _sync_counter,
     oid, oids, obj_id, paginate_params, now, utcnow,
-    calc_gst_line, calc_bill_totals, amount_in_words,
+    calc_gst_line, calc_bill_totals, amount_in_words, norm_brand,
     VEHICLE_STATUSES, canon_vehicle_status, canon_vehicle_type,
 )
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
@@ -194,11 +195,19 @@ async def _ensure_indexes():
     await db.spare_parts.create_index("part_number", unique=True)
     await db.spare_parts.create_index("category")
     await db.spare_parts.create_index([("name","text"),("part_number","text")])
-    # parts_sales
-    await db.parts_sales.create_index("bill_number", unique=True)
-    await db.parts_sales.create_index("sale_date")
     # parts_bills  ← PATCH 7: new collection index
-    await db.parts_bills.create_index("bill_number")
+    # bill_number used to be a plain index; unique stops a reset counter from silently repeating numbers.
+    if not (await db.parts_bills.index_information()).get("bill_number_1", {}).get("unique"):
+        try:
+            await db.parts_bills.drop_index("bill_number_1")
+        except OperationFailure:
+            pass  # fresh database, no index yet
+        try:
+            await db.parts_bills.create_index("bill_number", unique=True)
+        except OperationFailure as e:
+            # Duplicates already stored: keep the plain index so startup continues; owner fixes them by hand.
+            await db.parts_bills.create_index("bill_number")
+            print(f"[MM Motors] WARNING: duplicate parts_bills.bill_number values, unique index not created: {e}")
     await db.parts_bills.create_index("customer_mobile")
     await db.parts_bills.create_index("bill_date")
     # vendors — spare-parts suppliers
@@ -381,6 +390,15 @@ class NomineeInfo(BaseModel):
     age:      Optional[str] = ""
     number:   Optional[str] = ""
 
+class SaleFitting(BaseModel):
+    """An accessory fitted to the bike at sale time. Stock comes off spare_parts."""
+    part_id:       Optional[str]   = None
+    part_number:   Optional[str]   = ""
+    name:          str
+    qty:           int   = Field(1, ge=1)
+    unit_price:    float = Field(0, ge=0)
+    complimentary: Optional[bool]  = False
+
 class SaleCreate(BaseModel):
     customer_id:       str
     vehicle_id:        str
@@ -411,6 +429,7 @@ class SaleCreate(BaseModel):
     hsrp_notes:        Optional[str]   = ""
     milestones:        Optional[Dict[str, bool]] = None
     milestone_dates:   Optional[Dict[str, str]]  = None
+    fittings:          Optional[List[SaleFitting]] = None
 
 class SaleUpdate(BaseModel):
     status:            Optional[str]   = None
@@ -446,6 +465,7 @@ class SaleUpdate(BaseModel):
     hsrp_notes:        Optional[str]   = None
     milestones:        Optional[Dict[str, bool]] = None
     milestone_dates:   Optional[Dict[str, str]]  = None
+    fittings:          Optional[List[SaleFitting]] = None
 
 
 # ─── Sale Milestones ───────────────────────────────────────────────────────
@@ -540,6 +560,9 @@ class SparePartCreate(BaseModel):
     gst_rate:        float  = Field(18, ge=0, le=100)
     hsn_code:        Optional[str] = ""
     location:        Optional[str] = ""
+    priority:        bool   = False   # fast-moving: only these raise low-stock alerts
+    fitting_brands:  Optional[List[str]] = []   # standard fitting for these vehicle brands
+    fitting_qty:     int    = Field(1, ge=1)    # how many go on one bike
 
 class SparePartUpdate(BaseModel):
     name:            Optional[str] = None
@@ -553,12 +576,22 @@ class SparePartUpdate(BaseModel):
     gst_rate:        Optional[float] = Field(None, ge=0, le=100)
     hsn_code:        Optional[str] = None
     location:        Optional[str] = None
+    priority:        Optional[bool] = None
+    fitting_brands:  Optional[List[str]] = None
+    fitting_qty:     Optional[int] = Field(None, ge=1)
 
 # PATCH 4: Added action field ─────────────────────────────────────────────────
 class StockAdjust(BaseModel):
     qty:    int    # positive = stock in, negative = adjustment
     action: Optional[str] = "add"   # "add" | "subtract"
     reason: Optional[str] = ""
+
+class PartOrderedUpdate(BaseModel):
+    ordered: bool = True   # False clears the flag (ordered by mistake / cancelled)
+
+class FittingsFittedUpdate(BaseModel):
+    """Clears a sale's pending-fitting marker once the parts are physically on the bike."""
+    part_numbers: Optional[List[str]] = None   # None = every pending fitting on the sale
 
 
 # ── Vendors ──────────────────────────────────────────────────────────────────
@@ -616,24 +649,6 @@ class PurchaseBillUpdate(BaseModel):
     items:            Optional[List[PurchaseBillItemIn]] = None
     round_off:        Optional[float] = None
     notes:            Optional[str] = None
-
-# ── Parts Sales ───────────────────────────────────────────────────────────────
-class PartsSaleItem(BaseModel):
-    part_id:     str
-    part_number: str
-    name:        str
-    hsn_code:    Optional[str] = ""
-    qty:         int    = Field(..., ge=1)
-    unit_price:  float  = Field(..., ge=0)
-    gst_rate:    float  = Field(18, ge=0, le=100)
-
-class PartsSaleCreate(BaseModel):
-    customer_name:  Optional[str] = ""
-    customer_mobile:Optional[str] = ""
-    items:          List[PartsSaleItem]
-    payment_mode:   Optional[str] = "Cash"
-    sold_by:        Optional[str] = ""
-    notes:          Optional[str] = ""
 
 # PATCH 3: Parts Bills models ─────────────────────────────────────────────────
 class PartsBillItem(BaseModel):
@@ -787,7 +802,8 @@ def _client_ip(request: Request) -> str:
     """Extract client IP behind Render/Vercel proxy chain."""
     xff = request.headers.get("x-forwarded-for", "")
     if xff:
-        return xff.split(",")[0].strip()
+        # Last hop is appended by Render's proxy; earlier entries are client-supplied and spoofable.
+        return xff.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 
@@ -1456,12 +1472,29 @@ async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
         "milestone_dates": dict(body.milestone_dates or {}),
         "created_at":      utcnow().isoformat(),
     }
-    result = await db.sales.insert_one(doc)
-    await db.vehicles.update_one(
-        {"_id": obj_id(body.vehicle_id)},
-        {"$set": {"status": "sold", "sold_date": sale_date, "invoice_number": inv_no}}
-    )
-    doc["id"] = str(result.inserted_id); doc.pop("_id", None)
+    # Fitting stock + sale + vehicle status go together, so a failure cannot leave
+    # accessories deducted against a sale that was never written.
+    inserted_id = None
+    touched: dict = {}
+    async with await _db.client.start_session() as session:
+        async def _txn(s):
+            nonlocal inserted_id
+            touched.clear()   # a retried transaction must not double-count
+            items_out, t, pending = await _deduct_fittings(body.fittings, inv_no, session=s)
+            touched.update(t)
+            doc["fittings"]         = items_out
+            doc["pending_fittings"] = pending
+            result = await db.sales.insert_one(doc, session=s)
+            inserted_id = result.inserted_id
+            await db.vehicles.update_one(
+                {"_id": obj_id(body.vehicle_id)},
+                {"$set": {"status": "sold", "sold_date": sale_date, "invoice_number": inv_no}},
+                session=s,
+            )
+        await session.with_transaction(_txn)
+
+    doc["id"] = str(inserted_id); doc.pop("_id", None)
+    doc["low_stock_alerts"] = await _priority_low_alerts(touched)
     return doc
 
 @api_router.get("/sales/stats/summary")
@@ -1534,10 +1567,95 @@ async def update_sale(sale_id: str, body: SaleUpdate, current_user=Depends(verif
         update.setdefault("vehicle_color",   new_vehicle.get("color",""))
         update.setdefault("chassis_number",  new_vehicle.get("chassis_number",""))
         update.setdefault("engine_number",   new_vehicle.get("engine_number",""))
-    if not update:
-        raise HTTPException(status_code=400, detail="Nothing to update")
-    await db.sales.update_one({"_id": obj_id(sale_id)}, {"$set": update})
-    return oid(await db.sales.find_one({"_id": obj_id(sale_id)}))
+    if body.fittings is None:
+        if not update:
+            raise HTTPException(status_code=400, detail="Nothing to update")
+        await db.sales.update_one({"_id": obj_id(sale_id)}, {"$set": update})
+        return oid(await db.sales.find_one({"_id": obj_id(sale_id)}))
+
+    # Fittings changed: put back exactly what was deducted, then take the new set,
+    # both inside one transaction so a half-applied edit cannot survive.
+    inv_no  = sale.get("invoice_number", "")
+    touched: dict = {}
+    async with await _db.client.start_session() as session:
+        async def _txn(s):
+            touched.clear()   # a retried transaction must not double-count
+            await _restore_fittings(sale.get("fittings", []), inv_no, session=s)
+            items_out, t, pending = await _deduct_fittings(body.fittings, inv_no, session=s,
+                                                           reason="sale_fitting_edit")
+            touched.update(t)
+            upd = dict(update)
+            upd["fittings"]         = items_out
+            upd["pending_fittings"] = pending
+            await db.sales.update_one({"_id": obj_id(sale_id)}, {"$set": upd}, session=s)
+        await session.with_transaction(_txn)
+
+    payload = oid(await db.sales.find_one({"_id": obj_id(sale_id)}))
+    payload["low_stock_alerts"] = await _priority_low_alerts(touched)
+    return payload
+
+
+@api_router.post("/sales/{sale_id}/fittings-fitted")
+async def mark_fittings_fitted(sale_id: str, body: FittingsFittedUpdate, current_user=Depends(verify_token)):
+    """Clear the pending-fitting marker once the accessories are on the bike.
+
+    Finishes the stock deduction that could not happen at sale time — by now the parts
+    have usually arrived on a purchase bill. If stock still is not there, the marker is
+    cleared anyway (the part is physically fitted) and the shortfall is written to
+    stock_log, so the gap stays visible in the audit trail instead of vanishing."""
+    sale = await db.sales.find_one({"_id": obj_id(sale_id)})
+    if not sale:
+        raise HTTPException(status_code=404, detail="Sale not found")
+    pending = sale.get("pending_fittings") or []
+    if not pending:
+        raise HTTPException(status_code=400, detail="No fittings pending on this sale")
+    wanted  = set(body.part_numbers) if body.part_numbers else None
+    inv_no  = sale.get("invoice_number", "")
+    clearing = [p for p in pending if wanted is None or p.get("part_number") in wanted]
+    if not clearing:
+        raise HTTPException(status_code=404, detail="Those fittings are not pending on this sale")
+
+    fittings = list(sale.get("fittings") or [])
+    touched: dict = {}
+    for p in clearing:
+        short = int(p.get("qty_short", 0) or 0)
+        pn    = p.get("part_number", "")
+        part  = await db.spare_parts.find_one({"part_number": pn}) if pn else None
+        take  = min(int((part or {}).get("stock", 0) or 0), short)
+        if part and take > 0:
+            await db.spare_parts.update_one(
+                {"_id": part["_id"]},
+                {"$inc": {"stock": -take}, "$push": {"stock_log": {
+                    "qty": -take, "action": "subtract", "reason": "sale_fitting_late",
+                    "bill_number": inv_no, "date": utcnow().isoformat(),
+                }}},
+            )
+            touched[part["_id"]] = take
+            for f in fittings:
+                if f.get("part_number") == pn:
+                    f["qty_deducted"] = int(f.get("qty_deducted", 0) or 0) + take
+                    break
+        if take < short and part:
+            # Fitted from stock the system never knew about — record the discrepancy.
+            await db.spare_parts.update_one(
+                {"_id": part["_id"]},
+                {"$push": {"stock_log": {
+                    "qty": 0, "action": "note", "reason": "sale_fitting_unrecorded",
+                    "shortfall": short - take, "bill_number": inv_no,
+                    "date": utcnow().isoformat(),
+                }}},
+            )
+
+    remaining = [p for p in pending if p not in clearing]
+    await db.sales.update_one(
+        {"_id": obj_id(sale_id)},
+        {"$set": {"pending_fittings": remaining, "fittings": fittings,
+                  "fittings_fitted_at": utcnow().isoformat(),
+                  "fittings_fitted_by": current_user.get("name", "")}},
+    )
+    payload = oid(await db.sales.find_one({"_id": obj_id(sale_id)}))
+    payload["low_stock_alerts"] = await _priority_low_alerts(touched)
+    return payload
 
 
 @api_router.patch("/sales/{sale_id}/milestone")
@@ -1576,8 +1694,15 @@ async def delete_sale(sale_id: str, current_user=Depends(require_admin)):
     sale = await db.sales.find_one({"_id": obj_id(sale_id)})
     if not sale:
         raise HTTPException(status_code=404, detail="Sale not found")
-    await db.vehicles.update_one({"_id": obj_id(sale["vehicle_id"])}, {"$set": {"status":"in_stock"}, "$unset": {"sold_date":"","invoice_number":""}})
-    await db.sales.delete_one({"_id": obj_id(sale_id)})
+    # Fittings go back on the shelf with the vehicle, or deleting a sale would quietly
+    # lose the accessory stock it consumed.
+    async with await _db.client.start_session() as session:
+        async def _txn(s):
+            await _restore_fittings(sale.get("fittings", []), sale.get("invoice_number", ""),
+                                    session=s, reason="sale_fitting_delete")
+            await db.vehicles.update_one({"_id": obj_id(sale["vehicle_id"])}, {"$set": {"status":"in_stock"}, "$unset": {"sold_date":"","invoice_number":""}}, session=s)
+            await db.sales.delete_one({"_id": obj_id(sale_id)}, session=s)
+        await session.with_transaction(_txn)
     await _sync_counter("invoice", "sales", "invoice_number")
     return {"message": "Deleted"}
 
@@ -2106,6 +2231,123 @@ async def _aggregate_bill_needs(items, session=None):
             needs[key] = {"part": part, "qty": qty}
     return needs
 
+async def _deduct_fittings(fittings, invoice_no: str, session=None, reason: str = "sale_fitting"):
+    """Take accessory stock off for the fittings on a sale.
+
+    A vehicle sale is never blocked by a missing seat cover, so this deducts what is
+    actually on the shelf and reports the rest instead of raising. Stock is never driven
+    below zero. Returns (items_out, touched, pending):
+      items_out — the lines to store on the sale, each carrying `qty_deducted` so an
+                  edit or delete can put back exactly what was taken
+      touched   — {part _id: qty deducted}, feeds the priority low-stock alert
+      pending   — what could not be deducted; drives the warning marker on the sales row
+    """
+    items_out, touched, pending = [], {}, []
+    for f in fittings or []:
+        qty = int(getattr(f, "qty", 0) or 0)
+        if qty <= 0:
+            continue
+        name = getattr(f, "name", "") or ""
+        pid  = getattr(f, "part_id", "") or ""
+        pn   = getattr(f, "part_number", "") or ""
+        free = bool(getattr(f, "complimentary", False))
+        part = None
+        if pid:
+            try:
+                part = await db.spare_parts.find_one({"_id": obj_id(pid)}, session=session)
+            except HTTPException:
+                part = None
+        if not part and pn:
+            part = await db.spare_parts.find_one({"part_number": pn}, session=session)
+
+        take = 0
+        if part:
+            take = min(int(part.get("stock", 0) or 0), qty)
+            if take > 0:
+                await db.spare_parts.update_one(
+                    {"_id": part["_id"]},
+                    {"$inc": {"stock": -take}, "$push": {"stock_log": {
+                        "qty": -take, "action": "subtract",
+                        "reason": "complimentary" if free else reason,
+                        "bill_number": invoice_no, "date": utcnow().isoformat(),
+                    }}},
+                    session=session,
+                )
+                touched[part["_id"]] = touched.get(part["_id"], 0) + take
+        if take < qty:
+            # Not in the parts list at all, or not enough on the shelf. Either way the
+            # bike still goes out; the shortfall becomes the pending-fitting marker.
+            pending.append({
+                "part_number": (part or {}).get("part_number", "") or pn,
+                "name":        (part or {}).get("name", "") or name,
+                "qty_short":   qty - take,
+                "untracked":   part is None,
+            })
+        items_out.append({
+            "part_id":       str(part["_id"]) if part else (pid or ""),
+            "part_number":   (part or {}).get("part_number", "") or pn,
+            "name":          name or (part or {}).get("name", ""),
+            "qty":           qty,
+            "qty_deducted":  take,
+            "unit_price":    0.0 if free else round(float(getattr(f, "unit_price", 0) or 0), 2),
+            "mrp":           round(float(getattr(f, "unit_price", 0) or 0), 2),
+            "complimentary": free,
+        })
+    return items_out, touched, pending
+
+async def _restore_fittings(fittings, invoice_no: str, session=None, reason: str = "sale_fitting_restore"):
+    """Put fitting stock back — only what was actually deducted, which is why pending
+    shortfalls are stored on the sale rather than recalculated here."""
+    for f in fittings or []:
+        qty = int((f or {}).get("qty_deducted", 0) or 0)
+        if qty <= 0:
+            continue
+        query = None
+        if f.get("part_id"):
+            try:
+                query = {"_id": obj_id(f["part_id"])}
+            except HTTPException:
+                query = None
+        if query is None and f.get("part_number"):
+            query = {"part_number": f["part_number"]}
+        if not query:
+            continue
+        await db.spare_parts.update_one(
+            query,
+            {"$inc": {"stock": qty}, "$push": {"stock_log": {
+                "qty": qty, "action": "add", "reason": reason,
+                "bill_number": invoice_no, "date": utcnow().isoformat(),
+            }}},
+            session=session,
+        )
+
+async def _priority_low_alerts(touched: dict):
+    """touched: {part ObjectId: qty just deducted}. Returns the priority parts this bill
+    just pushed into needing an order:
+      - it crossed the reorder level (above it before, at or below now), or
+      - it just hit zero, which is worth saying even if it was already low.
+    Crossings only, so a part sitting below its level does not nag on every later bill.
+    Called after the transaction commits; a failed bill deducted nothing."""
+    if not touched:
+        return []
+    docs = await db.spare_parts.find(
+        {"_id": {"$in": list(touched)}, "priority": True},
+        {"part_number": 1, "name": 1, "stock": 1, "reorder_level": 1},
+    ).to_list(None)
+    alerts = []
+    for d in docs:
+        after = int(d.get("stock", 0) or 0)
+        level = int(d.get("reorder_level", 0) or 0)
+        before = after + int(touched.get(d["_id"], 0) or 0)
+        if (after <= level < before) or (after == 0 < before):
+            alerts.append({
+                "part_number":   d.get("part_number", ""),
+                "name":          d.get("name", ""),
+                "stock":         after,
+                "reorder_level": level,
+            })
+    return alerts
+
 async def _collect_shortages(needs: dict, session=None):
     """Given aggregated needs, return list of shortages (empty = all OK).
     Each: {part_number, name, have, need}."""
@@ -2217,9 +2459,11 @@ async def create_service_bill(body: ServiceBillCreate, current_user=Depends(veri
     # Any 409 raised inside → txn aborts → zero writes committed. First txn use in
     # codebase; parts_bills has the same partial-state bug and needs the same fix.
     inserted_id = None
+    touched: dict = {}
     async with await _db.client.start_session() as session:
         async def _txn(s):
             nonlocal inserted_id
+            touched.clear()   # a retried transaction must not double-count
             needs = await _aggregate_bill_needs(body.items or [], session=s)
             shortages = await _collect_shortages(needs, session=s)
             if shortages:
@@ -2253,6 +2497,7 @@ async def create_service_bill(body: ServiceBillCreate, current_user=Depends(veri
                             "need":        qty,
                         }],
                     })
+                touched[part_id] = touched.get(part_id, 0) + qty
             result = await db.service_bills.insert_one(doc, session=s)
             inserted_id = result.inserted_id
             await db.service_jobs.update_one(
@@ -2263,6 +2508,7 @@ async def create_service_bill(body: ServiceBillCreate, current_user=Depends(veri
         await session.with_transaction(_txn)
 
     doc["id"] = str(inserted_id); doc.pop("_id", None)
+    doc["low_stock_alerts"] = await _priority_low_alerts(touched)
     return doc
 
 @api_router.get("/service-bills/{bill_id}")
@@ -2337,8 +2583,10 @@ async def update_service_bill(bill_id: str, body: ServiceBillCreate, current_use
     old_items = [_OldItem(d) for d in bill.get("items", [])]
     bill_no   = bill.get("bill_number", "")
 
+    touched: dict = {}
     async with await _db.client.start_session() as session:
         async def _txn(s):
+            touched.clear()   # a retried transaction must not double-count
             # Step 1: restore stock from old items
             old_needs = await _aggregate_bill_needs(old_items, session=s)
             for _, need in old_needs.items():
@@ -2385,6 +2633,11 @@ async def update_service_bill(bill_id: str, body: ServiceBillCreate, current_use
                             "need":        qty,
                         }],
                     })
+            # Net removal per part across the edit — only a net decrease can cross the level
+            for key, need in new_needs.items():
+                net = need["qty"] - (old_needs.get(key, {}).get("qty", 0) or 0)
+                if net > 0:
+                    touched[need["part"]["_id"]] = net
             # Step 4: persist bill + job update
             await db.service_bills.update_one({"_id": obj_id(bill_id)}, {"$set": update}, session=s)
             await db.service_jobs.update_one(
@@ -2395,7 +2648,9 @@ async def update_service_bill(bill_id: str, body: ServiceBillCreate, current_use
         await session.with_transaction(_txn)
 
     updated = await db.service_bills.find_one({"_id": obj_id(bill_id)})
-    return JSONResponse(content=oid(updated))
+    payload = oid(updated)
+    payload["low_stock_alerts"] = await _priority_low_alerts(touched)
+    return JSONResponse(content=payload)
 
 @api_router.delete("/service-bills/{bill_id}")
 async def delete_service_bill(bill_id: str, current_user=Depends(require_admin)):
@@ -2571,6 +2826,8 @@ async def _pb_apply_stock_deltas(items: List[dict], vendor_id: str, vendor_name:
                 "last_purchase_date":     bill_date,
                 "last_purchase_vendor":   vendor_name,
             }
+            # Delivery arrived — the part is no longer awaiting an order.
+            update["$unset"] = {"ordered_at": "", "ordered_by": ""}
             # Store this vendor's naming as an alias (upsert-style: add if new)
             alias_entry = {
                 "vendor_id":    vendor_id,
@@ -2836,6 +3093,8 @@ async def list_parts(
 @api_router.post("/parts", status_code=201)
 async def create_part(body: SparePartCreate, current_user=Depends(verify_token)):
     doc = body.dict()
+    # Stored canonical so /parts/fittings?brand= matches whatever casing the sale sends
+    doc["fitting_brands"] = sorted({norm_brand(b) for b in (doc.get("fitting_brands") or []) if b.strip()})
     pn = (doc.get("part_number") or "").strip()
     if not pn:
         pn = await next_sequence("part")
@@ -2853,21 +3112,82 @@ async def parts_stats(current_user=Depends(verify_token)):
     pipeline_val = [{"$group": {"_id":None,"stock_value":{"$sum":{"$multiply":["$purchase_price","$stock"]}},"selling_value":{"$sum":{"$multiply":["$selling_price","$stock"]}},"total_skus":{"$sum":1}}}]
     result = await db.spare_parts.aggregate(pipeline_val).to_list(1)
     stats  = result[0] if result else {}
-    low, out = await asyncio.gather(
+    low, out, priority_low = await asyncio.gather(
         db.spare_parts.count_documents({"$expr":{"$and":[{"$gt":["$stock",0]},{"$lte":["$stock","$reorder_level"]}]}}),
         db.spare_parts.count_documents({"stock": 0}),
+        # Sidebar badge: priority parts needing an order, out-of-stock ones included.
+        db.spare_parts.count_documents({"priority": True, "$expr": {"$lte": ["$stock", "$reorder_level"]}}),
     )
-    return {"total_skus":stats.get("total_skus",0),"low_stock":low,"out_of_stock":out,"stock_value":round(stats.get("stock_value",0),2),"selling_value":round(stats.get("selling_value",0),2)}
+    return {"total_skus":stats.get("total_skus",0),"low_stock":low,"out_of_stock":out,"priority_low":priority_low,"stock_value":round(stats.get("stock_value",0),2),"selling_value":round(stats.get("selling_value",0),2)}
 
 @api_router.get("/parts/low-stock")
-async def low_stock_parts(current_user=Depends(verify_token)):
-    docs = await db.spare_parts.aggregate([{"$match":{"$expr":{"$and":[{"$gt":["$stock",0]},{"$lte":["$stock","$reorder_level"]}]}}}]).to_list(None)
+async def low_stock_parts(
+    include_out: bool = Query(False, description="Also return parts at zero stock (order list wants them)"),
+    current_user=Depends(verify_token),
+):
+    floor = {"$gte": ["$stock", 0]} if include_out else {"$gt": ["$stock", 0]}
+    docs = await db.spare_parts.aggregate([{"$match":{"$expr":{"$and":[floor,{"$lte":["$stock","$reorder_level"]}]}}}]).to_list(None)
     return oids(docs)
 
 @api_router.get("/parts/out-of-stock")
 async def out_of_stock_parts(current_user=Depends(verify_token)):
     docs = await db.spare_parts.find({"stock":0}).to_list(None)
     return oids(docs)
+
+@api_router.get("/parts/fittings")
+async def standard_fittings(
+    brand: Optional[str] = Query(None, description="Vehicle brand; omit to list every standard fitting"),
+    current_user=Depends(verify_token),
+):
+    """The accessories fitted as standard to a bike of this brand — what the New Sale
+    form pre-fills so staff remove rather than remember."""
+    query: dict = {"fitting_brands": {"$exists": True, "$ne": []}}
+    if brand:
+        query["fitting_brands"] = norm_brand(brand)
+    docs = await db.spare_parts.find(query).sort("name", 1).to_list(None)
+    return oids(docs)
+
+@api_router.get("/parts/suggest-priority")
+async def suggest_priority_parts(
+    days:  int = Query(60, ge=1, le=365),
+    limit: int = Query(15, ge=1, le=100),
+    current_user=Depends(verify_token),
+):
+    """Parts consumed most in the last `days`, excluding ones already on the priority
+    list. Reads the stock_log audit trail, so it reflects real bills, not guesses."""
+    cutoff = (utcnow() - timedelta(days=days)).isoformat()
+    docs = await db.spare_parts.aggregate([
+        {"$match": {"priority": {"$ne": True}, "stock_log": {"$type": "array"}}},
+        {"$unwind": "$stock_log"},
+        {"$match": {"stock_log.action": "subtract", "stock_log.date": {"$gte": cutoff}}},
+        {"$group": {
+            "_id":           "$_id",
+            "part_number":   {"$first": "$part_number"},
+            "name":          {"$first": "$name"},
+            "category":      {"$first": "$category"},
+            "stock":         {"$first": "$stock"},
+            "reorder_level": {"$first": "$reorder_level"},
+            "used":          {"$sum": {"$abs": "$stock_log.qty"}},
+            "times":         {"$sum": 1},
+        }},
+        {"$sort": {"used": -1, "times": -1}},
+        {"$limit": limit},
+    ]).to_list(limit)
+    return {"days": days, "parts": oids(docs)}
+
+@api_router.post("/parts/{part_id}/mark-ordered")
+async def mark_part_ordered(part_id: str, body: PartOrderedUpdate, current_user=Depends(verify_token)):
+    """Record that a part has been ordered from a vendor. Deliberately does NOT touch
+    reorder_level — an earlier version set it to 0, which hid the part from every future
+    low-stock check. The part stays on the list, flagged with the date."""
+    if body.ordered:
+        update = {"$set": {"ordered_at": utcnow().isoformat(), "ordered_by": current_user.get("name", "")}}
+    else:
+        update = {"$unset": {"ordered_at": "", "ordered_by": ""}}
+    res = await db.spare_parts.update_one({"_id": obj_id(part_id)}, update)
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Part not found")
+    return oid(await db.spare_parts.find_one({"_id": obj_id(part_id)}))
 
 @api_router.get("/parts/{part_id}")
 async def get_part(part_id: str, current_user=Depends(verify_token)):
@@ -2881,6 +3201,8 @@ async def get_part(part_id: str, current_user=Depends(verify_token)):
 @api_router.put("/parts/{part_id}")
 async def update_part(part_id: str, body: SparePartUpdate, current_user=Depends(verify_token)):
     update = {k: v for k, v in body.dict().items() if v is not None}
+    if "fitting_brands" in update:
+        update["fitting_brands"] = sorted({norm_brand(b) for b in update["fitting_brands"] if b.strip()})
     await db.spare_parts.update_one({"_id": obj_id(part_id)}, {"$set": update})
     return oid(await db.spare_parts.find_one({"_id": obj_id(part_id)}))
 
@@ -2901,13 +3223,13 @@ async def adjust_stock_by_number(
         new_stock = max(0, current_stock - abs(body.qty))
     else:
         new_stock = current_stock + abs(body.qty)
-    await db.spare_parts.update_one(
-        {"part_number": part_number},
-        {"$set": {"stock": new_stock}, "$push": {"stock_log": {
-            "qty": body.qty, "action": action, "reason": body.reason or "service_bill",
-            "new_stock": new_stock, "date": utcnow().isoformat(),
-        }}}
-    )
+    update = {"$set": {"stock": new_stock}, "$push": {"stock_log": {
+        "qty": body.qty, "action": action, "reason": body.reason or "service_bill",
+        "new_stock": new_stock, "date": utcnow().isoformat(),
+    }}}
+    if action != "subtract":
+        update["$unset"] = {"ordered_at": "", "ordered_by": ""}   # stock came in
+    await db.spare_parts.update_one({"part_number": part_number}, update)
     return JSONResponse(content={"part_number": part_number, "old_stock": current_stock, "new_stock": new_stock})
 
 @api_router.post("/parts/{part_id}/adjust-stock")
@@ -2921,13 +3243,13 @@ async def adjust_stock(part_id: str, body: StockAdjust, current_user=Depends(ver
         new_stock = max(0, part["stock"] - abs(body.qty))
     else:
         new_stock = max(0, part["stock"] + body.qty)
-    await db.spare_parts.update_one(
-        {"_id": obj_id(part_id)},
-        {"$set": {"stock": new_stock}, "$push": {"stock_log": {
-            "qty": body.qty, "action": action, "reason": body.reason,
-            "new_stock": new_stock, "date": utcnow().isoformat()
-        }}}
-    )
+    update = {"$set": {"stock": new_stock}, "$push": {"stock_log": {
+        "qty": body.qty, "action": action, "reason": body.reason,
+        "new_stock": new_stock, "date": utcnow().isoformat()
+    }}}
+    if action != "subtract":
+        update["$unset"] = {"ordered_at": "", "ordered_by": ""}   # stock came in
+    await db.spare_parts.update_one({"_id": obj_id(part_id)}, update)
     return {"part_id": part_id, "new_stock": new_stock}
 
 @api_router.delete("/parts/{part_id}")
@@ -2936,76 +3258,6 @@ async def delete_part(part_id: str, current_user=Depends(require_admin)):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Part not found")
     return {"message": "Deleted"}
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  PARTS SALES (Counter bills with GST — requires part_id)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-@api_router.get("/parts-sales")
-async def list_parts_sales(
-    search: Optional[str] = Query(None),
-    p=Depends(paginate_params),
-    current_user=Depends(verify_token),
-):
-    query: dict = {}
-    if search:
-        s = re.escape(search)
-        query["$or"] = [
-            {"bill_number":     {"$regex": s, "$options":"i"}},
-            {"customer_name":   {"$regex": s, "$options":"i"}},
-            {"customer_mobile": {"$regex": s, "$options":"i"}},
-        ]
-    docs  = await db.parts_sales.find(query).skip(p["skip"]).limit(p["limit"]).sort("created_at",-1).to_list(p["limit"])
-    total = await db.parts_sales.count_documents(query)
-    return JSONResponse(content=oids(docs), headers={"X-Total-Count": str(total)})
-
-@api_router.post("/parts-sales", status_code=201)
-async def create_parts_sale(body: PartsSaleCreate, current_user=Depends(verify_token)):
-    if not body.items:
-        raise HTTPException(status_code=400, detail="At least one item required")
-    items_out = []
-    for item in body.items:
-        part = await db.spare_parts.find_one({"_id": obj_id(item.part_id)})
-        if not part:
-            raise HTTPException(status_code=404, detail=f"Part {item.part_id} not found")
-        # Atomic guarded decrement — no TOCTOU race
-        dec_res = await db.spare_parts.update_one(
-            {"_id": obj_id(item.part_id), "stock": {"$gte": item.qty}},
-            {"$inc": {"stock": -item.qty}},
-        )
-        if dec_res.matched_count == 0:
-            fresh = await db.spare_parts.find_one({"_id": obj_id(item.part_id)}, {"stock": 1, "name": 1})
-            have = (fresh or {}).get("stock", 0)
-            raise HTTPException(status_code=409, detail=f"Insufficient stock for {part['name']} (have {have}, need {item.qty})")
-        line = calc_gst_line(item.unit_price, item.qty, item.gst_rate)
-        items_out.append({"part_id":item.part_id,"part_number":item.part_number,"name":item.name,"hsn_code":item.hsn_code or part.get("hsn_code",""),"qty":item.qty,"unit_price":item.unit_price,"gst_rate":item.gst_rate,**line})
-    totals  = calc_bill_totals([{"unit_price":i["unit_price"],"qty":i["qty"],"gst_rate":i["gst_rate"]} for i in items_out])
-    bill_no = await next_sequence("part_bill")
-    doc = {"bill_number":bill_no,"customer_name":body.customer_name or "","customer_mobile":body.customer_mobile or "","items":items_out,**totals,"amount_in_words":amount_in_words(totals["grand_total"]),"payment_mode":body.payment_mode or "Cash","sold_by":body.sold_by or current_user.get("name",""),"sale_date":utcnow().strftime("%d %b %Y"),"notes":body.notes or "","created_at":utcnow().isoformat()}
-    result = await db.parts_sales.insert_one(doc)
-    doc["id"] = str(result.inserted_id); doc.pop("_id", None)
-    return doc
-
-@api_router.get("/parts-sales/{bill_id}")
-async def get_parts_sale(bill_id: str, current_user=Depends(verify_token)):
-    doc = await db.parts_sales.find_one({"_id": obj_id(bill_id)})
-    if not doc:
-        doc = await db.parts_sales.find_one({"bill_number": bill_id})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Bill not found")
-    return oid(doc)
-
-@api_router.delete("/parts-sales/{bill_id}")
-async def delete_parts_sale(bill_id: str, current_user=Depends(require_admin)):
-    bill = await db.parts_sales.find_one({"_id": obj_id(bill_id)})
-    if not bill:
-        raise HTTPException(status_code=404, detail="Bill not found")
-    for item in bill.get("items", []):
-        await db.spare_parts.update_one({"_id": obj_id(item["part_id"])}, {"$inc": {"stock": item["qty"]}})
-    await db.parts_sales.delete_one({"_id": obj_id(bill_id)})
-    await _sync_counter("part_bill", "parts_sales", "bill_number")
-    return {"message": "Deleted — stock restored"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3037,77 +3289,93 @@ async def create_parts_bill(body: PartsBillCreate, current_user=Depends(verify_t
     if not body.items:
         raise HTTPException(status_code=400, detail="At least one item required")
 
-    items_out = []
-    for item in body.items:
-        # Resolve part by part_id first, fall back to part_number
-        part = None
-        if item.part_id:
-            part = await db.spare_parts.find_one({"_id": obj_id(item.part_id)})
-        if not part and item.part_number:
-            part = await db.spare_parts.find_one({"part_number": item.part_number})
+    # Transactional: stock deducts + counter bump + bill insert are all-or-nothing,
+    # so a 409 on a later line no longer leaves earlier lines deducted.
+    inserted_id = None
+    touched: dict = {}
+    async with await _db.client.start_session() as session:
+        async def _txn(s):
+            nonlocal inserted_id
+            touched.clear()   # a retried transaction must not double-count
+            bill_no = await next_sequence("part_bill", session=s)
+            items_out = []
+            for item in body.items:
+                # Resolve part by part_id first, fall back to part_number
+                part = None
+                if item.part_id:
+                    part = await db.spare_parts.find_one({"_id": obj_id(item.part_id)}, session=s)
+                if not part and item.part_number:
+                    part = await db.spare_parts.find_one({"part_number": item.part_number}, session=s)
 
-        if part:
-            # Atomic guarded decrement — no TOCTOU race; log entry via $push in same op
-            dec_res = await db.spare_parts.update_one(
-                {"_id": part["_id"], "stock": {"$gte": item.qty}},
-                {"$inc": {"stock": -item.qty}, "$push": {"stock_log": {
-                    "qty": -item.qty, "action": "subtract",
-                    "reason": "complimentary" if item.complimentary else "parts_bill",
-                    "date": utcnow().isoformat(),
-                }}}
-            )
-            if dec_res.matched_count == 0:
-                fresh = await db.spare_parts.find_one({"_id": part["_id"]}, {"stock": 1})
-                have = (fresh or {}).get("stock", 0)
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Insufficient stock for {item.name} (have {have}, need {item.qty})"
-                )
+                if part:
+                    # Atomic guarded decrement — no TOCTOU race; log entry via $push in same op
+                    dec_res = await db.spare_parts.update_one(
+                        {"_id": part["_id"], "stock": {"$gte": item.qty}},
+                        {"$inc": {"stock": -item.qty}, "$push": {"stock_log": {
+                            "qty": -item.qty, "action": "subtract",
+                            "reason": "complimentary" if item.complimentary else "parts_bill",
+                            "bill_number": bill_no,
+                            "date": utcnow().isoformat(),
+                        }}},
+                        session=s,
+                    )
+                    if dec_res.matched_count == 0:
+                        fresh = await db.spare_parts.find_one({"_id": part["_id"]}, {"stock": 1}, session=s)
+                        have = (fresh or {}).get("stock", 0)
+                        raise HTTPException(
+                            status_code=409,
+                            detail=f"Insufficient stock for {item.name} (have {have}, need {item.qty})"
+                        )
+                    touched[part["_id"]] = touched.get(part["_id"], 0) + item.qty
 
-        if item.complimentary:
-            line = {"gross":0.0,"discount":0.0,"taxable":0.0,"cgst":0.0,"sgst":0.0,"gst_total":0.0,"total":0.0}
-            item_disc = 0.0
-        else:
-            item_disc = max(0.0, float(item.discount or 0))
-            line = calc_gst_line(item.unit_price, item.qty, item.gst_rate, item_disc)
-        items_out.append({
-            "part_id":       str(part["_id"]) if part else (item.part_id or ""),
-            "part_number":   item.part_number or (part.get("part_number","") if part else ""),
-            "name":          item.name,
-            "hsn_code":      item.hsn_code or (part.get("hsn_code","8714") if part else "8714"),
-            "qty":           item.qty,
-            "unit_price":    0 if item.complimentary else item.unit_price,
-            "mrp":           item.unit_price,
-            "gst_rate":      0 if item.complimentary else item.gst_rate,
-            "discount":      0 if item.complimentary else item_disc,
-            "complimentary": bool(item.complimentary),
-            **line,
-        })
+                if item.complimentary:
+                    line = {"gross":0.0,"discount":0.0,"taxable":0.0,"cgst":0.0,"sgst":0.0,"gst_total":0.0,"total":0.0}
+                    item_disc = 0.0
+                else:
+                    item_disc = max(0.0, float(item.discount or 0))
+                    line = calc_gst_line(item.unit_price, item.qty, item.gst_rate, item_disc)
+                items_out.append({
+                    "part_id":       str(part["_id"]) if part else (item.part_id or ""),
+                    "part_number":   item.part_number or (part.get("part_number","") if part else ""),
+                    "name":          item.name,
+                    "hsn_code":      item.hsn_code or (part.get("hsn_code","8714") if part else "8714"),
+                    "qty":           item.qty,
+                    "unit_price":    0 if item.complimentary else item.unit_price,
+                    "mrp":           item.unit_price,
+                    "gst_rate":      0 if item.complimentary else item.gst_rate,
+                    "discount":      0 if item.complimentary else item_disc,
+                    "complimentary": bool(item.complimentary),
+                    **line,
+                })
 
-    totals  = calc_bill_totals([{"unit_price":i["unit_price"],"qty":i["qty"],"gst_rate":i["gst_rate"],"discount":i.get("discount",0)} for i in items_out])
-    # Bill-level discount off grand_total (post-GST). Clamped 0..grand_total.
-    bill_discount = max(0.0, min(float(body.discount or 0), totals["grand_total"]))
-    net_total = round(totals["grand_total"] - bill_discount, 2)
-    bill_no = await next_sequence("part_bill")   # shared counter with parts_sales
+            totals  = calc_bill_totals([{"unit_price":i["unit_price"],"qty":i["qty"],"gst_rate":i["gst_rate"],"discount":i.get("discount",0)} for i in items_out])
+            # Bill-level discount off grand_total (post-GST). Clamped 0..grand_total.
+            bill_discount = max(0.0, min(float(body.discount or 0), totals["grand_total"]))
+            net_total = round(totals["grand_total"] - bill_discount, 2)
 
-    doc = {
-        "bill_number":      bill_no,
-        "customer_name":    body.customer_name or "",
-        "customer_mobile":  body.customer_mobile or "",
-        "customer_vehicle": body.customer_vehicle or "",
-        "payment_mode":     body.payment_mode or "Cash",
-        "items":            items_out,
-        "discount":         bill_discount,
-        "net_total":        net_total,
-        "amount_in_words":  amount_in_words(net_total),
-        "sold_by":          current_user.get("name",""),
-        "bill_date":        utcnow().strftime("%d %b %Y"),
-        "created_at":       utcnow().isoformat(),
-        **totals,
-    }
-    res     = await db.parts_bills.insert_one(doc)
-    created = await db.parts_bills.find_one({"_id": res.inserted_id})
-    return JSONResponse(content=oid(created), status_code=201)
+            doc = {
+                "bill_number":      bill_no,
+                "customer_name":    body.customer_name or "",
+                "customer_mobile":  body.customer_mobile or "",
+                "customer_vehicle": body.customer_vehicle or "",
+                "payment_mode":     body.payment_mode or "Cash",
+                "items":            items_out,
+                "discount":         bill_discount,
+                "net_total":        net_total,
+                "amount_in_words":  amount_in_words(net_total),
+                "sold_by":          current_user.get("name",""),
+                "bill_date":        utcnow().strftime("%d %b %Y"),
+                "created_at":       utcnow().isoformat(),
+                **totals,
+            }
+            res = await db.parts_bills.insert_one(doc, session=s)
+            inserted_id = res.inserted_id
+        await session.with_transaction(_txn)
+
+    created = await db.parts_bills.find_one({"_id": inserted_id})
+    payload = oid(created)
+    payload["low_stock_alerts"] = await _priority_low_alerts(touched)
+    return JSONResponse(content=payload, status_code=201)
 
 
 @api_router.get("/parts-bills/{bill_id}")
@@ -3124,6 +3392,9 @@ async def get_parts_bill(bill_id: str, current_user=Depends(verify_token)):
 async def update_parts_bill(bill_id: str, body: PartsBillUpdate, current_user=Depends(verify_token)):
     """Update parts bill. If items changed, restore old stock then re-deduct new stock.
     Discount recomputed per-line + bill-level. Complimentary rows ignore discount."""
+    # An empty item list would restore all stock and zero the bill — a delete, which is owner-only.
+    if body.items is not None and not body.items:
+        raise HTTPException(status_code=400, detail="At least one item required")
     bill = await db.parts_bills.find_one({"_id": obj_id(bill_id)})
     if not bill:
         raise HTTPException(status_code=404, detail="Parts bill not found")
@@ -3134,84 +3405,112 @@ async def update_parts_bill(bill_id: str, body: PartsBillUpdate, current_user=De
     if body.customer_vehicle is not None: update["customer_vehicle"] = body.customer_vehicle
     if body.payment_mode     is not None: update["payment_mode"]     = body.payment_mode
 
-    if body.items is not None:
-        # Restore stock from old items first
-        for old_it in bill.get("items", []):
-            query = {}
-            if old_it.get("part_id"):
-                try:
-                    from bson import ObjectId as _OID
-                    query = {"_id": _OID(old_it["part_id"])}
-                except Exception:
-                    query = {"part_number": old_it.get("part_number","")}
-            elif old_it.get("part_number"):
-                query = {"part_number": old_it["part_number"]}
-            if query and old_it.get("qty", 0) > 0:
-                await db.spare_parts.update_one(query, {"$inc": {"stock": old_it["qty"]}})
+    # Transactional: restore old stock + deduct new stock + save bill are all-or-nothing,
+    # so a 409 on a new line rolls the restore back instead of double-counting stock.
+    touched: dict = {}
+    async with await _db.client.start_session() as session:
+        async def _txn(s):
+            touched.clear()   # a retried transaction must not double-count
+            old_qty: dict = {}
+            upd = dict(update)
+            if body.items is not None:
+                # Restore stock from old items first
+                for old_it in bill.get("items", []):
+                    query = {}
+                    if old_it.get("part_id"):
+                        try:
+                            from bson import ObjectId as _OID
+                            query = {"_id": _OID(old_it["part_id"])}
+                        except Exception:
+                            query = {"part_number": old_it.get("part_number","")}
+                    elif old_it.get("part_number"):
+                        query = {"part_number": old_it["part_number"]}
+                    if query and old_it.get("qty", 0) > 0:
+                        # find_one_and_update, not update_one: returns the part so the net
+                        # change per part can be worked out without another read.
+                        restored = await db.spare_parts.find_one_and_update(query, {"$inc": {"stock": old_it["qty"]}, "$push": {"stock_log": {
+                            "qty": old_it["qty"], "action": "add",
+                            "reason": "parts_bill_edit_restore", "bill_number": bill.get("bill_number", ""),
+                            "date": utcnow().isoformat(),
+                        }}}, projection={"_id": 1}, session=s)
+                        if restored:
+                            old_qty[restored["_id"]] = old_qty.get(restored["_id"], 0) + old_it["qty"]
 
-        # Build new items + deduct stock
-        items_out = []
-        for item in body.items:
-            part = None
-            if item.part_id:
-                part = await db.spare_parts.find_one({"_id": obj_id(item.part_id)})
-            if not part and item.part_number:
-                part = await db.spare_parts.find_one({"part_number": item.part_number})
-            if part:
-                # Atomic guarded decrement — no TOCTOU race
-                dec_res = await db.spare_parts.update_one(
-                    {"_id": part["_id"], "stock": {"$gte": item.qty}},
-                    {"$inc": {"stock": -item.qty}, "$push": {"stock_log": {
-                        "qty": -item.qty, "action": "subtract",
-                        "reason": "complimentary" if item.complimentary else "parts_bill_edit",
-                        "date": utcnow().isoformat(),
-                    }}}
-                )
-                if dec_res.matched_count == 0:
-                    fresh = await db.spare_parts.find_one({"_id": part["_id"]}, {"stock": 1})
-                    have = (fresh or {}).get("stock", 0)
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Insufficient stock for {item.name} (have {have}, need {item.qty})"
-                    )
+                # Build new items + deduct stock
+                items_out = []
+                for item in body.items:
+                    part = None
+                    if item.part_id:
+                        part = await db.spare_parts.find_one({"_id": obj_id(item.part_id)}, session=s)
+                    if not part and item.part_number:
+                        part = await db.spare_parts.find_one({"part_number": item.part_number}, session=s)
+                    if part:
+                        # Atomic guarded decrement — no TOCTOU race
+                        dec_res = await db.spare_parts.update_one(
+                            {"_id": part["_id"], "stock": {"$gte": item.qty}},
+                            {"$inc": {"stock": -item.qty}, "$push": {"stock_log": {
+                                "qty": -item.qty, "action": "subtract",
+                                "reason": "complimentary" if item.complimentary else "parts_bill_edit",
+                                "bill_number": bill.get("bill_number", ""),
+                                "date": utcnow().isoformat(),
+                            }}},
+                            session=s,
+                        )
+                        if dec_res.matched_count == 0:
+                            fresh = await db.spare_parts.find_one({"_id": part["_id"]}, {"stock": 1}, session=s)
+                            have = (fresh or {}).get("stock", 0)
+                            raise HTTPException(
+                                status_code=409,
+                                detail=f"Insufficient stock for {item.name} (have {have}, need {item.qty})"
+                            )
+                        touched[part["_id"]] = touched.get(part["_id"], 0) + item.qty
 
-            if item.complimentary:
-                line = {"gross":0.0,"discount":0.0,"taxable":0.0,"cgst":0.0,"sgst":0.0,"gst_total":0.0,"total":0.0}
-                item_disc = 0.0
-            else:
-                item_disc = max(0.0, float(item.discount or 0))
-                line = calc_gst_line(item.unit_price, item.qty, item.gst_rate, item_disc)
-            items_out.append({
-                "part_id":       str(part["_id"]) if part else (item.part_id or ""),
-                "part_number":   item.part_number or (part.get("part_number","") if part else ""),
-                "name":          item.name,
-                "hsn_code":      item.hsn_code or (part.get("hsn_code","8714") if part else "8714"),
-                "qty":           item.qty,
-                "unit_price":    0 if item.complimentary else item.unit_price,
-                "mrp":           item.unit_price,
-                "gst_rate":      0 if item.complimentary else item.gst_rate,
-                "discount":      0 if item.complimentary else item_disc,
-                "complimentary": bool(item.complimentary),
-                **line,
-            })
-        totals = calc_bill_totals([{"unit_price":i["unit_price"],"qty":i["qty"],"gst_rate":i["gst_rate"],"discount":i.get("discount",0)} for i in items_out])
-        update["items"] = items_out
-        update.update(totals)
-    else:
-        totals = {k: bill.get(k, 0) for k in ("subtotal","gst_total","line_discount","grand_total","gst_breakup")}
+                    if item.complimentary:
+                        line = {"gross":0.0,"discount":0.0,"taxable":0.0,"cgst":0.0,"sgst":0.0,"gst_total":0.0,"total":0.0}
+                        item_disc = 0.0
+                    else:
+                        item_disc = max(0.0, float(item.discount or 0))
+                        line = calc_gst_line(item.unit_price, item.qty, item.gst_rate, item_disc)
+                    items_out.append({
+                        "part_id":       str(part["_id"]) if part else (item.part_id or ""),
+                        "part_number":   item.part_number or (part.get("part_number","") if part else ""),
+                        "name":          item.name,
+                        "hsn_code":      item.hsn_code or (part.get("hsn_code","8714") if part else "8714"),
+                        "qty":           item.qty,
+                        "unit_price":    0 if item.complimentary else item.unit_price,
+                        "mrp":           item.unit_price,
+                        "gst_rate":      0 if item.complimentary else item.gst_rate,
+                        "discount":      0 if item.complimentary else item_disc,
+                        "complimentary": bool(item.complimentary),
+                        **line,
+                    })
+                totals = calc_bill_totals([{"unit_price":i["unit_price"],"qty":i["qty"],"gst_rate":i["gst_rate"],"discount":i.get("discount",0)} for i in items_out])
+                upd["items"] = items_out
+                upd.update(totals)
 
-    # Bill-level discount
-    disc_raw = body.discount if body.discount is not None else bill.get("discount", 0)
-    grand = update.get("grand_total", bill.get("grand_total", 0))
-    bill_discount = max(0.0, min(float(disc_raw or 0), float(grand)))
-    net_total = round(float(grand) - bill_discount, 2)
-    update["discount"]        = bill_discount
-    update["net_total"]       = net_total
-    update["amount_in_words"] = amount_in_words(net_total)
+            # Bill-level discount
+            disc_raw = body.discount if body.discount is not None else bill.get("discount", 0)
+            grand = upd.get("grand_total", bill.get("grand_total", 0))
+            bill_discount = max(0.0, min(float(disc_raw or 0), float(grand)))
+            net_total = round(float(grand) - bill_discount, 2)
+            upd["discount"]        = bill_discount
+            upd["net_total"]       = net_total
+            upd["amount_in_words"] = amount_in_words(net_total)
 
-    await db.parts_bills.update_one({"_id": obj_id(bill_id)}, {"$set": update})
+            # Net removal per part across the edit — only a net decrease can cross the level
+            for pid, qty in list(touched.items()):
+                net = qty - old_qty.get(pid, 0)
+                if net > 0:
+                    touched[pid] = net
+                else:
+                    del touched[pid]
+            await db.parts_bills.update_one({"_id": obj_id(bill_id)}, {"$set": upd}, session=s)
+        await session.with_transaction(_txn)
+
     updated = await db.parts_bills.find_one({"_id": obj_id(bill_id)})
-    return JSONResponse(content=oid(updated))
+    payload = oid(updated)
+    payload["low_stock_alerts"] = await _priority_low_alerts(touched)
+    return JSONResponse(content=payload)
 
 
 @api_router.delete("/parts-bills/{bill_id}")
@@ -4542,7 +4841,6 @@ async def clear_entity(entity: str, current_user=Depends(require_admin)):
         "sales":      ("sales","invoice","invoice_number"),
         "service":    ("service_jobs","job","job_number"),
         "parts":      ("spare_parts","",""),
-        "parts_sales":("parts_sales","part_bill","bill_number"),
     }
     if entity not in entity_map:
         raise HTTPException(status_code=400, detail=f"Cannot clear '{entity}'")
