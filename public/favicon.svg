@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>MM Motors</title>
+  <style>
+    .tile { fill: #fbfaf7; }
+    .mark { fill: #1a1814; }
+    @media (prefers-color-scheme: dark) {
+      .tile { fill: #1a1814; }
+      .mark { fill: #fbfaf7; }
+    }
+  </style>
+  <rect class="tile" width="64" height="64" rx="12" />
+  <!-- The MM monogram, the same paths as src/components/Monogram.jsx -->
+  <g class="mark" transform="translate(9 8.5) scale(0.0705) translate(-690 -375)">
+    <path d="M712 384 L1003 672 L1294 384 Q1316 420 1293 458 L1003 748 L713 458 Q690 420 712 384 Z" />
+    <path d="M712 558 L1003 842 L1187 662 Q1210 700 1187 738 L1003 922 L713 632 Q690 595 712 558 Z" />
+    <path d="M698 700 L736 738 Q756 758 756 780 L756 1030 Q698 1030 698 972 Z" />
+    <path d="M1308 542 L1308 972 Q1308 1030 1251 1030 L1251 622 Q1251 600 1268 582 Z" />
+  </g>
+</svg>
