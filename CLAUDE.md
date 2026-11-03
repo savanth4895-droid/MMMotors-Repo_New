@@ -23,6 +23,7 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
 .
 ├── server.py          # FastAPI app, all route handlers, Pydantic models (~5,140 lines, 122 routes)
 ├── database.py        # Shared DB state, auth helpers, GST utils, normalizers
+├── google-sheet-sync.gs  # Apps Script pasted into the shop's sales spreadsheet
 ├── tests/             # pytest: GST maths + low-stock alerts (no DB) · parts-bill stock (needs TEST_MONGO_URL)
 ├── requirements.txt
 ├── render.yaml
@@ -105,6 +106,8 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
 | `JWT_SECRET_KEY`| ✓        | 64-char hex. Server exits on startup without this. |
 | `ALLOW_ORIGINS` | ✓        | Comma-separated Vercel URLs + `localhost:5173` |
 | `SERVICE_DUE_CUTOFF` |     | YYYY-MM-DD. Default `2026-05-01`. Vehicles sold before excluded from Service Due. |
+| `SHEETS_WEBHOOK_URL` |     | Apps Script web app URL (`/exec`). Unset = sheet sync off. |
+| `SHEETS_WEBHOOK_SECRET` |  | Must equal `SHARED_SECRET` in `google-sheet-sync.gs`. |
 
 Generate JWT secret:
 ```bash
@@ -303,6 +306,17 @@ Only parts flagged `priority: true` raise alerts — the owner curates that list
 - `POST /parts/{id}/mark-ordered` stamps `ordered_at`/`ordered_by`. It deliberately does **not** touch `reorder_level`: the old "remove from order list" button set it to 0, which hid the part from every future low-stock check. The flag clears on a genuine stock arrival (adjust-stock "add", purchase-bill add), not on bill-edit or delete restores, which are corrections rather than deliveries.
 - `GET /parts/suggest-priority` ranks parts by quantity consumed in the last N days from `stock_log`, excluding ones already priority — so the owner does not have to guess the initial list.
 - Starring a part whose `reorder_level` is 0 sets it to 5 in the same request, otherwise the star would be on but could never fire.
+
+### Google Sheet sync
+Mirrors each sale into the shop's long-standing "M M Motors Sales" spreadsheet, which the owner still works from. Off unless `SHEETS_WEBHOOK_URL` and `SHEETS_WEBHOOK_SECRET` are both set, so other installs are unaffected.
+
+- Transport is an Apps Script web app (`google-sheet-sync.gs`, pasted into the sheet), not the Sheets API: no service-account key to store and **no new Python dependency** — `_sheet_post` uses `urllib` on a worker thread via `asyncio.to_thread`. Chosen over a service account because the owner sets it up, and it is five minutes of clicking versus a Google Cloud project.
+- `_sheet_cells(sale)` is the only place the column layout lives; the script writes whatever letters it is handed. Columns **A** (brand/salesperson), **O** (RTO Done), **R** (Page Number) and the unused insurance/EMI/LAN/UTR block are deliberately absent — the owner fills those by hand, and a `None` would tell the script to leave a cell alone rather than clear it, so every mapped value is a string.
+- Dates go out as `3-Nov-2026` to match 690 existing rows. `_sheet_date` accepts both app formats (ISO and `03 Nov 2026`) and passes anything unparseable through rather than blanking it.
+- Rows are matched on **chassis number** (column K) because the sheet has no invoice column. A blank chassis always appends. Deleting a sale deletes the row, which shifts rows below — noted in DEPLOY.md in case another tab references row numbers.
+- `_sheet_sync` runs **after** the sale is committed, never inside the transaction, and never raises: the app is the record of truth and the sheet a copy. It stamps `sheet_synced_at` / `sheet_sync_error` on the sale. A failure is recorded and surfaced, never swallowed — a silent `except: pass` here is the bug pattern that let the old stock drift go unnoticed.
+- It is awaited rather than backgrounded so the save response can report the outcome; the cost is up to `SHEETS_TIMEOUT_S` (8s) added to a save while Google is slow. Switch to `BackgroundTasks` if that ever bites.
+- The frontend marks a sale as unsynced **only when `sheet_sync_error` is set**, so an install that never attempted a sync shows no markers. Red ⟳ on the row retries via `POST /sales/{id}/sheet-sync`; a "Not in sheet (n)" chip filters the list.
 
 ### Sale fittings
 Accessories supplied with a bike (tank cover, seat cover, foot rest, grills) are ordinary `spare_parts` rows, so reorder levels, the priority star, purchase bills and the alerts above all apply. The missing piece was that sales never touched stock.
@@ -614,3 +628,19 @@ Owner wanted to stop running out of the accessories fitted to every bike (tank c
 
 **After deploy:** accessory stock has never been deducted by sales, so current counts are too high. Do a physical count of tank covers, seat covers, foot rests and grills on the day this ships. Then set `fitting_brands` on each accessory (Parts → Edit → Standard fitting) — until a brand has a set, the Fittings step starts empty and staff add rows by hand.
 
+
+## Google Sheet sync (03 Nov 2026)
+
+Owner asked for every app sale to land in the shop's existing "M M Motors Sales" Google Sheet, which they still work from. See Key Conventions → Google Sheet sync for how it works.
+
+**The sheet was world-readable.** Its link gave anonymous access: 690 rows pulled with a plain `curl`, including 641 mobile numbers and 640 home addresses. Flagged to the owner, who was asked to set Share → Restricted before this goes live. Restricting it does not affect the sync, since the Apps Script runs as the owner.
+
+**Mapping.** Of 30 columns, 19 are filled by the app. Columns W–AD (insurance amounts, EMI, tenure, dispose, LAN, UTR) turned out to be blank in 689 of 690 rows — unused, so left alone. The owner chose to keep A (brand/salesperson, inconsistently formatted in the existing data), O (RTO Done — a status, whereas the app's `rto` is the office code) and R (Page Number — the physical ledger) as hand-filled columns.
+
+**Owner's decisions:** Apps Script over a service account; keep rows in sync on edit and delete rather than append-only; leave column A blank.
+
+**Verified:** 45 pytest tests pass, 17 of them new (`test_sheet_sync.py`: date formats including the legacy one, brand casing, the Cash/financier rule, the number-plate milestone, blanks never `None`, the owner's columns never written, no call when unconfigured, and a failing sheet never raising). `npm run lint` is 39 against a 40 baseline; `npm run build` passes; the mapping was checked by eye against real rows pulled from the sheet.
+
+**Not verified:** nothing ran against a real Apps Script deployment or a real database. The round trip — the 302 that Apps Script answers with and that `urllib` follows, the chassis match, the row delete — is untested until someone deploys the script. DEPLOY.md Step 8 has the setup, and the staging checklist section 5 has the checks, including the one that matters: a broken sheet must never stop a sale saving.
+
+**Watch for:** double entry. Rows already in the sheet are untouched, but if staff keep typing new sales in by hand as well, each bike gets two rows.
