@@ -13,9 +13,11 @@ Render env vars required:
 """
 
 import asyncio
+import json
 import secrets
 import traceback
 import re
+import urllib.request
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Optional, List, Any, Dict
@@ -473,6 +475,126 @@ SALE_MILESTONE_KEYS = ["documents", "invoice", "insurance", "tax_paid", "number_
 
 def default_milestones() -> Dict[str, bool]:
     return {k: False for k in SALE_MILESTONE_KEYS}
+
+
+# ─── Google Sheet sync ─────────────────────────────────────────────────────────
+# Mirrors each sale into the shop's existing sales spreadsheet via an Apps Script web
+# app (google-sheet-sync.gs). Unset env vars = feature off, so nothing changes for an
+# install that has not set it up. Setup: DEPLOY.md → "Step 8 — Google Sheet sync".
+SHEETS_WEBHOOK_URL    = os.getenv("SHEETS_WEBHOOK_URL", "").strip()
+SHEETS_WEBHOOK_SECRET = os.getenv("SHEETS_WEBHOOK_SECRET", "").strip()
+SHEETS_TIMEOUT_S      = 8
+
+def _sheet_date(value: str) -> str:
+    """App dates come in two formats ('2026-11-03' from the form, '03 Nov 2026' from
+    older records). The sheet uses '3-Nov-2026'. Unparseable input is passed through
+    rather than dropped, so a stray value stays visible instead of vanishing."""
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    for fmt in ("%Y-%m-%d", "%d %b %Y", "%d-%b-%Y"):
+        try:
+            d = datetime.strptime(raw, fmt)
+            return f"{d.day}-{d.strftime('%b')}-{d.year}"
+        except ValueError:
+            continue
+    return raw
+
+def _sheet_cells(sale: dict) -> dict:
+    """Sale → {column letter: value} for the shop's sheet layout.
+
+    The single source of truth for the mapping; the Apps Script just writes what it is
+    told. Columns deliberately left out so the owner keeps filling them by hand:
+      A  brand/salesperson   (inconsistent format in the existing rows)
+      O  RTO Done            (a status; the app's `rto` is the office code, e.g. KA07)
+      R  Page Number         (the physical ledger page)
+      W–AD insurance amounts, EMI, tenure, dispose, LAN, UTR (unused in the sheet)
+    """
+    ms    = sale.get("milestones") or {}
+    dates = sale.get("milestone_dates") or {}
+    nominee = sale.get("nominee") or {}
+    finance_type = (sale.get("finance_type") or "").strip().lower()
+    finance = "Cash" if finance_type in ("", "cash") else (sale.get("financier") or finance_type).strip()
+    return {
+        "B":  _sheet_date(sale.get("sale_date", "")),
+        "C":  sale.get("customer_name", "") or "",
+        "D":  sale.get("care_of", "") or "",
+        "E":  sale.get("customer_mobile", "") or "",
+        "F":  sale.get("customer_address", "") or "",
+        "G":  (sale.get("vehicle_brand", "") or "").upper(),
+        "H":  sale.get("vehicle_model", "") or "",
+        "I":  sale.get("vehicle_color", "") or "",
+        "J":  sale.get("vehicle_number", "") or "",
+        "K":  sale.get("chassis_number", "") or "",
+        "L":  sale.get("engine_number", "") or "",
+        "M":  sale.get("hsrp_front", "") or "",
+        "N":  sale.get("hsrp_back", "") or "",
+        "P":  "Issued" if ms.get("number_plate") else "Not Issued",
+        "Q":  _sheet_date(dates.get("number_plate", "")),
+        "S":  finance,
+        "T":  nominee.get("name", "") or "",
+        "U":  nominee.get("relation", "") or "",
+        "V":  str(nominee.get("age", "") or ""),
+    }
+
+def _sheet_post(payload: dict) -> dict:
+    """Blocking POST to the Apps Script web app. urllib, not a new dependency, for a
+    single call. Apps Script answers a 302 to a googleusercontent URL, which urllib
+    follows by itself."""
+    data = json.dumps(payload).encode("utf-8")
+    req  = urllib.request.Request(
+        SHEETS_WEBHOOK_URL, data=data, method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=SHEETS_TIMEOUT_S) as resp:
+        body = resp.read(4096).decode("utf-8", "replace")
+    try:
+        reply = json.loads(body)
+    except ValueError:
+        # Apps Script serves an HTML error page when a deployment is misconfigured.
+        return {"ok": False, "error": f"unexpected reply: {body[:200]}"}
+    # doPost always names what it did. A reply without that is not doPost answering: the
+    # /exec URL redirects to a script.googleusercontent.com/macros/echo address, and that
+    # address replays the doGet health JSON, whose ok:true would otherwise be recorded as
+    # a row that was never written.
+    if not isinstance(reply, dict):
+        return {"ok": False, "error": f"unexpected reply: {body[:200]}"}
+    if reply.get("ok") and not reply.get("action"):
+        return {"ok": False, "error": "not the sync endpoint — SHEETS_WEBHOOK_URL must be "
+                                      f"the script.google.com/macros/s/.../exec address: {body[:120]}"}
+    return reply
+
+async def _sheet_sync(sale: dict, action: str = "upsert") -> dict:
+    """Mirror one sale into the sheet and stamp the outcome on the sale.
+
+    Called only AFTER the sale is committed: the app is the record of truth and the
+    sheet is a copy, so this never raises and never blocks a sale from saving. It is
+    awaited rather than backgrounded so the UI can show the result straight away; the
+    cost is up to SHEETS_TIMEOUT_S added to the save when Google is slow.
+
+    A failure is recorded on the sale, never swallowed — a silent `except: pass` here is
+    exactly what let the old stock bugs rot unnoticed."""
+    if not SHEETS_WEBHOOK_URL or not SHEETS_WEBHOOK_SECRET:
+        return {"ok": False, "skipped": "not configured"}
+    payload = {
+        "secret":  SHEETS_WEBHOOK_SECRET,
+        "action":  action,
+        "chassis": (sale.get("chassis_number") or "").strip(),
+    }
+    if action != "delete":
+        payload["cells"] = _sheet_cells(sale)
+    try:
+        result = await asyncio.to_thread(_sheet_post, payload)
+    except Exception as e:
+        result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    stamp = ({"sheet_synced_at": utcnow().isoformat(), "sheet_sync_error": ""}
+             if result.get("ok") else
+             {"sheet_synced_at": "", "sheet_sync_error": str(result.get("error", "failed"))[:300]})
+    if action != "delete" and sale.get("_id") is not None:
+        await db.sales.update_one({"_id": sale["_id"]}, {"$set": stamp})
+    if not result.get("ok"):
+        print(f"[MM Motors] sheet sync {action} failed for {sale.get('invoice_number','?')}: {stamp['sheet_sync_error']}")
+    return result
 
 
 class MilestoneUpdate(BaseModel):
@@ -1493,8 +1615,12 @@ async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
             )
         await session.with_transaction(_txn)
 
-    doc["id"] = str(inserted_id); doc.pop("_id", None)
     doc["low_stock_alerts"] = await _priority_low_alerts(touched)
+    # Sheet copy, after the sale is safely committed. _sheet_sync stamps the outcome on
+    # the sale, so a failure shows as the "not in sheet" marker rather than a lost row.
+    sheet = await _sheet_sync({**doc, "_id": inserted_id})
+    doc["id"] = str(inserted_id); doc.pop("_id", None)
+    doc["sheet_ok"] = bool(sheet.get("ok") or sheet.get("skipped"))
     return doc
 
 @api_router.get("/sales/stats/summary")
@@ -1571,6 +1697,8 @@ async def update_sale(sale_id: str, body: SaleUpdate, current_user=Depends(verif
         if not update:
             raise HTTPException(status_code=400, detail="Nothing to update")
         await db.sales.update_one({"_id": obj_id(sale_id)}, {"$set": update})
+        fresh = await db.sales.find_one({"_id": obj_id(sale_id)})
+        await _sheet_sync(fresh)
         return oid(await db.sales.find_one({"_id": obj_id(sale_id)}))
 
     # Fittings changed: put back exactly what was deducted, then take the new set,
@@ -1590,9 +1718,25 @@ async def update_sale(sale_id: str, body: SaleUpdate, current_user=Depends(verif
             await db.sales.update_one({"_id": obj_id(sale_id)}, {"$set": upd}, session=s)
         await session.with_transaction(_txn)
 
+    await _sheet_sync(await db.sales.find_one({"_id": obj_id(sale_id)}))
     payload = oid(await db.sales.find_one({"_id": obj_id(sale_id)}))
     payload["low_stock_alerts"] = await _priority_low_alerts(touched)
     return payload
+
+
+@api_router.post("/sales/{sale_id}/sheet-sync")
+async def resync_sale_to_sheet(sale_id: str, current_user=Depends(verify_token)):
+    """Retry the Google Sheet copy for one sale. Used by the 'not in sheet' marker on
+    the sales list after a network blip or a misconfigured deployment."""
+    if not SHEETS_WEBHOOK_URL or not SHEETS_WEBHOOK_SECRET:
+        raise HTTPException(status_code=400, detail="Google Sheet sync is not configured on the server")
+    sale = await db.sales.find_one({"_id": obj_id(sale_id)})
+    if not sale:
+        raise HTTPException(status_code=404, detail="Sale not found")
+    result = await _sheet_sync(sale)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=f"Sheet rejected the row: {result.get('error', 'unknown error')}")
+    return oid(await db.sales.find_one({"_id": obj_id(sale_id)}))
 
 
 @api_router.post("/sales/{sale_id}/fittings-fitted")
@@ -1704,6 +1848,7 @@ async def delete_sale(sale_id: str, current_user=Depends(require_admin)):
             await db.sales.delete_one({"_id": obj_id(sale_id)}, session=s)
         await session.with_transaction(_txn)
     await _sync_counter("invoice", "sales", "invoice_number")
+    await _sheet_sync(sale, action="delete")   # drops the row; the sale is already gone
     return {"message": "Deleted"}
 
 
