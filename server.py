@@ -7,6 +7,7 @@ Structure:
 
 Render env vars required:
   MONGO_URL       — MongoDB Atlas connection string
+  ANTHROPIC_API_KEY — Claude API key; only needed to read supplier bills from a PDF or photo
   DB_NAME         — Database name (default: mmmotors)
   JWT_SECRET_KEY  — Random 64-char hex (generate: python3 -c "import secrets; print(secrets.token_hex(32))")
   ALLOW_ORIGINS   — Your Vercel URL (e.g. https://yourapp.vercel.app)
@@ -3098,6 +3099,169 @@ async def _pb_create_new_parts(items: List[dict], current_user: dict) -> List[di
         item["part_id"] = str(res.inserted_id)
         out.append(item)
     return out
+
+# ── Reading a supplier bill (PDF / photo) ─────────────────────────────────────
+# Claude reads the bill into the same shape the New Purchase Bill form uses. Nothing is
+# saved here: the form opens pre-filled and staff check every line before Save.
+_BILL_UNITS = ["PCS", "PC", "SET", "NOS", "EACH", "KG", "LTR"]   # the form's unit list
+_BILL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "vendor_name":   {"type": "string"},
+        "vendor_gstin":  {"type": "string"},
+        "bill_number":   {"type": "string"},
+        "bill_date":     {"type": "string", "description": "YYYY-MM-DD"},
+        "other_charges": {"type": "number", "description": "freight, forwarding, packing etc. added below the items"},
+        "grand_total":   {"type": "number"},
+        "items": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "description":  {"type": "string"},
+                "part_number":  {"type": "string"},
+                "hsn":          {"type": "string"},
+                "qty":          {"type": "number"},
+                "unit":         {"type": "string", "enum": _BILL_UNITS},
+                "mrp":          {"type": "number"},
+                "discount_pct": {"type": "number"},
+                "unit_price":   {"type": "number", "description": "taxable price per unit: after discount, before GST"},
+                "gst_pct":      {"type": "number", "description": "total GST %, e.g. CGST 9 + SGST 9 = 18"},
+                "amount":       {"type": "number", "description": "the line's amount column as printed"},
+            },
+            "required": ["description", "part_number", "hsn", "qty", "unit", "mrp",
+                         "discount_pct", "unit_price", "gst_pct", "amount"],
+            "additionalProperties": False,
+        }},
+    },
+    "required": ["vendor_name", "vendor_gstin", "bill_number", "bill_date",
+                 "other_charges", "grand_total", "items"],
+    "additionalProperties": False,
+}
+_BILL_PROMPT = """This is a supplier's tax invoice for spare parts bought by a motorcycle dealer in India.
+Extract the header and every line item exactly as printed. It may be a scan, so ignore pen ticks
+and stamps, and read numbers carefully.
+- Use "" for a text field that is blank on the bill (many lines have no part number) and 0 for a missing number.
+- unit: map the printed unit to the closest allowed value (Pcs -> PCS, Kit/Set -> SET, Nos -> NOS).
+- bill_date as YYYY-MM-DD. other_charges is the sum of charges added after the items (freight, forwarding, packing)."""
+
+_anthropic_client = None
+
+async def _extract_bill(data: bytes, content_type: str) -> dict:
+    """Ask Claude to read the bill; returns a dict matching _BILL_SCHEMA."""
+    import base64
+    import anthropic
+    global _anthropic_client
+    if _anthropic_client is None:
+        _anthropic_client = anthropic.AsyncAnthropic()
+    b64 = base64.standard_b64encode(data).decode("ascii")
+    source_block = (
+        {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": b64}}
+        if content_type == "application/pdf" else
+        {"type": "image", "source": {"type": "base64", "media_type": content_type, "data": b64}}
+    )
+    try:
+        resp = await _anthropic_client.beta.messages.create(
+            model="claude-opus-5-5",
+            max_tokens=16000,
+            betas=["server-side-fallback-2026-06-01"],
+            fallbacks=[{"model": "claude-opus-4-8"}],
+            output_config={"effort": "high", "format": {"type": "json_schema", "schema": _BILL_SCHEMA}},
+            messages=[{"role": "user", "content": [source_block, {"type": "text", "text": _BILL_PROMPT}]}],
+        )
+    except anthropic.AuthenticationError:
+        raise HTTPException(status_code=503, detail="Bill reading: the ANTHROPIC_API_KEY on the server is not valid")
+    except anthropic.RateLimitError:
+        raise HTTPException(status_code=429, detail="Bill reading is busy, try again in a minute")
+    except anthropic.APIStatusError as e:
+        raise HTTPException(status_code=502, detail=f"Bill reading failed ({e.status_code}), try again")
+    except anthropic.APIConnectionError:
+        raise HTTPException(status_code=502, detail="Could not reach the bill reader, try again")
+    if resp.stop_reason in ("refusal", "max_tokens"):
+        raise HTTPException(status_code=422, detail="Could not read this bill, enter it by hand")
+    text = next((b.text for b in resp.content if b.type == "text"), "")
+    return json.loads(text)
+
+def _bill_date(iso: str) -> str:
+    try:
+        return datetime.strptime(iso.strip(), "%Y-%m-%d").strftime("%d %b %Y")
+    except ValueError:
+        return iso.strip()
+
+def _exact(s: str) -> dict:
+    return {"$regex": f"^{re.escape(s.strip())}$", "$options": "i"}
+
+async def _match_bill_part(line: dict, vendor_id: Optional[str], repeated_names: set) -> Optional[dict]:
+    """Link a bill line to an existing part only when exactly one part fits: by part number
+    first, else by name. A name printed on several lines of the same bill (e.g. ten different
+    "Map Air Filter"s) is never matched by name, since one part can't be all of them."""
+    def alias(field, value):
+        return [{"aliases": {"$elemMatch": {"vendor_id": vendor_id, field: _exact(value)}}}] if vendor_id else []
+    pn, name = line["part_number"].strip(), line["description"].strip()
+    if pn:
+        query = {"$or": [{"part_number": _exact(pn)}, *alias("part_number", pn)]}
+    elif name and name.upper() not in repeated_names:
+        query = {"$or": [{"name": _exact(name)}, *alias("part_name", name)]}
+    else:
+        return None
+    found = await db.spare_parts.find(query).limit(2).to_list(2)
+    return found[0] if len(found) == 1 else None
+
+@api_router.post("/purchase-bills/parse")
+async def parse_purchase_bill(file: UploadFile = File(...), current_user=Depends(verify_token)):
+    """Read a supplier bill (PDF or photo) into a draft for the New Purchase Bill form.
+    Saves nothing: stock only changes when staff save the reviewed form."""
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large (max 10 MB)")
+    content_type = _sniff_upload_type(data[:16])
+    if not content_type:
+        raise HTTPException(status_code=415, detail="Upload the bill as a PDF, JPEG, PNG or WebP")
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=503, detail="Bill reading is not set up: add ANTHROPIC_API_KEY on the server")
+
+    bill = await _extract_bill(data, content_type)
+
+    gstin  = bill["vendor_gstin"].strip().upper()
+    vendor = (await db.vendors.find_one({"gstin": _exact(gstin)}) if gstin else None) \
+             or await db.vendors.find_one({"name": _exact(bill["vendor_name"])})
+    vendor_id = str(vendor["_id"]) if vendor else None
+
+    names = [i["description"].strip().upper() for i in bill["items"] if not i["part_number"].strip()]
+    repeated = {n for n in names if names.count(n) > 1}
+    items = []
+    for line in bill["items"]:
+        gst  = line["gst_pct"]
+        rate = line["unit_price"] or (line["amount"] / line["qty"] / (1 + gst / 100) if line["qty"] else 0)
+        part = await _match_bill_part(line, vendor_id, repeated)
+        row = {
+            "part_id":      str(part["_id"]) if part else None,
+            "part_name":    part["name"] if part else line["description"].strip(),
+            "part_number":  line["part_number"].strip(),
+            "hsn":          line["hsn"].strip() or (part or {}).get("hsn_code", ""),
+            "qty":          line["qty"],
+            "unit":         line["unit"],
+            "rate":         round(rate, 2),
+            "discount_pct": 0,   # rate is already the discounted price
+            "gst_pct":      gst,
+            "mrp":          line["mrp"],
+            "bill_text":    line["description"].strip(),
+        }
+        if part:   # lets the form flag a changed purchase cost, as when a part is picked by hand
+            row.update({"_existing_rate": part.get("last_purchase_rate") or part.get("purchase_price"),
+                        "_existing_selling": part.get("selling_price"), "_stock": part.get("stock")})
+        items.append(row)
+
+    other = round(bill["other_charges"] or 0, 2)
+    return {
+        "vendor_id":    vendor_id,
+        "vendor_name":  bill["vendor_name"].strip(),
+        "vendor_gstin": gstin,
+        "bill_number":  bill["bill_number"].strip(),
+        "bill_date":    _bill_date(bill["bill_date"]),
+        "round_off":    other,
+        "notes":        f"Freight/other charges Rs {other} included in round-off" if other else "",
+        "grand_total":  bill["grand_total"],
+        "items":        items,
+    }
 
 @api_router.get("/purchase-bills")
 async def list_purchase_bills(
