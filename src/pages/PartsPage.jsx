@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { partsApi, customersApi, salesApi, serviceApi, errMsg } from '../api/client';
 import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError, useSortable } from '../components/ui';
@@ -702,13 +702,12 @@ function stockStyle(p) {
 // ── Add / Edit part form ─────────────────────────────────────────────
 function PartForm({ initial = {}, onSave, onCancel, saving }) {
   const [f, setF] = useState({
-    part_number:'', name:'', category:'', brand:'', stock:'0', reorder_level:'5',
-    purchase_price:'', selling_price:'', gst_rate:'18', hsn_code:'', location:'', compatible_with:[],
+    part_number:'', name:'', category:'', brand:'', hsn_code:'', location:'',
     ...initial,
     priority: !!initial.priority,
     fitting_brands: initial.fitting_brands || [],
     fitting_qty: String(initial.fitting_qty ?? 1),
-    compatible_with: initial.compatible_with || [],
+    compatible_with: (initial.compatible_with || []).join(', '),   // typed as text, split on save so spaces survive typing
     stock: String(initial.stock ?? 0),
     reorder_level: String(initial.reorder_level ?? 5),
     purchase_price: String(initial.purchase_price ?? ''),
@@ -745,9 +744,9 @@ function PartForm({ initial = {}, onSave, onCancel, saving }) {
       {/* Compatible models — free text */}
       <Field label="Compatible Models">
         <input
-          value={(f.compatible_with||[]).join(', ')}
-          onChange={e => setF(p => ({ ...p, compatible_with: e.target.value.split(',').map(s => s.trim()).filter(Boolean) }))}
-          placeholder="e.g. TVS Jupiter, Honda Activa, Hero Splendor"
+          value={f.compatible_with}
+          onChange={s('compatible_with')}
+          placeholder="e.g. Activa 6G, Jupiter, Splendor Plus"
         />
       </Field>
       <label style={{ display:'flex', alignItems:'flex-start', gap:8, cursor:'pointer' }}>
@@ -794,7 +793,7 @@ function PartForm({ initial = {}, onSave, onCancel, saving }) {
           purchase_price: parseFloat(f.purchase_price)||0,
           selling_price:  parseFloat(f.selling_price)||0,
           gst_rate:       parseFloat(f.gst_rate)||18,
-          compatible_with: f.compatible_with || [],
+          compatible_with: f.compatible_with.split(',').map(m => m.trim()).filter(Boolean),
           priority:       !!f.priority,
           fitting_brands: f.fitting_brands || [],
           fitting_qty:    parseInt(f.fitting_qty)||1,
@@ -873,7 +872,7 @@ function PartsOrderModal({ onClose }) {
       qc.invalidateQueries(['parts-stats']);
       toast.success(`${selected.size} part${selected.size > 1 ? 's' : ''} marked as ordered`);
       setSelected(new Set());
-    } catch(e) { toast.error('Some updates failed'); }
+    } catch { toast.error('Some updates failed'); }
     finally { setBulkDeleting(false); }
   };
 
@@ -888,7 +887,7 @@ function PartsOrderModal({ onClose }) {
       qc.invalidateQueries(['parts']);
       toast.success('Reorder level updated');
       cancelEdit(p.id);
-    } catch(e) { toast.error('Failed to update'); }
+    } catch { toast.error('Failed to update'); }
     finally { setSaving(prev => ({ ...prev, [p.id]: false })); }
   };
 
