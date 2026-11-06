@@ -3350,17 +3350,19 @@ async def standard_fittings(
         query["fitting_brands"] = norm_brand(brand)
     docs = await db.spare_parts.find(query).sort("name", 1).to_list(None)
     if model:
-        docs = [d for d in docs if fits_model(d, model)]
+        docs = [d for d in docs if fits_model(d, model, brand or "")]
     return oids(docs)
 
 def _model_key(s) -> str:
-    return " ".join(str(s or "").upper().split())
+    # Spaces dropped entirely so "Activa6G" and "Activa 6G" are the same model
+    return "".join(str(s or "").upper().split())
 
-def fits_model(part: dict, model: str) -> bool:
+def fits_model(part: dict, model: str, brand: str = "") -> bool:
     """A part with no Compatible Models is fitted to every model of its brands;
-    otherwise only to the models listed (case and spacing ignored)."""
+    otherwise only to the models listed, written with or without the brand
+    ("Activa 6G" or "Honda Activa 6G"; case and spaces ignored)."""
     models = {_model_key(m) for m in (part.get("compatible_with") or []) if _model_key(m)}
-    return not models or _model_key(model) in models
+    return not models or bool({_model_key(model), _model_key(f"{brand} {model}")} & models)
 
 @api_router.get("/parts/suggest-priority")
 async def suggest_priority_parts(
