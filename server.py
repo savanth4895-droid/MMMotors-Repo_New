@@ -190,6 +190,7 @@ async def _ensure_indexes():
     await db.service_jobs.create_index("status")
     await db.service_jobs.create_index("customer_id")
     await db.service_jobs.create_index("vehicle_number")
+    await db.service_jobs.create_index("feedback_token", unique=True, sparse=True)
     # service_bills
     await db.service_bills.create_index("bill_number", unique=True)
     await db.service_bills.create_index("job_id")
@@ -620,6 +621,10 @@ class ServiceJobCreate(BaseModel):
     vehicle_photo_id: Optional[str] = ""
     save_vehicle:   Optional[bool] = False
     service_type:   Optional[str] = ""   # "Repair / Walk-in" or "1st Service" … "6th+ Service"
+
+class FeedbackSubmit(BaseModel):
+    rating:  int           = Field(..., ge=1, le=5)
+    comment: Optional[str] = Field("", max_length=1000)
 
 class ServiceJobUpdate(BaseModel):
     status:             Optional[str] = None
@@ -2295,13 +2300,19 @@ async def get_notifications(current_user=Depends(verify_token)):
 
 @api_router.get("/service/stats")
 async def service_stats(current_user=Depends(verify_token)):
-    pending, in_progress, ready, delivered = await asyncio.gather(
+    pending, in_progress, ready, delivered, fb = await asyncio.gather(
         db.service_jobs.count_documents({"status":"pending"}),
         db.service_jobs.count_documents({"status":"in_progress"}),
         db.service_jobs.count_documents({"status":"ready"}),
         db.service_jobs.count_documents({"status":"delivered"}),
+        db.service_jobs.aggregate([
+            {"$match": {"feedback_rating": {"$exists": True}}},
+            {"$group": {"_id": None, "avg": {"$avg": "$feedback_rating"}, "count": {"$sum": 1}}},
+        ]).to_list(1),
     )
-    return {"pending":pending,"in_progress":in_progress,"ready":ready,"delivered":delivered,"total_active":pending+in_progress+ready}
+    fb = fb[0] if fb else {"avg": None, "count": 0}
+    return {"pending":pending,"in_progress":in_progress,"ready":ready,"delivered":delivered,"total_active":pending+in_progress+ready,
+            "feedback_avg": round(fb["avg"], 1) if fb["avg"] is not None else None, "feedback_count": fb["count"]}
 
 @api_router.get("/service/{job_id}")
 async def get_service_job(job_id: str, current_user=Depends(verify_token)):
@@ -2318,7 +2329,54 @@ async def update_service_job(job_id: str, body: ServiceJobUpdate, current_user=D
     if "status" in update and update["status"] == "delivered":
         update.setdefault("delivery_date", utcnow().strftime("%d %b %Y"))
     await db.service_jobs.update_one({"_id": obj_id(job_id)}, {"$set": update})
+    if update.get("status") == "delivered":
+        await _ensure_feedback_token(job_id)
     return oid(await db.service_jobs.find_one({"_id": obj_id(job_id)}))
+
+# ── Customer feedback ─────────────────────────────────────────────────────────
+# Each delivered job gets an unguessable one-time token; the customer opens
+# /feedback/<token> on the frontend without logging in.
+async def _ensure_feedback_token(job_id: str) -> str:
+    # $exists filter keeps an already-sent link valid if this runs twice
+    await db.service_jobs.update_one(
+        {"_id": obj_id(job_id), "feedback_token": {"$exists": False}},
+        {"$set": {"feedback_token": secrets.token_urlsafe(24)}},
+    )
+    job = await db.service_jobs.find_one({"_id": obj_id(job_id)}, {"feedback_token": 1})
+    if not job:
+        raise HTTPException(status_code=404, detail="Service job not found")
+    return job["feedback_token"]
+
+@api_router.post("/service/{job_id}/feedback-link")
+async def service_feedback_link(job_id: str, current_user=Depends(verify_token)):
+    return {"token": await _ensure_feedback_token(job_id)}
+
+@api_router.get("/feedback/{token}")
+async def get_feedback_form(token: str):
+    """Public — returns only what the form shows, never the customer's mobile or address."""
+    job = await db.service_jobs.find_one({"feedback_token": token})
+    if not job:
+        raise HTTPException(status_code=404, detail="Feedback link not found")
+    return {
+        "customer_name":  (job.get("customer_name") or "").split(" ")[0],
+        "vehicle":        f'{job.get("brand","")} {job.get("model","")}'.strip(),
+        "vehicle_number": job.get("vehicle_number",""),
+        "submitted":      "feedback_rating" in job,
+    }
+
+@api_router.post("/feedback/{token}")
+async def submit_feedback(token: str, body: FeedbackSubmit):
+    """Public — one submission per token."""
+    res = await db.service_jobs.update_one(
+        {"feedback_token": token, "feedback_rating": {"$exists": False}},
+        {"$set": {"feedback_rating": body.rating, "feedback_comment": (body.comment or "").strip(),
+                  "feedback_at": utcnow().isoformat()}},
+    )
+    if res.matched_count == 0:
+        if await db.service_jobs.count_documents({"feedback_token": token}, limit=1):
+            raise HTTPException(status_code=409, detail="Feedback already submitted")
+        raise HTTPException(status_code=404, detail="Feedback link not found")
+    return {"message": "Thank you!"}
 
 @api_router.delete("/service/{job_id}")
 async def delete_service_job(job_id: str, current_user=Depends(require_admin)):
@@ -3282,6 +3340,7 @@ async def out_of_stock_parts(current_user=Depends(verify_token)):
 @api_router.get("/parts/fittings")
 async def standard_fittings(
     brand: Optional[str] = Query(None, description="Vehicle brand; omit to list every standard fitting"),
+    model: Optional[str] = Query(None, description="Vehicle model; drops fittings limited to other models"),
     current_user=Depends(verify_token),
 ):
     """The accessories fitted as standard to a bike of this brand — what the New Sale
@@ -3290,7 +3349,18 @@ async def standard_fittings(
     if brand:
         query["fitting_brands"] = norm_brand(brand)
     docs = await db.spare_parts.find(query).sort("name", 1).to_list(None)
+    if model:
+        docs = [d for d in docs if fits_model(d, model)]
     return oids(docs)
+
+def _model_key(s) -> str:
+    return " ".join(str(s or "").upper().split())
+
+def fits_model(part: dict, model: str) -> bool:
+    """A part with no Compatible Models is fitted to every model of its brands;
+    otherwise only to the models listed (case and spacing ignored)."""
+    models = {_model_key(m) for m in (part.get("compatible_with") or []) if _model_key(m)}
+    return not models or _model_key(model) in models
 
 @api_router.get("/parts/suggest-priority")
 async def suggest_priority_parts(
