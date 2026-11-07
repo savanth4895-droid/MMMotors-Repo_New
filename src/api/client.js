@@ -56,7 +56,8 @@ export function errMsg(e, fallback = 'Something went wrong') {
 export const authApi = {
   login:  (data) => api.post('/auth/login', data),
   me:     ()     => api.get('/auth/me'),
-  logout: ()     => api.post('/auth/logout'),
+  // token passed in so the screen can sign out first and the server call can follow
+  logout: (token) => api.post('/auth/logout', null, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined),
 };
 
 // ── Users / Staff ───────────────────────────────────────────────────
