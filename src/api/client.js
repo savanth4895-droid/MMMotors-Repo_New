@@ -225,6 +225,7 @@ export const reportsApi = {
   complimentary: (params) => api.get('/reports/complimentary', { params }),
   dailyClosing:  (date)   => api.get('/reports/daily-closing', { params: { date } }),
   monthlyCounts: (params) => api.get('/reports/monthly-counts', { params }),
+  topSellers:    (params) => api.get('/reports/top-sellers', { params }),   // { start, end } as YYYY-MM-DD
 };
 
 // ── Import ──────────────────────────────────────────────────────────
