@@ -16,6 +16,20 @@ const RS   = '₹';
 const fmt  = n => Number(n||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtI = n => Number(n||0).toLocaleString('en-IN');
 
+// Past job cards as vehicle rows in the same shape as sales rows, so bikes that were only
+// ever serviced here (bought elsewhere) can be picked too.
+const jobAsVehicle = j => ({
+  vehicle_number: j.vehicle_number, chassis_number: j.chassis_number,
+  vehicle_brand: j.brand, vehicle_model: j.model, vehicle_variant: j.variant,
+  customer_name: j.customer_name, note: `Last service ${j.check_in_date || ''}`.trim(),
+});
+const vehicleKey = v => (v.chassis_number || v.vehicle_number || '').replace(/\s/g, '').toUpperCase();
+// Sales first, then newest job per bike; one row per chassis / registration number
+const uniqueVehicles = (rows) => {
+  const seen = new Set();
+  return rows.filter(v => { const k = vehicleKey(v); if (!k || seen.has(k)) return false; seen.add(k); return true; });
+};
+
 // Common job-card complaints: tapping one adds it to the Complaint box, tapping again removes it
 const COMMON_COMPLAINTS = [
   'General service', 'Oil change', 'Brake adjustment', 'Brake shoe / pad change',
@@ -577,7 +591,15 @@ function NewJobModal({ onClose }) {
     queryFn: () => salesApi.list({ customer_id: selCustId, limit:50 }),
     enabled: !!selCustId,
   });
-  const custVehicles = (custSalesData?.data?.items || custSalesData?.data || []);
+  const { data:custJobsData } = useQuery({
+    queryKey: ['cust-service-vehicles', selCustId],
+    queryFn: () => serviceApi.list({ customer_id: selCustId, limit:50 }),
+    enabled: !!selCustId,
+  });
+  const custVehicles = uniqueVehicles([
+    ...(custSalesData?.data?.items || custSalesData?.data || []).map(s => ({ ...s, note: s.sale_date })),
+    ...(custJobsData?.data?.items || custJobsData?.data || []).map(jobAsVehicle),
+  ]);
 
   // Also search by vehicle_number while typing
   const { data:salesData } = useQuery({
@@ -585,8 +607,16 @@ function NewJobModal({ onClose }) {
     queryFn: () => salesApi.list({ search: vehicleSearch, limit:5 }),
     enabled: vehicleSearch.length > 3,
   });
+  const { data:jobSearchData } = useQuery({
+    queryKey: ['service-vehicle-lookup', vehicleSearch],
+    queryFn: () => serviceApi.list({ search: vehicleSearch, limit:5 }),
+    enabled: vehicleSearch.length > 3,
+  });
   const searchVehicles = vehicleSearch.length > 3
-    ? (salesData?.data?.items || salesData?.data || [])
+    ? uniqueVehicles([
+        ...(salesData?.data?.items || salesData?.data || []),
+        ...(jobSearchData?.data?.items || jobSearchData?.data || []).map(jobAsVehicle),
+      ])
     : [];
 
   // FIX #5: createJob → create
@@ -672,7 +702,7 @@ function NewJobModal({ onClose }) {
               {custVehicles.length > 0 && (
                 <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:10 }}>
                   {custVehicles.map((s, i) => {
-                    const isSelected = form.chassis_number && form.chassis_number === s.chassis_number;
+                    const isSelected = vehicleKey(form) === vehicleKey(s);
                     return (
                       <div key={i}
                         onClick={() => setForm(p => ({
@@ -700,7 +730,7 @@ function NewJobModal({ onClose }) {
                             {s.vehicle_number && <span className="mono">{s.vehicle_number}</span>}
                             {s.chassis_number && <span>Chassis: <span className="mono">{s.chassis_number}</span></span>}
                           </div>
-                          <div style={{ fontSize:10, color:C.dim, marginTop:1 }}>{s.sale_date}</div>
+                          <div style={{ fontSize:10, color:C.dim, marginTop:1 }}>{s.note}</div>
                         </div>
                         {isSelected && (
                           <div style={{ width:22, height:22, borderRadius:'50%', background:C.gold,
@@ -716,7 +746,7 @@ function NewJobModal({ onClose }) {
 
               {custVehicles.length === 0 && selCust && (
                 <div style={{ fontSize:11, color:C.muted, marginBottom:8, fontStyle:'italic' }}>
-                  No sales records found for this customer. Enter vehicle details below.
+                  No bikes on record for this customer. Enter vehicle details below.
                 </div>
               )}
 
@@ -733,7 +763,7 @@ function NewJobModal({ onClose }) {
                     background:C.surface, border:'1px solid var(--border2)',
                     borderRadius:4, boxShadow:'0 8px 24px rgba(0,0,0,.5)', overflow:'hidden' }}>
                     {searchVehicles.map(s => (
-                      <div key={s._id || s.id}
+                      <div key={vehicleKey(s)}
                         onClick={() => {
                           setForm(p => ({
                             ...p,
@@ -763,7 +793,7 @@ function NewJobModal({ onClose }) {
                 )}
                 {vehicleSearch.length > 3 && searchVehicles.length === 0 && (
                   <div style={{ fontSize:10, color:C.muted, marginTop:4, fontStyle:'italic' }}>
-                    No sale found matching “{vehicleSearch}”. Fill the vehicle details manually below.
+                    No bike found matching “{vehicleSearch}”. Fill the vehicle details manually below.
                   </div>
                 )}
               </div>
