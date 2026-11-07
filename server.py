@@ -3159,11 +3159,9 @@ async def _extract_bill(data: bytes, content_type: str) -> dict:
         {"type": "image", "source": {"type": "base64", "media_type": content_type, "data": b64}}
     )
     try:
-        resp = await _anthropic_client.beta.messages.create(
+        resp = await _anthropic_client.messages.create(
             model="claude-opus-5-5",
             max_tokens=16000,
-            betas=["server-side-fallback-2026-06-01"],
-            fallbacks=[{"model": "claude-opus-4-8"}],
             output_config={"effort": "high", "format": {"type": "json_schema", "schema": _BILL_SCHEMA}},
             messages=[{"role": "user", "content": [source_block, {"type": "text", "text": _BILL_PROMPT}]}],
         )
@@ -3172,7 +3170,10 @@ async def _extract_bill(data: bytes, content_type: str) -> dict:
     except anthropic.RateLimitError:
         raise HTTPException(status_code=429, detail="Bill reading is busy, try again in a minute")
     except anthropic.APIStatusError as e:
-        raise HTTPException(status_code=502, detail=f"Bill reading failed ({e.status_code}), try again")
+        # Anthropic's own reason (e.g. "credit balance is too low") is what tells staff what to fix
+        reason = ((e.body or {}).get("error") or {}).get("message", "") if isinstance(e.body, dict) else ""
+        print(f"[MM Motors] Bill reading failed: {e.status_code} {reason or e.message}")
+        raise HTTPException(status_code=502, detail=f"Bill reading failed ({e.status_code}): {reason or 'try again'}")
     except anthropic.APIConnectionError:
         raise HTTPException(status_code=502, detail="Could not reach the bill reader, try again")
     if resp.stop_reason in ("refusal", "max_tokens"):
@@ -4261,6 +4262,77 @@ async def top_parts_report(limit: int = Query(10), current_user=Depends(require_
     pipeline = [{"$unwind":"$items"},{"$group":{"_id":"$items.name","qty":{"$sum":"$items.qty"},"revenue":{"$sum":"$items.total"}}},{"$sort":{"qty":-1}},{"$limit":limit}]
     docs = await db.parts_sales.aggregate(pipeline).to_list(limit)
     return [{"name":d["_id"],"qty_sold":d["qty"],"revenue":round(d["revenue"],2)} for d in docs]
+
+def _norm_key(s) -> str:
+    return " ".join(str(s or "").upper().split())
+
+def _top_sellers(sales: list, bills: list, limit: int) -> dict:
+    """Best-selling bike models and the most-billed service items for one period.
+    Spelling/case differences are merged; the labour line is reported on its own."""
+    models: dict = {}
+    for s in sales:
+        key = (_norm_key(s.get("vehicle_brand")), _norm_key(s.get("vehicle_model")))
+        if not key[1]:
+            continue
+        m = models.setdefault(key, {"brand": key[0], "model": (s.get("vehicle_model") or "").strip(), "units": 0, "revenue": 0.0})
+        m["units"] += 1
+        m["revenue"] += float(s.get("total_amount") or 0)
+
+    items: dict = {}
+    labour = {"bills": 0, "revenue": 0.0}
+    for b in bills:
+        seen = set()
+        for it in b.get("items") or []:
+            desc, pn = (it.get("description") or "").strip(), (it.get("part_number") or "").strip()
+            if not pn and desc.lower() == "labour charges":
+                labour["bills"] += 1
+                labour["revenue"] += float(it.get("total") or 0)
+                continue
+            key = _norm_key(pn) or _norm_key(desc)
+            if not key:
+                continue
+            row = items.setdefault(key, {"name": desc or pn, "part_number": pn, "qty": 0, "free_qty": 0, "revenue": 0.0, "bills": 0})
+            qty = int(it.get("qty") or 0)
+            row["qty"] += qty
+            if it.get("complimentary"):
+                row["free_qty"] += qty
+            row["revenue"] += float(it.get("total") or 0)
+            if key not in seen:
+                row["bills"] += 1
+                seen.add(key)
+
+    def top(rows, *sort_keys):
+        out = sorted(rows, key=lambda r: tuple(-r[k] for k in sort_keys))[:limit]
+        for r in out:
+            r["revenue"] = round(r["revenue"], 2)
+        return out
+
+    labour["revenue"] = round(labour["revenue"], 2)
+    return {
+        "sales_count":   len(sales),
+        "service_bills": len(bills),
+        "models":        top(models.values(), "units", "revenue"),
+        "items":         top(items.values(), "qty", "revenue"),
+        "labour":        labour,
+    }
+
+@api_router.get("/reports/top-sellers")
+async def top_sellers_report(
+    start: str = Query(..., description="YYYY-MM-DD"),
+    end:   str = Query(..., description="YYYY-MM-DD, included"),
+    limit: int = Query(10, ge=1, le=50),
+    current_user=Depends(require_admin),
+):
+    """Top bike models sold and top service-bill items between two dates."""
+    try:
+        s = datetime.strptime(start, "%Y-%m-%d")
+        e = datetime.strptime(end, "%Y-%m-%d") + timedelta(days=1)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Dates must be YYYY-MM-DD")
+    if e <= s:
+        raise HTTPException(status_code=400, detail="End date is before start date")
+    sales, bills = await asyncio.gather(_gstr1_fetch_sales(s, e), _gstr1_fetch_service_bills(s, e))
+    return _top_sellers(sales, bills, limit)
 
 
 # ─── GSTR-1 Export (CA flat format) ────────────────────────────────────────────
