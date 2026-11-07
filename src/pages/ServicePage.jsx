@@ -16,6 +16,27 @@ const RS   = '₹';
 const fmt  = n => Number(n||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtI = n => Number(n||0).toLocaleString('en-IN');
 
+// Common job-card complaints: tapping one adds it to the Complaint box, tapping again removes it
+const COMMON_COMPLAINTS = [
+  'General service', 'Oil change', 'Brake adjustment', 'Brake shoe / pad change',
+  'Chain lube & adjustment', 'Starting problem', 'Self-start not working', 'Engine noise',
+  'Low mileage', 'Battery issue', 'Lights / electrical', 'Horn not working', 'Clutch issue',
+  'Hard gear shifting', 'Oil leakage', 'Overheating', 'Puncture / tyre', 'Speedometer not working',
+  'Washing',
+];
+function ComplaintPicks({ value, onChange }) {
+  const parts = (value || '').split(',').map(s => s.trim()).filter(Boolean);
+  const has   = c => parts.some(p => p.toLowerCase() === c.toLowerCase());
+  const toggle = c => onChange((has(c) ? parts.filter(p => p.toLowerCase() !== c.toLowerCase()) : [...parts, c]).join(', '));
+  return (
+    <div className="chips" role="group" aria-label="Common complaints" style={{ marginTop:'var(--space-xs)' }}>
+      {COMMON_COMPLAINTS.map(c => (
+        <button key={c} type="button" className="chip" aria-pressed={has(c)} onClick={() => toggle(c)}>{c}</button>
+      ))}
+    </div>
+  );
+}
+
 // Opens WhatsApp with the customer's one-time feedback link
 const sendFeedbackWA = (job, token) => {
   const link = `${window.location.origin}/feedback/${token}`;
@@ -495,6 +516,7 @@ function EditJobModal({ job, onClose }) {
           <label style={labelSt}>Complaint / Work Required</label>
           <textarea value={form.complaint} onChange={upd('complaint')} rows={3}
             style={{ ...inp, resize:'vertical', fontFamily:'inherit' }} />
+          <ComplaintPicks value={form.complaint} onChange={v => setForm(p => ({ ...p, complaint: v }))} />
         </div>
         <div style={{ marginBottom:20 }}>
           <label style={labelSt}>Notes</label>
@@ -809,6 +831,7 @@ function NewJobModal({ onClose }) {
             <textarea value={form.complaint} onChange={upd('complaint')} rows={3}
               placeholder="Engine noise, routine service, brake issue…"
               style={{ ...inp, resize:'vertical', fontFamily:'inherit' }} />
+            <ComplaintPicks value={form.complaint} onChange={v => setForm(p => ({ ...p, complaint: v }))} />
           </div>
           <div style={{ marginBottom:20 }}>
             <label style={labelSt}>Notes</label>
@@ -1768,3 +1791,4 @@ function TotRow({ label, val, bold, gold }) {
     </div>
   );
 }
+Okay, I'll take a minute. 
