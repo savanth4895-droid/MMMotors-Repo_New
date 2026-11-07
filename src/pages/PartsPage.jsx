@@ -17,6 +17,7 @@ const CATEGORIES = [
   'Suspension', 'Tools', 'Transmission', 'Tyres & Tubes', 'Wheels & Rims',
   'Other',
 ];
+const NO_CATEGORY = '__none__';   // category filter value: parts with no category yet
 // Same list as VehiclesPage — a part is a standard fitting for whichever of these it is ticked for.
 const BRANDS = [
   'HERO', 'HONDA', 'BAJAJ', 'TVS', 'YAMAHA', 'SUZUKI', 'ROYAL ENFIELD',
@@ -1395,7 +1396,7 @@ export default function PartsPage() {
   });
   const { data, isLoading, error } = useQuery({
     queryKey:['parts', search, cat, filter],
-    queryFn: ()=>partsApi.list({ search:search||undefined, category:cat||undefined, limit:2000 }).then(r=>r.data),
+    queryFn: ()=>partsApi.list({ search:search||undefined, category:(cat && cat!==NO_CATEGORY) ? cat : undefined, limit:2000 }).then(r=>r.data),
   });
   // 1. Bills History now shows parts-bills (from service PartsBillModal)
   const { data:billsData, isLoading:billsLoading } = useQuery({
@@ -1429,6 +1430,11 @@ export default function PartsPage() {
     onSuccess: ()=>{ qc.invalidateQueries(['parts-bills-list']); toast.success('Bill deleted'); },
     onError: ()=>toast.error('Delete failed'),
   });
+  const categoryMut = useMutation({
+    mutationFn: ({ id, category }) => partsApi.update(id, { category }),
+    onSuccess: ()=>{ qc.invalidateQueries(['parts']); toast.success('Category saved', { id:'part-category' }); },
+    onError: e=>toast.error(errMsg(e, 'Could not save category')),
+  });
   // A part with reorder level 0 can only ever read as out of stock, so starring one
   // gives it a starting level of 5 — otherwise the star would look on but never alert.
   const priorityMut = useMutation({
@@ -1450,7 +1456,7 @@ export default function PartsPage() {
     if (filter==='low') return p.stock>0 && p.stock<=(p.reorder_level||5);
     if (filter==='out') return p.stock===0;
     return true;
-  }).filter(p => !cat || p.category===cat);
+  }).filter(p => !cat || (cat===NO_CATEGORY ? !p.category : p.category===cat));
 
   const { sorted: sortedParts, Th: PartsTh } = useSortable(visibleParts, 'name', 'asc');
 
@@ -1532,6 +1538,7 @@ export default function PartsPage() {
             <input type="search" className="page-search" aria-label="Search parts" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search parts…" style={{ width:'min(240px, 100%)' }} />
             <select aria-label="Category" value={cat} onChange={e=>setCat(e.target.value)} style={{ width:170 }}>
               <option value="">All categories</option>
+              <option value={NO_CATEGORY}>No category yet</option>
               {CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
             </select>
             <div className="chips" role="group" aria-label="Stock filter">
@@ -1605,7 +1612,17 @@ export default function PartsPage() {
                             <span className="cell-muted">Not set</span>
                           )}
                         </td>
-                        <td className="cell-muted">{p.category}</td>
+                        <td>
+                          <select aria-label={`Category of ${p.name}`} value={p.category || ''}
+                            disabled={categoryMut.isPending && categoryMut.variables?.id === p.id}
+                            onChange={e => categoryMut.mutate({ id: p.id, category: e.target.value })}
+                            style={{ minWidth:140, fontSize:'var(--text-xs)', ...(p.category ? null : { color:'var(--color-muted)' }) }}>
+                            <option value="">Not set</option>
+                            {/* keep an older or imported name visible even if it's not in the list */}
+                            {p.category && !CATEGORIES.includes(p.category) && <option value={p.category}>{p.category}</option>}
+                            {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                          </select>
+                        </td>
                         <td className="cell-muted">{p.brand}</td>
                         <td className="mono cell-muted">{p.location}</td>
                         <td className="num">
