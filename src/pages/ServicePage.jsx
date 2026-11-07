@@ -1791,4 +1791,3 @@ function TotRow({ label, val, bold, gold }) {
     </div>
   );
 }
-Okay, I'll take a minute. 
