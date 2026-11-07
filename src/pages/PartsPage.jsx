@@ -8,7 +8,15 @@ import { useConfirm } from '../components/ConfirmModal';
 import { useDraft, DraftBar } from '../hooks/useDraft';
 import { escapeDeep } from '../utils/escapeHtml';
 
-const CATEGORIES = ['Engine','Electrical','Brakes','Tyres & Tubes','Filters','Body Parts','Transmission','Suspension','Accessories','Consumables'];
+// A–Z so staff can scan for one; existing names unchanged so saved parts keep their category
+const CATEGORIES = [
+  'Accessories', 'Battery', 'Bearings', 'Body Parts', 'Brakes', 'Cables', 'Chain & Sprocket',
+  'Clutch', 'Consumables', 'Electrical', 'Engine', 'Engine Oil & Lubricants', 'Exhaust & Silencer',
+  'Filters', 'Fuel System', 'Gaskets & Seals', 'Handlebar & Controls', 'Helmets & Riding Gear',
+  'Lights & Indicators', 'Mirrors', 'Nuts, Bolts & Fasteners', 'Rubber Parts', 'Seats & Covers',
+  'Suspension', 'Tools', 'Transmission', 'Tyres & Tubes', 'Wheels & Rims',
+  'Other',
+];
 // Same list as VehiclesPage — a part is a standard fitting for whichever of these it is ticked for.
 const BRANDS = [
   'HERO', 'HONDA', 'BAJAJ', 'TVS', 'YAMAHA', 'SUZUKI', 'ROYAL ENFIELD',
