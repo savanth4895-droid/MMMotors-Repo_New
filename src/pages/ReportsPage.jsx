@@ -638,9 +638,140 @@ export default function ReportsPage() {
         )}
       </Section>
 
+      <TopModelsSection />
+
+      <TopSellersSection />
+
       <PnLSection />
 
     </div>
+  );
+}
+
+// ── Top sellers ──────────────────────────────────────────────────────────────
+// Local calendar dates as YYYY-MM-DD (toISOString would shift them to UTC)
+const ymd = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+function topSellerPeriods() {
+  const t = new Date(), y = t.getFullYear(), m = t.getMonth();
+  const fy = m >= 3 ? y : y - 1;   // Indian financial year starts 1 April
+  return [
+    ['month',     'This month',            new Date(y, m, 1),     t],
+    ['lastmonth', 'Last month',            new Date(y, m - 1, 1), new Date(y, m, 0)],
+    ['year',      `This year (${y})`,      new Date(y, 0, 1),     t],
+    ['fy',        `This financial year (${fy}–${String(fy + 1).slice(2)})`, new Date(fy, 3, 1), t],
+    ['lastfy',    `Last financial year (${fy - 1}–${String(fy).slice(2)})`, new Date(fy - 1, 3, 1), new Date(fy, 2, 31)],
+  ].map(([id, label, start, end]) => ({ id, label, start: ymd(start), end: ymd(end) }));
+}
+const rupees = n => '₹' + Math.round(Number(n || 0)).toLocaleString('en-IN');
+
+// The last 24 calendar months, newest first, for the Top Models Sold filter
+function recentMonths() {
+  const t = new Date();
+  return Array.from({ length: 24 }, (_, i) => {
+    const first = new Date(t.getFullYear(), t.getMonth() - i, 1);
+    const last  = i === 0 ? t : new Date(first.getFullYear(), first.getMonth() + 1, 0);
+    return { id: ymd(first), start: ymd(first), end: ymd(last),
+             label: first.toLocaleDateString('en-IN', { month:'long', year:'numeric' }) };
+  });
+}
+
+function TopModelsSection() {
+  const months = recentMonths();
+  const [monthId, setMonthId] = useState(months[0].id);
+  const month = months.find(m => m.id === monthId);
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['top-sellers', month.start, month.end, 50],
+    queryFn: () => reportsApi.topSellers({ start: month.start, end: month.end, limit: 50 }).then(r => r.data),
+  });
+  const models = data?.models || [];
+  const sold   = data?.sales_count || 0;
+  const best   = models[0]?.units || 0;
+
+  return (
+    <Section title="Top Models Sold" sub="Bikes sold in the month, ranked by model name"
+      loading={isLoading} error={error}
+      action={
+        <select aria-label="Month" value={monthId} onChange={e => setMonthId(e.target.value)} style={{ width:'auto' }}>
+          {months.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+        </select>
+      }>
+      {models.length === 0 ? <Empty message={`No bikes sold in ${month.label}`} /> : (
+        <>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>Rank</th><th>Model</th><th className="num">Units sold</th><th style={{ width:'30%' }}><span className="visually-hidden">Compared with the top model</span></th><th className="num">Share</th><th className="num">Revenue</th></tr></thead>
+              <tbody>
+                {models.map((m, i) => (
+                  <tr key={m.model}>
+                    <td className="mono cell-muted">{i + 1}</td>
+                    <td><div className="cell-strong">{m.model}</div><div className="cell-sub">{m.brand}</div></td>
+                    <td className="num mono cell-strong">{m.units}</td>
+                    <td aria-hidden="true">
+                      <div style={{ height:8, borderRadius:4, background:'var(--color-paper-3)' }}>
+                        <div style={{ height:'100%', width:`${best ? m.units / best * 100 : 0}%`, borderRadius:4, background: i === 0 ? 'var(--color-accent)' : 'var(--color-ink-2)' }} />
+                      </div>
+                    </td>
+                    <td className="num mono cell-muted">{sold ? Math.round(m.units / sold * 100) : 0}%</td>
+                    <td className="num mono">{rupees(m.revenue)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="label-xs" style={{ marginTop:'var(--space-xs)' }}>{sold} bikes sold in {month.label} · {models.length} models</div>
+        </>
+      )}
+    </Section>
+  );
+}
+
+function TopSellersSection() {
+  const periods = topSellerPeriods();
+  const [periodId, setPeriodId] = useState('month');
+  const period = periods.find(p => p.id === periodId);
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['top-sellers', period.start, period.end],
+    queryFn: () => reportsApi.topSellers({ start: period.start, end: period.end }).then(r => r.data),
+  });
+  const d = data || {};
+  const items = d.items || [];
+
+  return (
+    <Section title="Top service items" sub="Most-billed items on service bills"
+      loading={isLoading} error={error}
+      action={
+        <select aria-label="Top service items period" value={periodId} onChange={e => setPeriodId(e.target.value)} style={{ width:'auto' }}>
+          {periods.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+        </select>
+      }>
+      <div>
+        <div style={{ minWidth:0 }}>
+          {items.length === 0 ? <Empty message="No service bills in this period" /> : (
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead><tr><th>#</th><th>Item</th><th className="num">Qty</th><th className="num">Bills</th><th className="num">Revenue</th></tr></thead>
+                <tbody>
+                  {items.map((it, i) => (
+                    <tr key={it.part_number || it.name}>
+                      <td className="cell-muted">{i + 1}</td>
+                      <td><div className="cell-strong">{it.name}</div>{it.part_number && <div className="cell-sub mono">{it.part_number}</div>}</td>
+                      <td className="num mono cell-strong">{it.qty}{it.free_qty > 0 && <div className="cell-sub">{it.free_qty} free</div>}</td>
+                      <td className="num mono cell-muted">{it.bills}</td>
+                      <td className="num mono">{rupees(it.revenue)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="label-xs" style={{ marginTop:'var(--space-xs)' }}>
+            {d.service_bills || 0} service bills · labour {rupees(d.labour?.revenue)} on {d.labour?.bills || 0} bills
+          </div>
+        </div>
+      </div>
+    </Section>
   );
 }
 
