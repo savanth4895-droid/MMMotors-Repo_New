@@ -4271,10 +4271,10 @@ def _top_sellers(sales: list, bills: list, limit: int) -> dict:
     Spelling/case differences are merged; the labour line is reported on its own."""
     models: dict = {}
     for s in sales:
-        key = (_norm_key(s.get("vehicle_brand")), _norm_key(s.get("vehicle_model")))
-        if not key[1]:
+        key = _norm_key(s.get("vehicle_model"))   # ranked by model name
+        if not key:
             continue
-        m = models.setdefault(key, {"brand": key[0], "model": (s.get("vehicle_model") or "").strip(), "units": 0, "revenue": 0.0})
+        m = models.setdefault(key, {"brand": _norm_key(s.get("vehicle_brand")), "model": (s.get("vehicle_model") or "").strip(), "units": 0, "revenue": 0.0})
         m["units"] += 1
         m["revenue"] += float(s.get("total_amount") or 0)
 
