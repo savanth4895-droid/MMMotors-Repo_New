@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { salesApi, customersApi, vehiclesApi, partsApi, errMsg} from '../api/client';
+import { upiQrHtml } from '../utils/upi';
 import { Btn, GhostBtn, Field, Skeleton, Empty, ApiError, useSortable } from '../components/ui';
 import { notifyLowStock } from '../utils/lowStockToast';
 import toast from 'react-hot-toast';
@@ -207,6 +208,8 @@ function printSaleInvoice(rawSale) {
           <div class="total-val">${RS}${totalStr}</div>
         </div>
       </div>
+
+      ${upiQrHtml({ note: `Invoice ${sale.invoice_number || ''}`.trim() })}
 
       ${fittingsBlock}
 
@@ -1000,7 +1003,7 @@ const createMut = useMutation({
                         aria-label={`${s.invoice_number} is missing ${(s.pending_fittings||[]).map(p => p.name).join(', ')}. Mark as fitted.`}
                         onClick={async () => {
                           const names = (s.pending_fittings||[]).map(p => `${p.name} ×${p.qty_short}`).join(', ');
-                          if (await confirm(`Mark as fitted on ${s.invoice_number}?\n\n${names}\n\nThis takes the stock off now.`)) {
+                          if (await confirm(`Mark as fitted on ${s.invoice_number}?\n\n${names}\n\nThis takes the stock off now.`, { danger:false })) {
                             fittedMut.mutate({ id: s.id });
                           }
                         }}
