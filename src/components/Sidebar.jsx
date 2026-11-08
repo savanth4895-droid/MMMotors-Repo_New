@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../context/AuthContext';
@@ -16,6 +17,7 @@ const NAV = [
   { id: 'vendors',        label: 'Vendors',        roles: ['owner','parts_counter'], group: 'parts' },
   { id: 'purchase-bills', label: 'Purchase Bills', roles: ['owner','parts_counter'], group: 'parts' },
   { id: 'customers', label: 'Customers',    roles: ['owner','sales','service_advisor'], group: 'sales' },
+  { id: 'followups', label: 'Follow-ups',   roles: ['owner','sales'], group: 'sales' },
   { id: 'debt',        label: 'Debt Ledger',  roles: ['owner','sales'], group: 'sales' },
   { id: 'expenses',    label: 'Expenses',     roles: ['owner'], group: 'office' },
   { id: 'accident-estimate', label: 'Accident Estimate', roles: ['owner','service_advisor'], group: 'workshop' },
@@ -67,6 +69,17 @@ export default function Sidebar({ isOpen }) {
     refetchInterval: 60_000,
   });
   const priorityLow = partsStats?.priority_low || 0;
+
+  // Chrome/Edge offer to install the app (home-screen icon, own window); keep that offer
+  // so the button below can show it. Safari has no such event, so the button stays hidden there.
+  const [installPrompt, setInstallPrompt] = useState(null);
+  useEffect(() => {
+    const keep = (e) => { e.preventDefault(); setInstallPrompt(e); };
+    const done = () => setInstallPrompt(null);
+    window.addEventListener('beforeinstallprompt', keep);
+    window.addEventListener('appinstalled', done);
+    return () => { window.removeEventListener('beforeinstallprompt', keep); window.removeEventListener('appinstalled', done); };
+  }, []);
 
   return (
     <aside className={`sidebar-nav${isOpen ? ' open' : ''}`} aria-label="Main">
@@ -123,6 +136,13 @@ export default function Sidebar({ isOpen }) {
           <div className="sidebar-account-meta">
             <span className="sidebar-account-role">{ROLE_LABELS[user?.role]}</span>
             <button type="button" className="sign-out" onClick={logout}>Sign out</button>
+            {installPrompt && (
+              <button type="button" className="sign-out" onClick={async () => {
+                installPrompt.prompt();
+                await installPrompt.userChoice;
+                setInstallPrompt(null);   // the offer can only be used once
+              }}>Install app</button>
+            )}
           </div>
         </div>
       </div>
