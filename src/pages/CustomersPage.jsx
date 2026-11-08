@@ -121,6 +121,7 @@ function CustomerForm({ initial = {}, onSave, onCancel, saving }) {
         <Field label="Full name *"><input value={f.name}    onChange={s('name')}    placeholder="Customer name" /></Field>
         <Field label="Mobile *">   <input value={f.mobile}  onChange={s('mobile')}  placeholder="10-digit mobile" /></Field>
         <Field label="Email">      <input value={f.email}   onChange={s('email')}   placeholder="email@example.com" /></Field>
+        <Field label="Birthday">   <input type="date" value={f.dob || ''} onChange={s('dob')} max={new Date().toISOString().slice(0, 10)} /></Field>
 
       </div>
       <Field label="Address">
@@ -226,6 +227,14 @@ function CustomerDetail({ cust, onBack }) {
   const [tab, setTab] = useState('overview');
   const qc = useQueryClient();
 
+  // Birthday is edited right here (used for the birthday WhatsApp list on Follow-ups)
+  const [dob, setDob] = useState(cust.dob || '');
+  const dobMut = useMutation({
+    mutationFn: v => customersApi.update(cust.id, { dob: v }),
+    onSuccess: (_r, v) => { setDob(v); qc.invalidateQueries(['customers']); toast.success(v ? 'Birthday saved' : 'Birthday removed'); },
+    onError: e => toast.error(errMsg(e, 'Could not save birthday')),
+  });
+
   const { data: tl, isLoading } = useQuery({
     queryKey: ['customer-timeline', cust.id],
     queryFn: () => customersApi.timeline(cust.id).then(r => r.data),
@@ -318,6 +327,14 @@ function CustomerDetail({ cust, onBack }) {
                         <dd className={mono?'mono':''}>{v}</dd>
                       </div>
                     ))}
+                    <div className="record-row" style={{ gridTemplateColumns:'100px minmax(0, 1fr)', alignItems:'center' }}>
+                      <dt><label htmlFor="cust-dob">Birthday</label></dt>
+                      <dd>
+                        <input id="cust-dob" type="date" value={dob} max={new Date().toISOString().slice(0, 10)}
+                          disabled={dobMut.isPending} onChange={e => dobMut.mutate(e.target.value)}
+                          style={{ width:'auto', fontSize:'var(--text-sm)' }} />
+                      </dd>
+                    </div>
                   </dl>
                 </div>
                 <div>
