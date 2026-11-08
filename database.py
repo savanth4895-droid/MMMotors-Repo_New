@@ -111,6 +111,7 @@ PAGE_ACCESS = {
     "upload":              {"sales", "customers"},
     "files":               {"sales", "customers"},
     "import":              {"import"},
+    "followups":           {"followups"},
 }
 
 def page_access_allowed(path: str, allowed_pages) -> bool:
