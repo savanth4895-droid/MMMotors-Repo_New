@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+export const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 const api = axios.create({
   baseURL: `${BASE_URL}/api`,
@@ -185,6 +185,27 @@ export const vendorsApi = {
 };
 
 // ── Purchase Bills (incoming stock from vendors) ────────────────────
+// ── Online service booking (public /book page, no login) ────────────
+export const bookingApi = {
+  availability: ()  => api.get('/booking/availability'),
+  book:         (d) => api.post('/booking', d),
+  settings:     ()  => api.get('/booking/settings'),          // owner only
+  saveSettings: (d) => api.put('/booking/settings', d),
+};
+
+// ── Follow-ups: enquiries, insurance renewals, greetings ────────────
+export const followupsApi = {
+  enquiries:        (params)  => api.get('/followups/enquiries', { params }),
+  createEnquiry:    (d)       => api.post('/followups/enquiries', d),
+  updateEnquiry:    (id, d)   => api.put(`/followups/enquiries/${id}`, d),
+  deleteEnquiry:    (id)      => api.delete(`/followups/enquiries/${id}`),
+  insurance:        (days)    => api.get('/followups/insurance', { params: { days } }),
+  insuranceAction:  (saleId, d) => api.post(`/followups/insurance/${saleId}`, d),
+  birthdays:        (days)    => api.get('/followups/birthdays', { params: { days } }),
+  greetings:        (campaign) => api.get('/followups/greetings', { params: { campaign } }),
+  markGreetingSent: (d)       => api.post('/followups/greetings/sent', d),
+};
+
 export const purchaseBillsApi = {
   list:   (params) => api.get('/purchase-bills', { params }),
   get:    (id)     => api.get(`/purchase-bills/${id}`),
