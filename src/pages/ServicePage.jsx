@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { serviceApi, partsApi, customersApi, billsApi, salesApi, errMsg} from '../api/client';
+import { serviceApi, partsApi, customersApi, billsApi, salesApi, bookingApi, errMsg} from '../api/client';
 import { useSortable, Skeleton, Empty } from '../components/ui';
 import { notifyLowStock } from '../utils/lowStockToast';
 import toast from 'react-hot-toast';
@@ -10,6 +10,7 @@ import { useDraft, DraftBar } from '../hooks/useDraft';
 import { useBadges, CustomerBadges } from '../hooks/useBadges';
 import { useAuth } from '../context/AuthContext';
 import { escapeDeep } from '../utils/escapeHtml';
+import { upiQrHtml } from '../utils/upi';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const RS   = '₹';
@@ -51,11 +52,33 @@ function ComplaintPicks({ value, onChange }) {
   );
 }
 
+// Opens WhatsApp with a message ready for staff to send. A save that took a while can make
+// the browser block the pop-up, so then a toast offers the same message on one tap.
+function openWA(mobile, msg) {
+  const m = String(mobile || '').replace(/\D/g, '').slice(-10);
+  if (m.length !== 10) return;
+  const url = `https://wa.me/91${m}?text=${encodeURIComponent(msg)}`;
+  if (!window.open(url, '_blank')) {
+    toast(t => (
+      <span>WhatsApp didn't open.{' '}
+        <button type="button" className="link-btn" onClick={() => { window.open(url, '_blank'); toast.dismiss(t.id); }}>Send the update</button>
+      </span>
+    ), { duration: 10000 });
+  }
+}
+
+// Job progress messages, sent as the job card moves along
+const bikeOf = j => `${j.brand} ${j.model}${j.vehicle_number ? ` (${j.vehicle_number})` : ''}`;
+const PROGRESS_MSG = {
+  received:    j => `Hello ${j.customer_name}, we have received your ${bikeOf(j)} at MM Motors. Job card ${j.job_number}. We'll message you when work starts.`,
+  in_progress: j => `Hello ${j.customer_name}, work has started on your ${bikeOf(j)}. We'll message you as soon as it's ready.`,
+  ready:       j => `Hello ${j.customer_name}, your ${bikeOf(j)} service is complete.${j.grand_total ? ` Bill amount: ₹${Number(j.grand_total).toLocaleString('en-IN')}.` : ''} Ready for pickup at MM Motors!`,
+};
+
 // Opens WhatsApp with the customer's one-time feedback link
 const sendFeedbackWA = (job, token) => {
   const link = `${window.location.origin}/feedback/${token}`;
-  const msg  = `Hello ${job.customer_name}, thank you for servicing your ${job.brand} ${job.model} (${job.vehicle_number}) at MM Motors! Please rate your experience: ${link}`;
-  window.open(`https://wa.me/91${job.customer_mobile}?text=${encodeURIComponent(msg)}`, '_blank');
+  openWA(job.customer_mobile, `Hello ${job.customer_name}, thank you for servicing your ${bikeOf(job)} at MM Motors! Please rate your experience: ${link}`);
 };
 
 function numWords(n) {
@@ -112,7 +135,33 @@ const secHdr = { fontSize:'var(--text-sm)', fontWeight:600,
 // ═══════════════════════════════════════════════════════════════════════════════
 //  SERVICE PAGE  — default export (required by router)
 // ═══════════════════════════════════════════════════════════════════════════════
+// Owner sets how many online bookings (the public /book page) to take per day, or pauses them
+const BOOKING_LIMITS = [0, 5, 10, 15, 20, 25, 30, 40, 50];
+function BookingLimitSelect() {
+  const qc = useQueryClient();
+  const { data } = useQuery({ queryKey: ['booking-settings'], queryFn: () => bookingApi.settings().then(r => r.data) });
+  const save = useMutation({
+    mutationFn: n => bookingApi.saveSettings({ daily_limit: n }),
+    onSuccess: (_r, n) => {
+      qc.invalidateQueries(['booking-settings']);
+      toast.success(n ? `Online bookings: up to ${n} a day` : 'Online booking paused');
+    },
+    onError: e => toast.error(errMsg(e, 'Could not save')),
+  });
+  if (!data) return null;
+  const options = BOOKING_LIMITS.includes(data.daily_limit) ? BOOKING_LIMITS : [...BOOKING_LIMITS, data.daily_limit].sort((a, b) => a - b);
+  return (
+    <label style={{ display:'flex', alignItems:'center', gap:'var(--space-2xs)', fontSize:'var(--text-sm)', whiteSpace:'nowrap' }}>
+      Online bookings
+      <select value={data.daily_limit} disabled={save.isPending} onChange={e => save.mutate(Number(e.target.value))} style={{ width:'auto' }}>
+        {options.map(n => <option key={n} value={n}>{n === 0 ? 'Off (paused)' : `${n} per day`}</option>)}
+      </select>
+    </label>
+  );
+}
+
 export default function ServicePage() {
+  const isOwner = useAuth().user?.role === 'owner';
   const confirm = useConfirm();
   const qc = useQueryClient();
   const { byName, badgesFor } = useBadges();
@@ -158,9 +207,11 @@ export default function ServicePage() {
   const updateMut = useMutation({
     mutationFn: ({ jobId, status }) => serviceApi.update(jobId, { status }), // FIX #5: updateJob → update
     onSuccess: (res) => {
-      // Delivered → ask for feedback straight away (backend has just issued the token)
-      if (res.data?.status === 'delivered' && res.data.feedback_token && res.data.feedback_rating == null && res.data.customer_mobile)
-        sendFeedbackWA(res.data, res.data.feedback_token);
+      const j = res.data || {};
+      // Work started / ready → progress message; delivered → feedback link (backend just issued the token)
+      if (PROGRESS_MSG[j.status]) openWA(j.customer_mobile, PROGRESS_MSG[j.status](j));
+      if (j.status === 'delivered' && j.feedback_token && j.feedback_rating == null)
+        sendFeedbackWA(j, j.feedback_token);
       qc.invalidateQueries(['service-jobs']);
       qc.invalidateQueries(['service-stats']);
       toast.success('Status updated');
@@ -206,9 +257,17 @@ export default function ServicePage() {
       <div className="page-head">
         <h2 className="page-head-title">Job Board</h2>
         {/* FIX #3: removed + Parts Bill button — moved to PartsPage */}
-        <button type="button" onClick={() => setNewJobOpen(true)} className="btn btn-primary">
-          + New Job Card
-        </button>
+        <div className="row-actions">
+          {isOwner && <BookingLimitSelect />}
+          <button type="button" className="btn btn-ghost" onClick={async () => {
+            const link = `${window.location.origin}/book`;
+            try { await navigator.clipboard.writeText(link); toast.success(`Booking link copied: ${link}`); }
+            catch { window.prompt('Copy the booking link', link); }
+          }}>Copy booking link</button>
+          <button type="button" onClick={() => setNewJobOpen(true)} className="btn btn-primary">
+            + New Job Card
+          </button>
+        </div>
       </div>
 
       {/* ── Stat strip ── */}
@@ -302,6 +361,7 @@ export default function ServicePage() {
                     <span className="mono cell-id">
                       {job.job_number || (job._id||'').slice(-6)}
                     </span>
+                    {job.source === 'online' && <div><span className="pill pill-amber" title="Booked by the customer on the website">Online</span></div>}
                   </td>
                   <td>
                     <div className="cell-strong">
@@ -346,11 +406,7 @@ export default function ServicePage() {
                   <td>
                     <div className="row-actions">
                       {job.status === 'ready' && (
-                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => {
-                            const amt = job.grand_total ? ` Bill amount: ₹${Number(job.grand_total).toLocaleString('en-IN')}.` : '';
-                            const msg = `Hello ${job.customer_name}, your vehicle ${job.vehicle_number} (${job.brand} ${job.model}) service is complete.${amt} Ready for pickup at MM Motors!`;
-                            window.open(`https://wa.me/91${job.customer_mobile}?text=${encodeURIComponent(msg)}`,'_blank');
-                          }}>
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => openWA(job.customer_mobile, PROGRESS_MSG.ready(job))}>
                           Notify
                         </button>
                       )}
@@ -626,8 +682,9 @@ function NewJobModal({ onClose }) {
       ...form,
       odometer_km: Number(form.odometer_km) || 0,
     }),
-    onSuccess: () => {
+    onSuccess: (res) => {
       toast.success('Job card created!');
+      if (res?.data) openWA(res.data.customer_mobile, PROGRESS_MSG.received(res.data));
       qc.invalidateQueries(['service-jobs']);
       qc.invalidateQueries(['service-stats']);
       draft.clearDraft();
@@ -995,6 +1052,7 @@ function printBill(rawJob, rawBill, rawRows, total, taxable, cgst, sgst, discoun
     </div>
     <div class="words">${bill.amount_in_words || ''}</div>
     <div class="payment">Payment Mode: <strong>${bill.payment_mode||'Cash'}</strong></div>
+    ${upiQrHtml({ amount: total, note: `Bill ${bill.bill_number || job.job_number || ''}`.trim() })}
 
     <div class="footer">
       <span>Thank you for choosing MM Motors!</span>
