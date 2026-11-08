@@ -14,6 +14,7 @@ const ALL_PAGES = [
   { id:'vehicles',    label:'Vehicles',       desc:'Stock inventory, inbound/outbound' },
   { id:'parts',       label:'Parts',          desc:'Spare parts inventory & parts billing' },
   { id:'customers',   label:'Customers',      desc:'Customer records, history, tags' },
+  { id:'followups',   label:'Follow-ups',     desc:'Enquiries, insurance renewals, birthday & festival WhatsApp' },
   { id:'debt',        label:'Debt Ledger',    desc:'Outstanding payments from customers' },
   { id:'expenses',    label:'Expenses',       desc:'Showroom expense tracking' },
   { id:'accident-estimate', label:'Accident Estimate', desc:'Create repair estimates for accidental vehicles' },
