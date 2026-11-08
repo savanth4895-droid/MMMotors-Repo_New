@@ -15,7 +15,7 @@ export default function Topbar({ active, onMenuToggle }) {
     vendors: 'Vendors', 'purchase-bills': 'Purchase Bills',
     debt: 'Debt Ledger', 'service-due': 'Service Due',
     expenses: 'Expenses', 'accident-estimate': 'Accident Estimate',
-    'badge-types': 'Badge Types',
+    'badge-types': 'Badge Types', followups: 'Follow-ups',
   };
   const pageLabel = PAGE_LABELS[active] || 'Dashboard';
 
