@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Optional, List, Any, Dict
 
-from fastapi import FastAPI, Depends, HTTPException, status, Query, Request, UploadFile, File, Form, Response, Cookie
+from fastapi import FastAPI, Depends, HTTPException, status, Query, Request, UploadFile, File, Form, Response, Cookie, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -65,7 +65,8 @@ from database import (
     MAX_LOGIN_ATTEMPTS, LOGIN_LOCKOUT_MIN, BRANDS, GST_RATES,
     pwd_ctx, create_token, verify_token, require_admin, require_roles,
     next_sequence, _sync_counter,
-    oid, oids, obj_id, paginate_params, now, utcnow,
+    oid, oids, obj_id, paginate_params, now, utcnow, ist_now,
+    AUDIT_SKIP, audit_diff, audit_ref, audit_jsonable,
     calc_gst_line, calc_bill_totals, amount_in_words, norm_brand,
     VEHICLE_STATUSES, canon_vehicle_status, canon_vehicle_type,
 )
@@ -164,6 +165,50 @@ async def _service_due_cache_invalidator(request: Request, call_next):
             _invalidate_service_due_cache()
     return response
 
+# Change history — records who changed or deleted a record, and what changed.
+# One middleware instead of a call in every handler, so a new edit endpoint is covered automatically.
+_AUDIT_COLLECTIONS = {
+    "sales": "sales", "service-bills": "service_bills", "parts-bills": "parts_bills",
+    "parts": "spare_parts", "purchase-bills": "purchase_bills", "users": "users",
+    "customers": "customers", "vehicles": "vehicles", "debts": "debts", "expenses": "expenses",
+}
+_AUDIT_PATH = re.compile(r"^/api/(" + "|".join(_AUDIT_COLLECTIONS) + r")/([0-9a-f]{24})(?:/([\w-]+))?$")
+@app.middleware("http")
+async def _audit_trail(request: Request, call_next):
+    m = _AUDIT_PATH.match(request.url.path) if request.method in ("PUT", "PATCH", "DELETE", "POST") else None
+    if not m or (request.method == "POST" and not m.group(3)) or _db.db is None:
+        return await call_next(request)
+    from bson import ObjectId as _OID
+    coll = _db.db[_AUDIT_COLLECTIONS[m.group(1)]]
+    try:
+        before = await coll.find_one({"_id": _OID(m.group(2))})
+    except Exception:
+        before = None
+    response = await call_next(request)
+    if before is None or not 200 <= response.status_code < 300:
+        return response
+    try:
+        after = await coll.find_one({"_id": before["_id"]})
+        entry = {
+            "at":        utcnow(),
+            "user":      getattr(request.state, "audit_user", "") or "",
+            "action":    "delete" if after is None else (m.group(3) or "edit"),
+            "entity":    m.group(1),
+            "entity_id": m.group(2),
+            "ref":       audit_ref(before),
+        }
+        if after is None:
+            entry["deleted"] = audit_jsonable({k: v for k, v in before.items()
+                                                if k not in AUDIT_SKIP and k != "password"})
+        else:
+            entry["changes"] = audit_diff(before, after)
+            if not entry["changes"]:
+                return response
+        await _db.db.audit_log.insert_one(entry)
+    except Exception as e:   # history is a record, never a reason to fail the user's save
+        print(f"WARNING: change-history write failed for {request.url.path}: {e}")
+    return response
+
 from fastapi import APIRouter
 api_router = APIRouter(prefix="/api")
 
@@ -234,6 +279,9 @@ async def _ensure_indexes():
         "created_at", expireAfterSeconds=LOGIN_LOCKOUT_MIN * 60
     )
     await db.login_attempts.create_index("username")
+    # change history — kept 2 years, then Mongo drops it (M0 has a 512 MB cap)
+    await db.audit_log.create_index("at", expireAfterSeconds=2 * 365 * 24 * 3600)
+    await db.audit_log.create_index([("entity_id", 1), ("at", -1)])
     await db.login_attempts.create_index([("username", 1), ("ip", 1)])
     await db.badge_types.create_index("name", unique=True)
     print("[MM Motors] Indexes ensured")
@@ -256,7 +304,7 @@ async def _seed_owner():
         "password":   pwd_ctx.hash(initial),
         "status":     "active",
         "salary":     0,
-        "join_date":  utcnow().strftime("%d %b %Y"),
+        "join_date":  ist_now().strftime("%d %b %Y"),
         "created_at": utcnow().isoformat(),
     })
     if generated:
@@ -323,12 +371,14 @@ class PasswordChange(BaseModel):
     new_password: str = Field(..., min_length=8)
 
 # ── Customers ─────────────────────────────────────────────────────────────────
+_GSTIN_RE = r"^([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z])?$"   # 15-char GSTIN, or blank
+
 class CustomerCreate(BaseModel):
     name:    str
     mobile:  str
     email:   Optional[str] = ""
     address: Optional[str] = ""
-    gstin:   Optional[str] = ""
+    gstin:   Optional[str] = Field("", pattern=_GSTIN_RE)
     tags:    Optional[List[str]] = []
     id_proof_file_id: Optional[str] = ""
     dob:     Optional[str] = Field("", pattern=r"^(\d{4}-\d{2}-\d{2})?$")   # birthday, for greetings
@@ -338,7 +388,7 @@ class CustomerUpdate(BaseModel):
     mobile:  Optional[str] = None
     email:   Optional[str] = None
     address: Optional[str] = None
-    gstin:   Optional[str] = None
+    gstin:   Optional[str] = Field(None, pattern=_GSTIN_RE)
     # tags are managed via the dedicated admin-only PUT /customers/{id}/tags endpoint
     id_proof_file_id: Optional[str] = None
     dob:     Optional[str] = Field(None, pattern=r"^(\d{4}-\d{2}-\d{2})?$")
@@ -958,6 +1008,9 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+_DUMMY_PW_HASH = pwd_ctx.hash(secrets.token_urlsafe(16))  # random; matches no password
+
+
 @api_router.post("/auth/login", response_model=TokenOut)
 async def login(body: LoginIn, request: Request):
     username = body.username.strip().lower()
@@ -970,7 +1023,9 @@ async def login(body: LoginIn, request: Request):
             detail=f"Too many failed attempts from this location. Try again in {LOGIN_LOCKOUT_MIN} minutes."
         )
     user = await db.users.find_one({"username": username})
-    if not user or not pwd_ctx.verify(body.password, user.get("password", "")):
+    # Always run bcrypt, even for unknown usernames, so response time doesn't reveal which usernames exist
+    pw_ok = pwd_ctx.verify(body.password, (user or {}).get("password") or _DUMMY_PW_HASH)
+    if not user or not pw_ok:
         await db.login_attempts.insert_one({
             "username":   username,
             "ip":         ip,
@@ -1584,13 +1639,14 @@ async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
         raise HTTPException(status_code=409, detail="Vehicle already sold")
     total_amount = body.total_amount if body.total_amount is not None else (body.sale_price or 0)
     inv_no    = await next_sequence("invoice")
-    sale_date = body.sale_date or utcnow().strftime("%d %b %Y")
+    sale_date = body.sale_date or ist_now().strftime("%d %b %Y")
     doc = {
         "invoice_number":  inv_no,
         "customer_id":     body.customer_id,
         "customer_name":   customer["name"],
         "customer_mobile": customer.get("mobile",""),
         "customer_address":customer.get("address",""),
+        "customer_gstin":  (customer.get("gstin") or "").strip().upper(),  # GSTR-1 routes B2B on this
         "care_of":         body.care_of or "",
         "vehicle_id":      body.vehicle_id,
         "vehicle_brand":   body.vehicle_brand   if body.vehicle_brand   is not None else vehicle["brand"],
@@ -1654,7 +1710,7 @@ async def create_sale(body: SaleCreate, current_user=Depends(verify_token)):
 
 @api_router.get("/sales/stats/summary")
 async def sales_stats(current_user=Depends(verify_token)):
-    today = utcnow().strftime("%d %b %Y")
+    today = ist_now().strftime("%d %b %Y")
     pipeline_total = [{"$group": {"_id": None, "total": {"$sum": "$total_amount"}, "count": {"$sum": 1}}}]
     result = await db.sales.aggregate(pipeline_total).to_list(1)
     all_time    = result[0] if result else {"total": 0, "count": 0}
@@ -1849,7 +1905,7 @@ async def update_sale_milestone(sale_id: str, body: MilestoneUpdate, current_use
     current_dates = dict(sale.get("milestone_dates") or {})
     current[body.key] = bool(body.value)
     if body.value:
-        d = (body.date or utcnow().strftime("%Y-%m-%d")).strip()
+        d = (body.date or ist_now().strftime("%Y-%m-%d")).strip()
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
             raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
         current_dates[body.key] = d
@@ -1917,7 +1973,7 @@ async def create_service_job(body: ServiceJobCreate, current_user=Depends(verify
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     job_no   = await next_sequence("job")
-    check_in = body.check_in_date or utcnow().strftime("%d %b %Y")
+    check_in = body.check_in_date or ist_now().strftime("%d %b %Y")
     veh_no   = body.vehicle_number.strip().upper() if body.vehicle_number else ""
     chassis  = body.chassis_number.strip().upper() if body.chassis_number else ""
     doc = {
@@ -2351,7 +2407,7 @@ async def get_service_job(job_id: str, current_user=Depends(verify_token)):
 async def update_service_job(job_id: str, body: ServiceJobUpdate, current_user=Depends(verify_token)):
     update = {k: v for k, v in body.dict().items() if v is not None}
     if "status" in update and update["status"] == "delivered":
-        update.setdefault("delivery_date", utcnow().strftime("%d %b %Y"))
+        update.setdefault("delivery_date", ist_now().strftime("%d %b %Y"))
     await db.service_jobs.update_one({"_id": obj_id(job_id)}, {"$set": update})
     if update.get("status") == "delivered":
         await _ensure_feedback_token(job_id)
@@ -2596,6 +2652,15 @@ async def _collect_shortages(needs: dict, session=None):
     return shortages
 
 
+async def _customer_gstin(customer_id: str) -> str:
+    """Customer's GSTIN snapshot for a bill; '' when the customer is missing or has none."""
+    try:
+        c = await db.customers.find_one({"_id": obj_id(customer_id)}, {"gstin": 1})
+    except HTTPException:   # blank / invalid id on old or imported jobs
+        return ""
+    return ((c or {}).get("gstin") or "").strip().upper()
+
+
 @api_router.get("/service-bills")
 async def list_service_bills(
     job_id: Optional[str] = Query(None),
@@ -2667,6 +2732,7 @@ async def create_service_bill(body: ServiceBillCreate, current_user=Depends(veri
         "customer_id":    job.get("customer_id",""),
         "customer_name":  job.get("customer_name",""),
         "customer_mobile":job.get("customer_mobile",""),
+        "customer_gstin": await _customer_gstin(job.get("customer_id","")),
         "vehicle_number": job.get("vehicle_number",""),
         "brand":          job.get("brand",""),
         "model":          job.get("model",""),
@@ -2678,7 +2744,7 @@ async def create_service_bill(body: ServiceBillCreate, current_user=Depends(veri
         "amount_in_words": amount_in_words(net_total),
         "payment_mode":   body.payment_mode or "Cash",
         "notes":          body.notes or "",
-        "bill_date":      utcnow().strftime("%d %b %Y"),
+        "bill_date":      ist_now().strftime("%d %b %Y"),
         "created_at":     utcnow().isoformat(),
     }
 
@@ -3769,7 +3835,7 @@ async def create_parts_bill(body: PartsBillCreate, current_user=Depends(verify_t
                 "net_total":        net_total,
                 "amount_in_words":  amount_in_words(net_total),
                 "sold_by":          current_user.get("name",""),
-                "bill_date":        utcnow().strftime("%d %b %Y"),
+                "bill_date":        ist_now().strftime("%d %b %Y"),
                 "created_at":       utcnow().isoformat(),
                 **totals,
             }
@@ -3946,7 +4012,7 @@ async def delete_parts_bill(bill_id: str, current_user=Depends(require_admin)):
 
 @api_router.get("/dashboard/stats")
 async def dashboard_stats(current_user=Depends(verify_token)):
-    now = utcnow()
+    now = ist_now()
     today_legacy = now.strftime("%d %b %Y")   # legacy format: "04 Sep 2026"
     today_iso    = now.strftime("%Y-%m-%d")   # new format:    "2026-09-04"
     month_legacy = now.strftime("%b %Y")      # legacy month:  "Sep 2026"
@@ -4047,7 +4113,7 @@ async def daily_closing_report(date: Optional[str] = Query(None), current_user=D
     Amounts grouped by payment mode.
     """
     # Accept either "DD Mon YYYY" (from frontend) or "YYYY-MM-DD" (ISO)
-    target_str = date or utcnow().strftime("%d %b %Y")
+    target_str = date or ist_now().strftime("%d %b %Y")
     # Parse target to a single canonical date object for range match
     target_dt = None
     for fmt in ("%d %b %Y", "%Y-%m-%d", "%d/%m/%Y"):
@@ -5024,7 +5090,7 @@ async def import_sales(request: Request, file: UploadFile = File(...), mode: str
                 skipped.append({"row":rn,"reason":f"Missing: {', '.join(missing)}"}); continue
 
             # Dedup: primary by chassis, fallback by mobile+model+date
-            sale_date_val = safe(row.get("sale_date","")) or utcnow().strftime("%d %b %Y")
+            sale_date_val = safe(row.get("sale_date","")) or ist_now().strftime("%d %b %Y")
             fallback_key  = f"{mobile}|{model.lower()}|{sale_date_val}"
             import_address = safe(row.get("customer_address",""))
 
@@ -5111,7 +5177,7 @@ async def import_sales(request: Request, file: UploadFile = File(...), mode: str
                     "relation": safe(row.get("nominee_relation")),
                     "age":      safe(row.get("nominee_age")),
                 },
-                "sale_date":  safe(row.get("sale_date","")) or utcnow().strftime("%d %b %Y"),
+                "sale_date":  safe(row.get("sale_date","")) or ist_now().strftime("%d %b %Y"),
                 "status":     "delivered",
                 "created_at": utcnow().isoformat(),
                 "_imported":  True,
@@ -5158,7 +5224,7 @@ async def import_service(request: Request, file: UploadFile = File(...), mode: s
             mobile   = safe(row.get("customer_mobile",""))
             veh_no   = safe(row.get("vehicle_number","")).upper()
             complaint= safe(row.get("complaint","")) or "Service"
-            check_in = safe(row.get("check_in_date","")) or utcnow().strftime("%d %b %Y")
+            check_in = safe(row.get("check_in_date","")) or ist_now().strftime("%d %b %Y")
             amount   = safe_float(row.get("amount",0))
             dedup_key = f"{veh_no}|{check_in}"
             if veh_no and check_in and dedup_key in existing_keys:
@@ -5411,7 +5477,7 @@ async def add_payment(debt_id: str, body: PaymentCreate, current_user=Depends(ve
     payment = {
         "amount":    body.amount,
         "notes":     body.notes or "",
-        "paid_date": body.paid_date or utcnow().strftime("%Y-%m-%d"),
+        "paid_date": body.paid_date or ist_now().strftime("%Y-%m-%d"),
         "recorded_at": utcnow().isoformat(),
         "recorded_by": current_user.get("name", ""),
     }
@@ -5692,6 +5758,43 @@ async def export_backup(current_user=Depends(require_admin)):
     return StreamingResponse(iter([zip_bytes]), headers=headers_resp, media_type="application/zip")
 
 
+@api_router.get("/audit-log")
+async def list_audit_log(
+    entity: Optional[str] = Query(None),
+    entity_id: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    p=Depends(paginate_params),
+    current_user=Depends(require_admin),
+):
+    """Owner-only change history, newest first. search matches the bill/record number or username."""
+    q: dict = {}
+    if entity in _AUDIT_COLLECTIONS:
+        q["entity"] = entity
+    if entity_id:
+        q["entity_id"] = entity_id
+    if search:
+        esc = re.escape(search.strip())
+        q["$or"] = [{"ref": {"$regex": esc, "$options": "i"}}, {"user": {"$regex": esc, "$options": "i"}}]
+    docs  = await db.audit_log.find(q).sort("at", -1).skip(p["skip"]).limit(p["limit"]).to_list(p["limit"])
+    total = await db.audit_log.count_documents(q)
+    return JSONResponse(content=oids(docs), headers={"X-Total-Count": str(total)})
+
+
+BACKUP_KEY = os.getenv("BACKUP_KEY", "").strip()
+
+@api_router.get("/backup/auto")
+async def auto_backup(x_backup_key: str = Header("")):
+    """Same ZIP as /backup/export, for the nightly Google Drive script (google-drive-backup.gs).
+    Authorised by the BACKUP_KEY env var instead of a login; off when BACKUP_KEY is unset."""
+    if len(BACKUP_KEY) < 32:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not secrets.compare_digest(x_backup_key.encode(), BACKUP_KEY.encode()):
+        raise HTTPException(status_code=401, detail="Bad backup key")
+    zip_bytes, filename = await _build_backup_zip()
+    return StreamingResponse(iter([zip_bytes]), media_type="application/zip",
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
 async def _build_backup_zip() -> tuple[bytes, str]:
     """Build full backup ZIP. Returns (bytes, filename). Used by /backup/export."""
     import zipfile, io as _io
@@ -5763,7 +5866,7 @@ async def _build_backup_zip() -> tuple[bytes, str]:
         buf = _io.BytesIO(); wb.save(buf); buf.seek(0)
         return buf.read()
 
-    today = utcnow().strftime("%Y-%m-%d")
+    today = ist_now().strftime("%Y-%m-%d")
 
     files = [
         (f"customers_{today}.xlsx",    make_workbook(customers_c, ['name','mobile','care_of','email','address','tags','created_at'], 'Customers')),
@@ -5967,7 +6070,7 @@ _YMD = r"^(\d{4}-\d{2}-\d{2})?$"
 
 def _today_ist():
     """The shop's calendar date (the server runs on UTC)."""
-    return (utcnow() + timedelta(hours=5, minutes=30)).date()
+    return ist_now().date()
 
 def _parse_any_date(s):
     """Sale dates are stored as '26 Aug 2026', '2026-08-26' or '26/08/2026'."""
