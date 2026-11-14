@@ -21,9 +21,10 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
 
 ```
 .
-├── server.py          # FastAPI app, all route handlers, Pydantic models (~5,140 lines, 122 routes)
+├── server.py          # FastAPI app, all route handlers, Pydantic models (~6,400 lines, ~150 routes)
 ├── database.py        # Shared DB state, auth helpers, GST utils, normalizers
 ├── google-sheet-sync.gs  # Apps Script pasted into the shop's sales spreadsheet
+├── google-drive-backup.gs # Apps Script (own project) — nightly backup ZIP to Google Drive
 ├── tests/             # pytest, no real DB: GST, change history, auth/backup, stock flows (conftest.py = in-memory Mongo)
 ├── .github/workflows/checks.yml  # CI: pytest on Python 3.11 + npm build on every push
 ├── requirements.txt
@@ -48,6 +49,9 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
     ├── hooks/
     │   ├── useDraft.jsx  # Autosave-to-localStorage form draft hook (must be .jsx)
     │   └── useBadges.jsx # Customer badge types + mobile→badges lookup + <CustomerBadges> chip renderer
+    ├── utils/
+    │   ├── date.js            # todayYmd() — local calendar date (never toISOString for "today")
+    │   └── escapeHtml.js · lowStockToast.js · upi.js
     ├── components/
     │   ├── Sidebar.jsx        # Filters NAV by user.allowed_pages
     │   ├── Topbar.jsx
@@ -59,11 +63,12 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
         ├── LoginPage.jsx
         ├── DashboardPage.jsx
         ├── VehiclesPage.jsx
-        ├── SalesPage.jsx           # ~1,230 lines, includes print + PDF path
+        ├── SalesPage.jsx           # ~1,070 lines, includes print + PDF path
         ├── ServicePage.jsx         # job list + booking limit; modals live in service/
         ├── service/
         │   ├── JobModals.jsx       # NewJobModal, EditJobModal, complaint picks
         │   ├── ServiceBillModal.jsx # bill modal, BillRow, StockShortageModal, printBill
+        │   ├── FeedbackModal.jsx   # delivered → instant smiley feedback (full screen) or WhatsApp link
         │   ├── Modal.jsx           # ModalShell, ModalFoot
         │   └── shared.jsx          # style tokens C, openWA, PROGRESS_MSG
         ├── ServiceDuePage.jsx
@@ -84,7 +89,10 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
         ├── VendorsPage.jsx
         ├── PurchaseBillsPage.jsx
         ├── AccidentEstimatePage.jsx
-        └── BadgeTypesPage.jsx
+        ├── BadgeTypesPage.jsx
+        ├── FollowupsPage.jsx       # enquiries, insurance renewals, birthday/festival greetings
+        ├── BookingPage.jsx         # PUBLIC /book — customers book a service visit
+        └── FeedbackPage.jsx        # PUBLIC /feedback/:token — customer star rating
 ```
 
 ---
@@ -104,7 +112,10 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
 
 **DB globals** (`client`, `db`, `fs`) live in `database.py`, populated by `server.py`'s lifespan on startup. `server.py` keeps module-level `db`/`fs` aliases mirroring `_db.db`/`_db.fs`.
 
-**HTTP middleware:** `_service_due_cache_invalidator` — on any 2xx `POST/PUT/PATCH/DELETE` whose path contains `/sales` or `/service`, clears the in-memory `/service/due` TTL cache.
+**HTTP middleware** (all in `server.py`):
+- `_csrf_origin_guard` — see Auth → CSRF.
+- `_service_due_cache_invalidator` — on any 2xx `POST/PUT/PATCH/DELETE` whose path contains `/sales` or `/service`, clears the in-memory `/service/due` TTL cache.
+- `_audit_trail` — writes the change history (see Key Conventions → Change history).
 
 ---
 
@@ -121,6 +132,9 @@ Motorcycle dealership management system. React + Vite frontend. FastAPI + MongoD
 | `SERVICE_DUE_CUTOFF` |     | YYYY-MM-DD. Default `2026-05-01`. Vehicles sold before excluded from Service Due. |
 | `SHEETS_WEBHOOK_URL` |     | Apps Script web app URL (`/exec`). Unset = sheet sync off. |
 | `SHEETS_WEBHOOK_SECRET` |  | Must equal `SHARED_SECRET` in `google-sheet-sync.gs`. |
+| `BACKUP_KEY`    |          | ≥32 chars (64-char hex). Must equal `BACKUP_KEY` in `google-drive-backup.gs`. Unset = `/api/backup/auto` returns 404. |
+| `ANTHROPIC_API_KEY` |      | Enables Purchase Bills → Read bill from PDF. |
+| `OWNER_INITIAL_PASSWORD` |  | First owner password on an empty database only. |
 
 Generate JWT secret:
 ```bash
@@ -196,7 +210,10 @@ All routes on `api_router` are under `/api`. Import routes under `/api/import`.
 | Customers        | CRUD `/customers`, `/customers/{id}/timeline`, `PUT /customers/{id}/tags` (admin — replaces badge list), `GET /customer-badges-map` (mobile → [badges] for all customers) |
 | Vehicles         | CRUD `/vehicles`, `/vehicles/stats/summary`                               |
 | Sales            | CRUD `/sales`, `/sales/stats/summary`, `POST /sales/{id}/fittings-fitted` (clears the pending-fitting marker), `PATCH /sales/{id}/milestone` (accepts `{key, value, date?}` — date recorded when value=true, cleared when false), `GET /sales/{id}/pdf` |
-| Service Jobs     | CRUD `/service`, `/service/due`, `/service/stats`                        |
+| Service Jobs     | CRUD `/service`, `/service/due`, `/service/stats`, `/service/schedule/{vehicle_number}`, `POST /service/{id}/feedback-link` |
+| Feedback         | `GET/POST /feedback/{token}` — **public**, one rating per token (customer link and the in-shop smiley both post here) |
+| Booking          | `GET /booking/availability`, `POST /booking` — **public**; `GET/PUT /booking/settings` (daily limit) |
+| Follow-ups       | `/followups/enquiries`, `/followups/insurance`, `/followups/birthdays`, `/followups/greetings` |
 | Service Due      | `/service/due/{vehicle_number}/notified`, `/service/due/notifications`   |
 | Service Bills    | CRUD `/service-bills` (delete admin-only)                                 |
 | Parts            | CRUD `/parts`, `/parts/stats/summary`, `/parts/low-stock?include_out=`, `/parts/out-of-stock`, `/parts/fittings?brand=`, `/parts/suggest-priority?days=&limit=`, `/parts/{id}/mark-ordered`, `/parts/{id}/adjust-stock`, `/parts/{part_number}/adjust-stock-by-number`, `/parts/search-alias` |
@@ -240,6 +257,7 @@ Import supports entities: `customers`, `vehicles`, `sales`, `service`, `parts`, 
 - `badge_types` — owner-managed customer badges (`name` unique, `color`, `sort_order`); rendered as chips wherever a customer name shows
 - `login_attempts` — TTL 30 min lockout tracking, keyed on `(username, ip)`
 - `counters` — auto-increment sequences via `next_sequence()`
+- `audit_log` — change history (TTL 2 years on `at`); `service_jobs` also carry `feedback_token` / `feedback_rating` / `feedback_comment`
 
 ---
 
@@ -289,7 +307,9 @@ Service bill numbers **derive from job number** — `SRV-000001` → `SRV-B-0000
 `paginate_params` dependency — standard `skip`/`limit`.
 
 ### Datetime
-Always use `utcnow()` helper from `database.py` — returns naive UTC (`datetime.now(timezone.utc).replace(tzinfo=None)`). Naive preserved for string-format compatibility with existing DB records.
+- **Timestamps** (`created_at`, logs): `utcnow()` from `database.py` — naive UTC, kept naive for compatibility with existing records.
+- **Shop calendar dates** (`sale_date`, `bill_date`, `check_in_date`, dashboard "today"): `ist_now()` from `database.py` (UTC + 5:30). `utcnow().strftime(...)` gives yesterday's date between 00:00 and 05:30 IST.
+- **Frontend "today"**: `todayYmd()` from `src/utils/date.js`. Never `new Date().toISOString().slice(0, 10)` — that is the UTC date.
 
 ### Numeric input validation
 Every numeric field on request models has `Field(ge=..., le=...)` — negative qty/price/discount/stock are rejected at the Pydantic layer, before any DB write. See "Recent hardening" below.
@@ -315,7 +335,7 @@ Multi-line bills (`service_bills`, `parts_bills`) also wrap every stock write + 
 Only parts flagged `priority: true` raise alerts — the owner curates that list so it stays small enough to act on. Normal parts still show the amber pill and sit on the order list; they just never interrupt anyone.
 
 - Each bill endpoint fills a `touched` dict (`{part _id: qty deducted}`) inside its transaction and, after commit, returns `low_stock_alerts` from `_priority_low_alerts()`. The field is response-only; it is never stored on the bill. On an edit, `touched` holds the **net** removal (new qty − old qty), so a shrinking edit cannot raise an alert.
-- `_priority_low_alerts` reports a part only when **this bill** pushed it over the line: above the reorder level before and at or below it now, or it just hit zero (worth saying even if already low). A part sitting below its level does not re-alert on every later bill — that is what would make the alerts ignorable. Pinned by `tests/test_low_stock_alerts.py` (stub DB, no MongoDB needed).
+- `_priority_low_alerts` reports a part only when **this bill** pushed it over the line: above the reorder level before and at or below it now, or it just hit zero (worth saying even if already low). A part sitting below its level does not re-alert on every later bill — that is what would make the alerts ignorable. Pinned by `tests/test_low_stock_alerts.py` (stub DB, no MongoDB needed) — **not present in this repo copy (Nov 2026); restore it from git history if it exists.**
 - Frontend: `notifyLowStock()` in `src/utils/lowStockToast.js`, called from the service-bill and both parts-bill save paths. Toast has `duration: Infinity` and a fixed `id`, so it waits to be dismissed and cannot stack up.
 - `GET /parts/stats/summary` returns `priority_low` (priority parts at or below level, zero-stock included) for the Sidebar count badge.
 - `POST /parts/{id}/mark-ordered` stamps `ordered_at`/`ordered_by`. It deliberately does **not** touch `reorder_level`: the old "remove from order list" button set it to 0, which hid the part from every future low-stock check. The flag clears on a genuine stock arrival (adjust-stock "add", purchase-bill add), not on bill-edit or delete restores, which are corrections rather than deliveries.
@@ -341,13 +361,20 @@ Accessories supplied with a bike (tank cover, seat cover, foot rest, grills) are
 - `pending_fittings` on the sale drives the ⚠ marker on the Sales row and the "Fitting pending (n)" chip. `POST /sales/{id}/fittings-fitted` finishes the deduction (stock has usually arrived on a purchase bill by then) and clears the marker; if stock still is not there it clears anyway, since the part is physically on the bike, and writes a `sale_fitting_unrecorded` note to `stock_log` so the gap stays auditable.
 - `stock_log` reasons: `sale_fitting`, `sale_fitting_edit`, `sale_fitting_late`, `sale_fitting_restore`, `sale_fitting_delete`, plus `complimentary` for a free fitting (it still leaves the shelf).
 - Money is deliberately untouched: `total_amount` stays whatever the salesperson types, because GSTR-1 back-calculates 18% out of it (`server.py` sales loop). Fitting prices are recorded and printed in a separate "Fittings supplied with this vehicle" block on the invoice, never as a price row — a row there would stop the invoice adding up to its own total. Revisit only with the CA.
-- `tests/test_sale_fittings.py` pins the partial-deduct arithmetic against a stub DB; the end-to-end flow is in `tests/test_parts_bill_stock.py::test_sale_fittings_end_to_end` (needs `TEST_MONGO_URL`).
+- Covered by `tests/test_stock_flows.py::test_sale_deducts_what_is_on_shelf_and_delete_puts_it_back` (in-memory DB). The older `test_sale_fittings.py` / `test_parts_bill_stock.py` named in the history sections below are not in this repo copy.
 
 ### Change history (09 Nov 2026)
 `_audit_trail` middleware (server.py) logs every successful PUT/PATCH/DELETE — and POST to a sub-route like `/parts/{id}/adjust-stock` — on `/api/{sales,service-bills,parts-bills,parts,purchase-bills,users,customers,vehicles,debts,expenses}/{24-hex id}` into `audit_log`: `{at, user, action, entity, entity_id, ref, changes{field:[old,new]}}`, or `deleted{…}` (full snapshot) for a delete. It re-reads the doc before and after, so new edit endpoints on those paths are covered without touching the handler. The user comes from `request.state.audit_user`, set in `verify_token`. `AUDIT_SKIP` drops timestamps, sync stamps and `stock_log`; password hashes are logged as `(old)/(new)`. A failed history write prints a WARNING and never fails the save. TTL 2 years. Owner sees it on Dashboard → Change history. Diff/ref helpers live in `database.py`, pinned by `tests/test_audit.py`.
 
 ### WhatsApp reminders
 `wa.me` links only open on a user click, so the Service Due bulk send is a queue: "WhatsApp n selected" loads it, then each "Send i of n" click opens one chat and marks only that vehicle notified. (The old version opened every chat on timers; browsers blocked all but the first, yet every vehicle was marked notified.) Reminder text includes the public `/book` link.
+
+### Customer feedback (14 Nov 2026)
+Marking a job **Delivered** (status dropdown) or clicking **Feedback** on a delivered, unrated job opens `service/FeedbackModal.jsx` with two choices:
+- **Instant feedback** — a full-screen view (turn the screen to the customer) with three faces: red = 1 star, yellow = 3, green = 5 (owner's mapping). One tap posts to the same public `POST /feedback/{token}` the link uses, so it feeds the same `feedback_avg` on the Service stats and is one-per-token: a customer who already used the link gets 409, and vice versa. Yellow is a fixed `#F5C400` because the theme's warn token renders brown.
+- **Send link on WhatsApp** — the previous behaviour (`sendFeedbackWA`), disabled when the job has no mobile number.
+
+The token comes from the job (`update_service_job` issues it on delivered) or `POST /service/{id}/feedback-link`. Pinned by `tests/test_feedback.py`.
 
 ### Security
 - No `eval` / `exec` / `pickle` / `yaml.unsafe_load`. No `shell=True`. API keys from env vars only.
@@ -400,6 +427,9 @@ Python pinned to 3.11 (avoids Python 3.14 pydantic-core build failures).
 After deploy:
 1. Set `ALLOW_ORIGINS` in Render to Vercel URL.
 2. Change default owner password immediately.
+3. Set `BACKUP_KEY` and paste `google-drive-backup.gs` into a new Apps Script project (DEPLOY.md Step 9).
+
+CI: `.github/workflows/checks.yml` runs `pytest` (Python 3.11) and `npm run build` on every push; `npm run lint` runs but does not fail the job (9 pre-existing errors — drop `continue-on-error` once fixed). The repo has no `.gitignore` — add one (`node_modules/`, `dist/`, `__pycache__/`, `.env`) before committing from a machine that ran `npm install`.
 
 ---
 
@@ -657,3 +687,19 @@ Owner asked for every app sale to land in the shop's existing "M M Motors Sales"
 **Not verified:** nothing ran against a real Apps Script deployment or a real database. The round trip — the 302 that Apps Script answers with and that `urllib` follows, the chassis match, the row delete — is untested until someone deploys the script. DEPLOY.md Step 8 has the setup, and the staging checklist section 5 has the checks, including the one that matters: a broken sheet must never stop a sale saving.
 
 **Watch for:** double entry. Rows already in the sheet are untouched, but if staff keep typing new sales in by hand as well, each bike gets two rows.
+
+
+## Changes (09–14 Nov 2026)
+
+1. **Nightly backup** — `GET /api/backup/auto` (`X-Backup-Key`) + `google-drive-backup.gs` → Drive, 30 days kept. DEPLOY.md Step 9.
+2. **IST dates** — `ist_now()` for calendar dates on the backend, `todayYmd()` on the frontend (11 sites).
+3. **Customer GSTIN** — field on Customers (form + detail, validated); snapshotted as `customer_gstin` onto new sales and service bills (`_customer_gstin()`), so GSTR-1 can route B2B.
+4. **GST rounding** — `sgst = gst - cgst` in `calc_gst_line` and the bill previews.
+5. **Login timing** — unknown usernames verify against `_DUMMY_PW_HASH`.
+6. **WhatsApp reminders** — Service Due bulk send is a click-per-customer queue; messages include `/book`.
+7. **Change history** — `_audit_trail` middleware + `audit_log` + Dashboard panel (owner).
+8. **Page split** — ServicePage / PartsPage moved verbatim into `src/pages/service/` and `src/pages/parts/`; ~200 lines of dead code (unused `PartsBillModal`, `StatusBadge`, `secHdr`) removed.
+9. **Tests + CI** — in-memory Mongo harness (`tests/conftest.py`), 24 tests, GitHub Actions.
+10. **Customer feedback** — delivered → instant full-screen smiley rating or WhatsApp link.
+
+Verified: 24 pytest tests pass (real FastAPI + mongomock), `npm run build` passes, lint at the 9-error baseline. Not verified: anything against real Atlas or in a browser — click through the Service/Parts pages, the feedback pop-up and Change history on staging first.
