@@ -6,6 +6,7 @@ Never import server.py from here — this module has no FastAPI app dependency.
 """
 import os
 import sys
+import json
 import certifi
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -159,6 +160,7 @@ async def verify_token(
             raise HTTPException(status_code=403, detail="You do not have access to this page")
         user["id"] = str(user["_id"])
         user.pop("_id", None)
+        request.state.audit_user = user.get("username", "")   # read by server.py _audit_trail
         return user
     except (JWTError, InvalidId):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
@@ -223,8 +225,36 @@ def utcnow() -> datetime:
     Naive preserves compatibility with existing naive ISO strings in DB."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
+def ist_now() -> datetime:
+    """Naive India (IST, UTC+5:30) datetime. Use for the shop's calendar dates;
+    keep utcnow() for stored timestamps."""
+    return utcnow() + timedelta(hours=5, minutes=30)
+
 def now() -> str:
     return utcnow().isoformat()
+
+# ── Change history helpers (used by server.py _audit_trail) ──────────────────────
+# Noise (timestamps, sync stamps, the stock_log that bills already link) — never worth a history row
+AUDIT_SKIP = {"_id", "updated_at", "updated_by", "stock_log", "sheet_synced_at", "sheet_sync_error"}
+
+def audit_jsonable(v):
+    return json.loads(json.dumps(v, default=str))
+
+def audit_diff(before: dict, after: dict) -> dict:
+    """{field: [old, new]} for top-level fields that changed. Password hashes are never stored."""
+    out = {}
+    for k in sorted(set(before) | set(after)):
+        if k in AUDIT_SKIP or before.get(k) == after.get(k):
+            continue
+        out[k] = ["(old)", "(new)"] if k == "password" else audit_jsonable([before.get(k), after.get(k)])
+    return out
+
+def audit_ref(doc: dict) -> str:
+    for k in ("bill_number", "invoice_number", "job_number", "part_number", "username", "name", "description"):
+        if doc.get(k):
+            return str(doc[k])
+    return ""
+
 
 # ── GST calculation ─────────────────────────────────────────────────────────────
 def calc_gst_line(price: float, qty: int, gst_rate: float, discount: float = 0) -> dict:
@@ -235,7 +265,7 @@ def calc_gst_line(price: float, qty: int, gst_rate: float, discount: float = 0) 
     taxable   = round(net / (1 + gst_rate / 100), 2) if gst_rate else net
     gst_amt   = round(net - taxable, 2)
     cgst      = round(gst_amt / 2, 2)
-    sgst      = round(gst_amt / 2, 2)
+    sgst      = round(gst_amt - cgst, 2)   # halves may differ by 1 paisa; CGST+SGST == gst_total
     return {
         "gross":    gross,
         "discount": discount,
