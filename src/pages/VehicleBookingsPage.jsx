@@ -7,6 +7,7 @@ import { useConfirm } from '../components/ConfirmModal';
 import { useAuth } from '../context/AuthContext';
 import { escapeDeep } from '../utils/escapeHtml';
 import { openWA } from './service/shared';
+import { todayYmd } from '../utils/date';
 
 // Advance paid for a new bike that isn't in stock yet. The list flags when a matching bike
 // (same brand + model, and colour if asked) is in stock, so staff can call the customer.
@@ -52,7 +53,7 @@ function printReceipt(raw) {
 function BookingForm({ initial = {}, onSave, onCancel, saving }) {
   const [f, setF] = useState({
     customer_name: '', customer_mobile: '', brand: '', model: '', variant: '', color: '',
-    advance_amount: '', payment_mode: 'Cash', expected_date: '', notes: '', ...initial,
+    advance_amount: '', payment_mode: 'Cash', booking_date: todayYmd(), expected_date: '', notes: '', ...initial,
   });
   const s = k => e => setF(p => ({ ...p, [k]: e.target.value }));
   const mobileOk = /^\d{10}$/.test(f.customer_mobile);
@@ -70,12 +71,13 @@ function BookingForm({ initial = {}, onSave, onCancel, saving }) {
         <Field label="Paid by">
           <select value={f.payment_mode} onChange={s('payment_mode')}>{MODES.map(m => <option key={m}>{m}</option>)}</select>
         </Field>
+        <Field label="Booking date *"><input type="date" value={f.booking_date || ''} onChange={s('booking_date')} /></Field>
         <Field label="Expected delivery"><input type="date" value={f.expected_date || ''} onChange={s('expected_date')} /></Field>
         <Field label="Notes"><input value={f.notes || ''} onChange={s('notes')} /></Field>
       </div>
       <div className="form-actions" style={{ justifyContent: 'flex-end' }}>
         <GhostBtn onClick={onCancel}>Cancel</GhostBtn>
-        <Btn disabled={saving || !f.customer_name.trim() || !mobileOk || !f.brand.trim() || !f.model.trim() || f.advance_amount === ''}
+        <Btn disabled={saving || !f.customer_name.trim() || !mobileOk || !f.brand.trim() || !f.model.trim() || f.advance_amount === '' || !f.booking_date}
           onClick={() => onSave({ ...f, advance_amount: parseFloat(f.advance_amount) || 0 })}>
           {saving ? 'Saving…' : 'Save booking'}
         </Btn>
@@ -188,8 +190,8 @@ export default function VehicleBookingsPage() {
           <div className="dialog dialog-wide" role="dialog" aria-modal="true" aria-labelledby="bk-edit-t" style={{ maxWidth: 640 }} onClick={e => e.stopPropagation()}>
             <h2 id="bk-edit-t" className="dialog-title">Edit {editing.booking_number}</h2>
             <BookingForm initial={editing} saving={updateMut.isPending} onCancel={() => setEditing(null)}
-              onSave={({ customer_name, customer_mobile, brand, model, variant, color, advance_amount, payment_mode, expected_date, notes }) =>
-                updateMut.mutate({ id: editing.id, d: { customer_name, customer_mobile, brand, model, variant, color, advance_amount, payment_mode, expected_date, notes } })} />
+              onSave={({ customer_name, customer_mobile, brand, model, variant, color, advance_amount, payment_mode, booking_date, expected_date, notes }) =>
+                updateMut.mutate({ id: editing.id, d: { customer_name, customer_mobile, brand, model, variant, color, advance_amount, payment_mode, booking_date, expected_date, notes } })} />
           </div>
         </div>
       )}

@@ -25,6 +25,7 @@ class VehicleBookingCreate(BaseModel):
     color:           Optional[str] = Field("", max_length=40)
     advance_amount:  float = Field(..., ge=0, le=10_000_000)
     payment_mode:    Optional[str] = "Cash"
+    booking_date:    Optional[str] = Field("", pattern=r"^(\d{4}-\d{2}-\d{2})?$")   # blank = today
     expected_date:   Optional[str] = Field("", pattern=r"^(\d{4}-\d{2}-\d{2})?$")
     notes:           Optional[str] = Field("", max_length=1000)
 
@@ -37,6 +38,7 @@ class VehicleBookingUpdate(BaseModel):
     color:           Optional[str] = Field(None, max_length=40)
     advance_amount:  Optional[float] = Field(None, ge=0, le=10_000_000)
     payment_mode:    Optional[str] = None
+    booking_date:    Optional[str] = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     expected_date:   Optional[str] = Field(None, pattern=r"^(\d{4}-\d{2}-\d{2})?$")
     notes:           Optional[str] = Field(None, max_length=1000)
     status:          Optional[str] = None
@@ -85,7 +87,7 @@ async def create_vehicle_booking(body: VehicleBookingCreate, current_user=Depend
         "brand":          norm_brand(body.brand),
         "customer_name":  body.customer_name.strip(),
         "status":         "waiting",
-        "booking_date":   ist_now().strftime("%Y-%m-%d"),
+        "booking_date":   body.booking_date or ist_now().strftime("%Y-%m-%d"),
         "created_by":     current_user.get("name", "") or current_user.get("username", ""),
         "created_at":     utcnow().isoformat(),
     }
